@@ -1,0 +1,91 @@
+# ⚔ Valheim Admin Panel
+
+A full-featured in-game admin panel for Valheim dedicated servers, with **server-side admin authentication** — only Steam IDs on the server's `adminlist.txt` can use it. In everyone else's hands, the panel is completely dead.
+
+![BepInEx](https://img.shields.io/badge/BepInEx-5.4.23-blue) ![Valheim](https://img.shields.io/badge/Valheim-0.221.x-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen)
+
+## ✨ Features
+
+Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel with seven tabs:
+
+### 🎁 Items
+- Every item in the game, organized by category (Weapons, Shields, Armor, Ammo, Tools, Food & Potions, Materials, Trophies…) with **sub-categories** — weapons by skill type, armor by slot, **materials by biome**
+- Item icons, localized names, live search
+- **Drop** (spawn on ground), **Bag** (straight into your inventory), **Give** (into another player's inventory)
+- ⭐ Favorites (persisted), Recent items, **gear kits** (full Bronze→Ashlands sets in one click), bulk material packs
+- Amount and quality controls
+
+### 🐗 Creatures
+- Every creature, organized by faction, with Bosses and Tamable filters
+- Spawn with count and star level, spawn **at crosshair**, spawn pre-tamed with a **custom pet name**
+- **Arena mode** — pick creature A and B, hit FIGHT!
+- Saved spawn presets, **undo last spawn** (server deletes what it just spawned)
+
+### ⚔ Bosses
+- One-click spawn for all bosses (Eikthyr → Fader)
+- **Altar offering buttons** (grabs e.g. 3 Dragon Eggs instantly)
+- Trigger real **raid events** ("The horde is attacking!") server-side
+
+### 🏃 Player
+- God mode, ghost mode, fly, free build, no stamina, one-hit kill, infinite carry weight
+- Speed / jump / auto-pickup-radius sliders
+- Full heal / stamina / eitr, repair all, skills +10 / max / reset
+- Status effect browser — apply any buff in the game
+
+### 🌍 World
+- Time-of-day slider, weather control, **wind direction & strength** (sailing!)
+- Teleport to coordinates + saved **bookmarks**
+- Kill/tame nearby creatures, cleanup ground items, **repair all builds**, clear trees
+- **Peaceful mode** (disable raids server-side), global keys editor, full map reveal
+
+### 👥 Players
+- Per player: teleport to, **summon**, watch (spectate), heal, map ping, ⚡ lightning strike, **live inventory viewer**, kick, ban
+- Broadcast messages to everyone, summon ALL, per-player admin notes
+
+### 📊 Server
+- Live stats (world day, players online, loaded creatures, FPS)
+- Unban by Steam ID, join/leave history
+
+## 🔒 Security model
+
+Every meaningful action is routed through the **server**, which validates the sender's Steam ID against `adminlist.txt` before executing. Denied attempts are logged with the offender's Steam ID. Clients additionally refuse admin commands that don't originate from the server. If someone copies the panel DLL, every button does nothing.
+
+## 📦 Installation
+
+Requires [BepInEx](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/) on all machines.
+
+| Where | DLL |
+|---|---|
+| **Admin's game** (`BepInEx/plugins`) | `AdminPanel.dll` + `AdminPanelCompanion.dll` |
+| **Dedicated server** (`BepInEx/plugins`) | `AdminPanelCompanion.dll` |
+| **Other players** (`BepInEx/plugins`) | `AdminPanelCompanion.dll` (needed to receive give/teleport/inventory features) |
+
+Make sure your Steam ID is in the server's `adminlist.txt`. That's it — press **F7** in-game.
+
+⚠️ Keep `AdminPanel.dll` to yourself. It's harmless in others' hands (the server rejects non-admins), but there's no reason to hand it out.
+
+## 🔨 Building from source
+
+1. Install the [.NET SDK](https://dotnet.microsoft.com/download)
+2. Get the game assemblies — the free [Valheim Dedicated Server](https://steamdb.info/app/896660/) via SteamCMD works:
+   `steamcmd +login anonymous +app_update 896660 +quit`
+3. Get BepInEx core DLLs (`BepInEx.dll`, `0Harmony.dll`) from the BepInExPack
+4. Edit the `<ValheimManaged>` and `<BepInExCore>` paths at the top of each `.csproj`
+5. `dotnet build` in each project folder
+
+## ⚙ Configuration
+
+Config file is created at `BepInEx/config/com.halitb.adminpanel.cfg`:
+- Toggle key (default F7)
+- Favorites, bookmarks, spawn presets, player notes (managed in-game)
+- Bulk pack contents, crafter signature name
+
+## ❗ Notes
+
+- Built against Valheim **0.221.x**. Game updates may require a rebuild.
+- Compatible with ValheimPlus and other BepInEx mods.
+- Icon-less cosmetic prefabs (hair, beards) are intentionally drop-only — putting them in an inventory corrupts the vanilla inventory UI.
+
+## 📜 License
+
+MIT — see [LICENSE](LICENSE).
