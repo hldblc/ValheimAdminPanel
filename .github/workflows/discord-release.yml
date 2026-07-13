@@ -1,0 +1,45 @@
+name: Announce release on Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release announcement to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TITLE: ${{ github.event.release.name }}
+          TAG: ${{ github.event.release.tag_name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK secret not set — skipping."
+            exit 0
+          fi
+          # Discord embed descriptions cap at 4096 chars; keep headroom
+          DESC=$(printf '%s' "$BODY" | head -c 3800)
+          payload=$(jq -n \
+            --arg title "⚔ $TITLE" \
+            --arg url "$URL" \
+            --arg desc "$DESC" \
+            --arg tag "$TAG" \
+            '{
+              username: "Ikarus-Servant",
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: $desc,
+                color: 3066993,
+                fields: [
+                  { name: "🔖 Version", value: $tag, inline: true },
+                  { name: "⬇ Download", value: "[GitHub Release](\($url))", inline: true }
+                ],
+                footer: { text: "Valheim Admin Panel — drop the DLL into BepInEx/plugins, press F7 in-game" }
+              }]
+            }')
+          curl -sS -H "Content-Type: application/json" -X POST -d "$payload" "$WEBHOOK"
+          echo "Announcement posted."
