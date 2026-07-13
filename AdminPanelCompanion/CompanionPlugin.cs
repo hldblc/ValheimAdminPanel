@@ -12,7 +12,7 @@ namespace AdminPanelCompanion
     {
         public const string PluginGuid = "com.halitb.adminpanelcompanion";
         public const string PluginName = "AdminPanelCompanion";
-        public const string PluginVersion = "2.1.0";
+        public const string PluginVersion = "2.1.1";
 
         internal static CompanionPlugin Instance;
 
@@ -22,6 +22,8 @@ namespace AdminPanelCompanion
         {
             Instance = this;
             Harmony.CreateAndPatchAll(typeof(RpcRegistration));
+            try { Harmony.CreateAndPatchAll(typeof(RouteRpcSanitizer)); }
+            catch (Exception e) { Logger.LogWarning($"RoutedRPC sender-sanitizer patch failed (server security reduced): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
 
@@ -55,6 +57,42 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register<Vector3>("AP_Teleport", OnTeleport);
                 ZRoutedRpc.instance.Register("AP_HealSelf", new Action<long>(OnHealSelf));
                 ZRoutedRpc.instance.Register<string>("AP_Msg", OnMessage);
+            }
+        }
+
+        // Server-side hard authentication of the routed-RPC sender. Valheim's ZRoutedRpc.RPC_RoutedRPC reads
+        // m_senderPeerID straight from the packet the client sent and NEVER re-stamps it with the id of the real
+        // transport connection, so a malicious client can forge sender==<any admin> (privilege escalation on the
+        // AP_Srv* handlers) or sender==<server> (impersonating the server toward other clients on AP_Teleport/etc.).
+        // We patch the server's receive handler and overwrite the forged sender in-place with the verified uid of
+        // the socket that actually delivered the packet BEFORE it is dispatched/relayed. This closes both holes for
+        // every AP_* (and every other) routed RPC. On clients this is a no-op (the delivering rpc is the server).
+        [HarmonyPatch(typeof(ZRoutedRpc), "RPC_RoutedRPC")]
+        private static class RouteRpcSanitizer
+        {
+            private static void Prefix(ZRpc rpc, ZPackage pkg)
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer()) return; // only the server relays/dispatches
+                if (pkg == null) return;
+                long realUid = 0L;
+                foreach (var peer in ZNet.instance.GetPeers())
+                    if (peer != null && peer.m_rpc == rpc) { realUid = peer.m_uid; break; }
+                if (realUid == 0L) return; // unknown/local connection — nothing to verify against
+                // RoutedRPCData layout: long m_msgID, long m_senderPeerID, long m_targetPeerID, ...
+                // so m_senderPeerID is the second long, at byte offset 8.
+                var saved = pkg.GetPos();
+                try
+                {
+                    pkg.SetPos(8); // skip m_msgID
+                    var claimed = pkg.ReadLong();
+                    if (claimed != realUid)
+                    {
+                        pkg.SetPos(8);
+                        pkg.Write(realUid); // overwrite the forged sender in place (same width, same length)
+                    }
+                }
+                catch { /* malformed packet — leave it for the game's own handler to reject */ }
+                finally { pkg.SetPos(saved); }
             }
         }
 
@@ -92,11 +130,18 @@ namespace AdminPanelCompanion
         private static void OnServerGive(long sender, ZPackage pkg)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            var targetUid = pkg.ReadLong();
-            var prefabName = pkg.ReadString();
-            var amount = pkg.ReadInt();
-            var quality = pkg.ReadInt();
-            var crafter = pkg.ReadString();
+            long targetUid; string prefabName, crafter; int amount, quality;
+            try
+            {
+                targetUid = pkg.ReadLong();
+                prefabName = pkg.ReadString();
+                amount = pkg.ReadInt();
+                quality = pkg.ReadInt();
+                crafter = pkg.ReadString();
+            }
+            catch (Exception e) { Log($"AP_SrvGive: malformed packet dropped ({e.Message})"); return; }
+            if (string.IsNullOrEmpty(prefabName) || amount <= 0) return;
+            amount = Mathf.Min(amount, 100000); // guard against a client freeze from an absurd stack loop
             Log($"Admin {sender} gives {amount}x {prefabName} (q{quality}) to peer {targetUid}");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_GiveItem", prefabName, amount, quality, crafter);
         }
@@ -104,13 +149,22 @@ namespace AdminPanelCompanion
         private static void OnServerSpawn(long sender, ZPackage pkg)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            var kind = pkg.ReadInt();          // 0 = item drop, 1 = creature
-            var prefabName = pkg.ReadString();
-            var pos = pkg.ReadVector3();
-            var count = pkg.ReadInt();
-            var levelOrQuality = pkg.ReadInt();
-            var tamed = pkg.ReadBool();
-            var petName = pkg.ReadString();
+            int kind, count, levelOrQuality; string prefabName, petName; Vector3 pos; bool tamed;
+            try
+            {
+                kind = pkg.ReadInt();          // 0 = item drop, 1 = creature
+                prefabName = pkg.ReadString();
+                pos = pkg.ReadVector3();
+                count = pkg.ReadInt();
+                levelOrQuality = pkg.ReadInt();
+                tamed = pkg.ReadBool();
+                petName = pkg.ReadString();
+            }
+            catch (Exception e) { Log($"AP_SrvSpawn: malformed packet dropped ({e.Message})"); return; }
+            if (string.IsNullOrEmpty(prefabName)) return;
+            // Hard server-side caps: never trust the client UI to bound these — a huge count would run millions of
+            // synchronous Instantiate/ZDO creations on the main thread and freeze/OOM the dedicated server.
+            count = Mathf.Clamp(count, 0, 100);
 
             var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(prefabName) : null;
             if (prefab == null && ObjectDB.instance != null) prefab = ObjectDB.instance.GetItemPrefab(prefabName);
@@ -123,6 +177,7 @@ namespace AdminPanelCompanion
             {
                 var drop = prefab.GetComponent<ItemDrop>();
                 var maxStack = drop != null ? drop.m_itemData.m_shared.m_maxStackSize : 1;
+                if (maxStack < 1) maxStack = 1; // guard: a 0 max-stack would loop forever
                 var remaining = count;
                 while (remaining > 0)
                 {
@@ -149,7 +204,7 @@ namespace AdminPanelCompanion
                     var character = go.GetComponent<Character>();
                     if (character != null)
                     {
-                        if (levelOrQuality > 1) character.SetLevel(levelOrQuality);
+                        if (levelOrQuality > 1) character.SetLevel(Mathf.Clamp(levelOrQuality, 1, 10));
                         if (tamed) character.SetTamed(true);
                         if (tamed && !string.IsNullOrEmpty(petName))
                         {
@@ -195,8 +250,13 @@ namespace AdminPanelCompanion
         private static void OnServerTeleport(long sender, ZPackage pkg)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            var targetUid = pkg.ReadLong();
-            var pos = pkg.ReadVector3();
+            long targetUid; Vector3 pos;
+            try
+            {
+                targetUid = pkg.ReadLong();
+                pos = pkg.ReadVector3();
+            }
+            catch (Exception e) { Log($"AP_SrvTeleport: malformed packet dropped ({e.Message})"); return; }
             Log($"Admin {sender} teleports peer {targetUid} to {pos}");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_Teleport", pos);
         }
@@ -319,6 +379,7 @@ namespace AdminPanelCompanion
             if (drop.m_itemData.m_shared.m_icons == null || drop.m_itemData.m_shared.m_icons.Length == 0) return;
 
             var maxStack = drop.m_itemData.m_shared.m_maxStackSize;
+            if (maxStack < 1) maxStack = 1; // guard: a 0 max-stack would loop forever
             var remaining = amount;
             while (remaining > 0)
             {
