@@ -149,6 +149,21 @@ namespace AdminPanel
         private bool _peaceful;
         private Vector2 _worldScroll;
 
+        // Quick-jump destinations by Valheim location name. GetLocationIcon returns the
+        // world's actual (randomized) position, or false if that location isn't known —
+        // so unknown/undiscovered ones simply don't show a button.
+        private static readonly (string Label, string Location)[] QuickJumps =
+        {
+            ("Spawn", "StartTemple"),
+            ("Eikthyr", "Eikthyrnir"),
+            ("The Elder", "GDKing"),
+            ("Bonemass", "Bonemass"),
+            ("Moder", "Dragonqueen"),
+            ("Yagluth", "GoblinKing"),
+            ("The Queen", "Mistlands_DvergrBossEntrance1"),
+            ("Fader", "FaderLocation"),
+        };
+
         // ==================== Player tab state ====================
         private bool _god, _ghost, _fly, _noCost;
         private float _speedMult = 1f, _jumpMult = 1f;
@@ -413,12 +428,17 @@ namespace AdminPanel
             if (_screenToWorld == null) { Message("Map teleport unavailable (game API changed)"); return; }
 
             var world = (Vector3)_screenToWorld.Invoke(Minimap.instance, new object[] { Input.mousePosition });
+            TeleportToWorld(world, $"map point ({world.x:0}, {world.z:0})");
+        }
+
+        // Teleport to a world position, snapping to ground height at the destination.
+        private void TeleportToWorld(Vector3 world, string label)
+        {
             var y = world.y;
             if (ZoneSystem.instance != null && ZoneSystem.instance.GetGroundHeight(world, out var gh))
                 y = gh;
-            var dest = new Vector3(world.x, y + 1.5f, world.z);
-            LocalPlayer.TeleportTo(dest, LocalPlayer.transform.rotation, true);
-            Message($"Teleporting to map point ({dest.x:0}, {dest.z:0})");
+            LocalPlayer.TeleportTo(new Vector3(world.x, y + 1.5f, world.z), LocalPlayer.transform.rotation, true);
+            Message($"Teleporting to {label}");
         }
 
         // ==================== Item / creature indexing ====================
@@ -1300,6 +1320,23 @@ namespace AdminPanel
 
             GUILayout.Label("Teleport:", _headerStyle);
             GUILayout.Label($"🗺  Open the full map (M), hover a spot, press [{_mapTpKey.Value}] to teleport there.", _dimLabelStyle);
+
+            // quick jump to known world locations (spawn + boss altars)
+            if (ZoneSystem.instance != null)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Quick jump:", _labelStyle, GUILayout.Width(80));
+                var any = false;
+                foreach (var (label, loc) in QuickJumps)
+                {
+                    if (!ZoneSystem.instance.GetLocationIcon(loc, out var lp)) continue;
+                    any = true;
+                    if (GUILayout.Button(label, _buttonStyle)) TeleportToWorld(lp, label);
+                }
+                if (!any) GUILayout.Label("(no known altars yet — explore / defeat bosses)", _dimLabelStyle);
+                GUILayout.EndHorizontal();
+            }
+
             var pos = LocalPlayer.transform.position;
             GUILayout.BeginHorizontal();
             GUILayout.Label($"You are at: {pos.x:0}, {pos.y:0}, {pos.z:0}", _labelStyle, GUILayout.Width(220));
