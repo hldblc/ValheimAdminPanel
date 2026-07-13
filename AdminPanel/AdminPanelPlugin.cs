@@ -14,7 +14,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.1.2";
+        public const string PluginVersion = "2.2.0";
 
         internal static AdminPanelPlugin Instance;
 
@@ -154,6 +154,7 @@ namespace AdminPanel
         private bool _infiniteWeight, _noStamina, _oneHitKill;
         private float _pickupRange = 2f;
         private float _baseWalk = -1f, _baseRun, _baseSwim, _baseJump, _baseWeight, _basePickup;
+        private Player _appliedTo;   // tracks the Player instance our buffs are applied to (re-apply on respawn)
         private string _seSearch = "";
         private Vector2 _seScroll;
         private bool _showStatusEffects;
@@ -173,6 +174,7 @@ namespace AdminPanel
         // ==================== Server tab state ====================
         private readonly List<string> _joinLog = new List<string>();
         private HashSet<string> _lastSeenPlayers = new HashSet<string>();
+        private bool _seenPlayersInit;
         private float _nextPlayerPoll;
         private Vector2 _serverScroll;
         private static readonly string[] RaidEvents =
@@ -218,10 +220,14 @@ namespace AdminPanel
             [HarmonyPrefix]
             private static void OneHitPrefix(Character __instance, HitData hit)
             {
-                if (!OneHitKillFlag || Player.m_localPlayer == null) return;
-                if (__instance == Player.m_localPlayer) return;
-                if (hit.GetAttacker() != Player.m_localPlayer) return;
-                hit.m_damage.m_damage = 1e9f;
+                if (!OneHitKillFlag || hit == null || Player.m_localPlayer == null) return;
+                if (__instance == null || __instance == Player.m_localPlayer) return;
+                try
+                {
+                    if (hit.GetAttacker() != Player.m_localPlayer) return;
+                    hit.m_damage.m_damage = 1e9f;
+                }
+                catch { /* never let a bad hit break combat */ }
             }
         }
 
@@ -330,18 +336,58 @@ namespace AdminPanel
                 else if (!overPanel && _eventSystemDisabled) { es.enabled = true; _eventSystemDisabled = false; }
             }
 
+            // re-apply persistent buffs when the local Player instance changes (death/respawn/teleport)
+            var lp = Player.m_localPlayer;
+            if (lp != null && lp != _appliedTo)
+            {
+                ReapplyPlayerState(lp);
+                _appliedTo = lp;
+            }
+
             // join/leave tracker
             if (ZNet.instance != null && Time.time >= _nextPlayerPoll)
             {
                 _nextPlayerPoll = Time.time + 3f;
                 var now = new HashSet<string>(ZNet.instance.GetPlayerList().Select(p => p.m_name));
-                foreach (var name in now.Except(_lastSeenPlayers))
-                    _joinLog.Insert(0, $"{DateTime.Now:HH:mm} + {name} joined");
-                foreach (var name in _lastSeenPlayers.Except(now))
-                    _joinLog.Insert(0, $"{DateTime.Now:HH:mm} - {name} left");
+                if (_seenPlayersInit)
+                {
+                    foreach (var name in now.Except(_lastSeenPlayers))
+                        _joinLog.Insert(0, $"{DateTime.Now:HH:mm} + {name} joined");
+                    foreach (var name in _lastSeenPlayers.Except(now))
+                        _joinLog.Insert(0, $"{DateTime.Now:HH:mm} - {name} left");
+                }
+                else _seenPlayersInit = true;   // first poll: seed silently, don't spam "joined"
                 if (_joinLog.Count > 100) _joinLog.RemoveRange(100, _joinLog.Count - 100);
                 _lastSeenPlayers = now;
             }
+        }
+
+        // Re-capture base movement stats from a fresh Player and re-apply active buffs.
+        // Valheim replaces Player.m_localPlayer on respawn, wiping instance-level buffs.
+        private void ReapplyPlayerState(Player p)
+        {
+            _baseWalk = p.m_walkSpeed;
+            _baseRun = p.m_runSpeed;
+            _baseSwim = p.m_swimSpeed;
+            _baseJump = p.m_jumpForce;
+            _baseWeight = p.m_maxCarryWeight;
+            _basePickup = p.m_autoPickupRange;
+
+            if (_god) p.SetGodMode(true);
+            if (_ghost) p.SetGhostMode(true);
+            if (_noCost) p.SetNoPlacementCost(true);
+            if (_infiniteWeight) p.m_maxCarryWeight = 100000f;
+            if (_speedMult > 1.001f)
+            {
+                p.m_walkSpeed = _baseWalk * _speedMult;
+                p.m_runSpeed = _baseRun * _speedMult;
+                p.m_swimSpeed = _baseSwim * _speedMult;
+            }
+            if (_jumpMult > 1.001f) p.m_jumpForce = _baseJump * _jumpMult;
+            if (_pickupRange > 2.001f) p.m_autoPickupRange = _pickupRange;
+
+            // debug-fly cannot cleanly survive an instance swap; keep the toggle honest
+            _fly = false;
         }
 
         private static Player LocalPlayer => Player.m_localPlayer;
@@ -1410,14 +1456,6 @@ namespace AdminPanel
         }
 
         // ==================== Players tab ====================
-        private static string HostOf(ZNet.PlayerInfo info)
-        {
-            // m_host is the network host id (SteamID) when available
-            var f = AccessTools.Field(typeof(ZNet.PlayerInfo), "m_host");
-            var host = f != null ? f.GetValue(info) as string : null;
-            return string.IsNullOrEmpty(host) ? info.m_name : host;
-        }
-
         private void DrawPlayersTab()
         {
             if (ZNet.instance == null) { GUILayout.Label("Not connected.", _labelStyle); return; }
@@ -1473,9 +1511,9 @@ namespace AdminPanel
                         ZRoutedRpc.instance.InvokeRoutedRPC(ServerUid(), "AP_SrvReqInv", PeerIdOf(info));
                     }
                     if (GUILayout.Button("Kick", _buttonStyle, GUILayout.Width(45)))
-                    { ZRoutedRpc.instance.InvokeRoutedRPC(ServerUid(), "AP_SrvKick", HostOf(info)); Message($"Kicked {info.m_name}"); }
+                    { ZRoutedRpc.instance.InvokeRoutedRPC(ServerUid(), "AP_SrvKick", PeerIdOf(info)); Message($"Kicked {info.m_name}"); }
                     if (GUILayout.Button("Ban", _buttonStyle, GUILayout.Width(42)))
-                    { ZRoutedRpc.instance.InvokeRoutedRPC(ServerUid(), "AP_SrvBan", HostOf(info)); Message($"Banned {info.m_name}"); }
+                    { ZRoutedRpc.instance.InvokeRoutedRPC(ServerUid(), "AP_SrvBan", PeerIdOf(info)); Message($"Banned {info.m_name}"); }
                 }
                 else if (GUILayout.Button("Inventory", _buttonStyle, GUILayout.Width(75)))
                 {

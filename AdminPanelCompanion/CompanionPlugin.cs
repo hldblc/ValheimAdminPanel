@@ -12,7 +12,7 @@ namespace AdminPanelCompanion
     {
         public const string PluginGuid = "com.halitb.adminpanelcompanion";
         public const string PluginName = "AdminPanelCompanion";
-        public const string PluginVersion = "2.0.1";
+        public const string PluginVersion = "2.1.0";
 
         internal static CompanionPlugin Instance;
 
@@ -42,8 +42,8 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register("AP_SrvUndo", new Action<long>(OnServerUndo));
                 ZRoutedRpc.instance.Register<ZPackage>("AP_SrvTeleport", OnServerTeleport);
                 ZRoutedRpc.instance.Register<long>("AP_SrvHeal", OnServerHeal);
-                ZRoutedRpc.instance.Register<string>("AP_SrvKick", OnServerKick);
-                ZRoutedRpc.instance.Register<string>("AP_SrvBan", OnServerBan);
+                ZRoutedRpc.instance.Register<long>("AP_SrvKick", OnServerKick);
+                ZRoutedRpc.instance.Register<long>("AP_SrvBan", OnServerBan);
                 ZRoutedRpc.instance.Register<string>("AP_SrvUnban", OnServerUnban);
                 ZRoutedRpc.instance.Register<string>("AP_SrvBroadcast", OnServerBroadcast);
                 ZRoutedRpc.instance.Register<long, string>("AP_SrvMsg", OnServerMessage);
@@ -207,36 +207,51 @@ namespace AdminPanelCompanion
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_HealSelf");
         }
 
-        private static void OnServerKick(long sender, string host)
+        // Look up the real network host id (Steam ID) of a connected peer by its uid.
+        private static string HostOfPeer(long uid)
         {
-            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            Log($"Admin {sender} kicks {host}");
-            KickByHost(host);
+            if (ZNet.instance == null) return null;
+            foreach (var peer in ZNet.instance.GetPeers())
+                if (peer.m_uid == uid)
+                    return peer.m_socket != null ? peer.m_socket.GetHostName() : null;
+            return null;
         }
 
-        private static void KickByHost(string host)
+        // Kick a peer by uid. Returns true if a matching peer was found and kicked.
+        private static bool KickByUid(long uid)
         {
-            var bare = BareId(host);
+            if (ZNet.instance == null) return false;
             foreach (var peer in ZNet.instance.GetPeers())
             {
-                var peerHost = peer.m_socket != null ? peer.m_socket.GetHostName() : "";
-                if (peerHost != host && BareId(peerHost) != bare) continue;
+                if (peer.m_uid != uid) continue;
                 var m = AccessTools.Method(typeof(ZNet), "InternalKick", new[] { typeof(ZNetPeer) })
                         ?? AccessTools.Method(typeof(ZNet), "Kick", new[] { typeof(ZNetPeer) });
                 if (m != null) m.Invoke(ZNet.instance, new object[] { peer });
-                else peer.m_rpc.GetSocket().Close();
-                return;
+                else peer.m_rpc?.GetSocket()?.Close();
+                return true;
             }
+            return false;
         }
 
-        private static void OnServerBan(long sender, string host)
+        private static void OnServerKick(long sender, long uid)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            var banned = GetList("m_bannedList");
+            var ok = KickByUid(uid);
+            Log($"Admin {sender} kick peer {uid}: {(ok ? "kicked" : "peer not found")}");
+        }
+
+        private static void OnServerBan(long sender, long uid)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var host = HostOfPeer(uid);          // read the Steam ID BEFORE kicking (socket closes)
             var bare = BareId(host);
-            if (banned != null && !banned.Contains(bare)) banned.Add(bare);
-            Log($"Admin {sender} bans {bare}");
-            KickByHost(host);
+            if (!string.IsNullOrEmpty(bare))
+            {
+                var banned = GetList("m_bannedList");
+                if (banned != null && !banned.Contains(bare)) banned.Add(bare);
+            }
+            var ok = KickByUid(uid);
+            Log($"Admin {sender} ban peer {uid} ({bare ?? "unknown"}): {(ok ? "kicked" : "peer not found")}");
         }
 
         private static void OnServerUnban(long sender, string host)
