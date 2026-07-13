@@ -14,7 +14,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.1";
+        public const string PluginVersion = "2.2.2";
 
         internal static AdminPanelPlugin Instance;
 
@@ -192,6 +192,7 @@ namespace AdminPanel
         private HashSet<string> _lastSeenPlayers = new HashSet<string>();
         private bool _seenPlayersInit;
         private float _nextPlayerPoll;
+        private float _nextInvClean;
         private Vector2 _serverScroll;
         private static readonly string[] RaidEvents =
         {
@@ -358,6 +359,25 @@ namespace AdminPanel
             {
                 ReapplyPlayerState(lp);
                 _appliedTo = lp;
+            }
+
+            // auto-strip icon-less items — they crash InventoryGrid.UpdateGui every frame (freezes the bag)
+            if (lp != null && Time.time >= _nextInvClean)
+            {
+                _nextInvClean = Time.time + 2f;
+                var inv = lp.GetInventory();
+                if (inv != null)
+                {
+                    var broken = inv.GetAllItems()
+                        .Where(i => i.m_shared == null || i.m_shared.m_icons == null || i.m_shared.m_icons.Length == 0)
+                        .ToList();
+                    if (broken.Count > 0)
+                    {
+                        foreach (var it in broken) inv.RemoveItem(it);
+                        Logger.LogWarning($"Auto-removed {broken.Count} icon-less item(s) that would freeze the inventory.");
+                        lp.Message(MessageHud.MessageType.TopLeft, $"[Admin] Removed {broken.Count} broken item(s) from your bag");
+                    }
+                }
             }
 
             // join/leave tracker
