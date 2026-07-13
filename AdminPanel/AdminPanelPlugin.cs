@@ -14,7 +14,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.2";
+        public const string PluginVersion = "2.2.3";
 
         internal static AdminPanelPlugin Instance;
 
@@ -32,6 +32,13 @@ namespace AdminPanel
         private int _itemAmount = 1;
         private int _itemQuality = 1;
         private int _giveTargetIndex = -1;
+        private int _itemSort;   // index into ItemSortModes
+        private List<ItemEntry> _itemWindowList; // virtualization window snapshot (Layout->Repaint consistency)
+        private int _itemWindowFirst, _itemWindowVisible, _itemWindowTotal;
+        private static readonly string[] ItemSortModes = { "A → Z", "Z → A", "Category" };
+        private static readonly string[] CreatureSortModes = { "A → Z", "Z → A", "Faction" };
+        private int _creatureSort;      // index into CreatureSortModes
+        private string _openDropdown;   // id of the currently-expanded dropdown (null = none)
 
         private class ItemEntry
         {
@@ -125,6 +132,9 @@ namespace AdminPanel
 
         private string _creatureSearch = "";
         private Vector2 _creatureScroll;
+        // virtualized-list window snapshot (computed on Layout, reused on Repaint so control counts match)
+        private List<CreatureEntry> _creWindowList;
+        private int _creWindowFirst, _creWindowVisible, _creWindowTotal;
         private int _creatureCount = 1;
         private int _creatureLevel = 1;
         private List<CreatureEntry> _creatureIndex;
@@ -218,6 +228,7 @@ namespace AdminPanel
         private GUIStyle _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle, _toggleStyle;
         private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle;
         private bool _skinReady;
+        private bool _fontApplied;
 
         // ==================== Harmony cheat flags ====================
         internal static bool NoStaminaFlag;
@@ -248,6 +259,33 @@ namespace AdminPanel
             }
         }
 
+        // Free & show the mouse cursor while the panel is open. Valheim re-locks/hides the cursor every frame
+        // in GameCamera.UpdateMouseCapture, so we override it and skip the vanilla capture while _visible.
+        [HarmonyPatch(typeof(GameCamera), "UpdateMouseCapture")]
+        private static class CursorPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix()
+            {
+                if (Instance == null || !Instance._visible) return true; // let vanilla capture the mouse
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                return false;
+            }
+        }
+
+        // While the panel is open, stop world input (movement, attacks, mouse-look) so clicking buttons
+        // doesn't swing the camera or move your character.
+        [HarmonyPatch(typeof(Player), "TakeInput")]
+        private static class InputBlockPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ref bool __result)
+            {
+                if (Instance != null && Instance._visible) __result = false;
+            }
+        }
+
         private void Awake()
         {
             Instance = this;
@@ -267,6 +305,10 @@ namespace AdminPanel
             _playerNotes = ParseKv(_playerNotesCfg.Value);
             Harmony.CreateAndPatchAll(typeof(RpcRegistration));
             Harmony.CreateAndPatchAll(typeof(CheatPatches));
+            try { Harmony.CreateAndPatchAll(typeof(CursorPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Cursor patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(InputBlockPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Input-block patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
         }
 
@@ -628,11 +670,36 @@ namespace AdminPanel
             _skinReady = true;
         }
 
+        // Locate Valheim's native Norse font among loaded Unity fonts.
+        private static Font FindValheimFont()
+        {
+            var fonts = Resources.FindObjectsOfTypeAll<Font>();
+            return fonts.FirstOrDefault(f => f.name.IndexOf("Norsebold", StringComparison.OrdinalIgnoreCase) >= 0)
+                ?? fonts.FirstOrDefault(f => f.name.IndexOf("AveriaSerifLibre", StringComparison.OrdinalIgnoreCase) >= 0)
+                ?? fonts.FirstOrDefault(f => f.name.IndexOf("Norse", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        // Apply the native font to every text GUIStyle once it becomes available.
+        private void ApplyFont()
+        {
+            if (_fontApplied) return;
+            var f = FindValheimFont();
+            if (f == null) return; // fonts not loaded yet (e.g. main menu) — retry next frame
+            foreach (var s in new[]
+            {
+                _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle,
+                _toggleStyle, _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle
+            })
+                if (s != null) s.font = f;
+            _fontApplied = true;
+        }
+
         // ==================== GUI root ====================
         private void OnGUI()
         {
             if (!_visible) return;
             EnsureSkin();
+            ApplyFont();
             _windowRect = GUILayout.Window(918273, _windowRect, DrawWindow,
                 $"⚔ Valheim Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
         }
@@ -764,7 +831,7 @@ namespace AdminPanel
 
         private List<ItemEntry> FilteredItems()
         {
-            var key = $"{_mainCat}|{_subCat}|{_itemSearch}|{_favVersion}|{_recentItems.Count}";
+            var key = $"{_mainCat}|{_subCat}|{_itemSearch}|{_favVersion}|{_recentItems.Count}|{_itemSort}";
             if (_filteredItemsCache != null && key == _itemFilterKey) return _filteredItemsCache;
 
             IEnumerable<ItemEntry> src = _itemIndex;
@@ -780,6 +847,16 @@ namespace AdminPanel
                     e.Display.IndexOf(_itemSearch, StringComparison.OrdinalIgnoreCase) >= 0 ||
                     e.Prefab.IndexOf(_itemSearch, StringComparison.OrdinalIgnoreCase) >= 0);
 
+            if (_mainCat != "Recent") // Recent keeps its most-recent-first order
+            {
+                switch (_itemSort)
+                {
+                    case 1: src = src.OrderByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    case 2: src = src.OrderBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    default: src = src.OrderBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                }
+            }
+
             _filteredItemsCache = src.ToList();
             _itemFilterKey = key;
             return _filteredItemsCache;
@@ -790,6 +867,28 @@ namespace AdminPanel
             foreach (var (prefab, count) in kit.Items)
                 SendServerGive(targetUid, prefab, count, 1);
             Message($"Kit '{kit.Name}' sent");
+        }
+
+        // ---- Reusable inline dropdown ----
+        // Split into trigger + popup so the option list can render BELOW a horizontal row (call DropdownButton
+        // inside the row, then DropdownOptions after EndHorizontal). Toggling only happens on click, so the
+        // control count is stable across a frame's Layout/Repaint passes.
+        private void DropdownButton(string id, string label, string[] options, int selected, float width)
+        {
+            var cur = options[Mathf.Clamp(selected, 0, options.Length - 1)];
+            if (GUILayout.Button($"{label}: {cur}  {(_openDropdown == id ? "▲" : "▼")}", _buttonStyle, GUILayout.Width(width)))
+                _openDropdown = _openDropdown == id ? null : id;
+        }
+        private bool DropdownOptions(string id, string[] options, ref int selected, float width)
+        {
+            if (_openDropdown != id) return false;
+            var changed = false;
+            for (var i = 0; i < options.Length; i++)
+            {
+                if (GUILayout.Button((i == selected ? "• " : "    ") + options[i], _buttonStyle, GUILayout.Width(width)))
+                { selected = i; _openDropdown = null; changed = true; }
+            }
+            return changed;
         }
 
         private void DrawItemsTab()
@@ -885,19 +984,32 @@ namespace AdminPanel
             if (GUILayout.Button(GiveTargetName(others), _buttonStyle, GUILayout.Width(180)))
                 _giveTargetIndex = others.Count == 0 ? -1 : (_giveTargetIndex + 1) % others.Count;
             GUILayout.Label("Drop = ground | Bag = your bag | Give = target's bag", _labelStyle);
+            GUILayout.FlexibleSpace();
+            DropdownButton("itemSort", "Sort", ItemSortModes, _itemSort, 150);
             GUILayout.EndHorizontal();
+            DropdownOptions("itemSort", ItemSortModes, ref _itemSort, 150);
 
             if (_itemIndex == null) { GUILayout.Label("Item DB not loaded.", _labelStyle); return; }
 
             GUILayout.Space(10);
 
-            // virtualized list: only rows inside the viewport are rendered
+            // virtualized list: only rows inside the viewport are rendered.
+            // Snapshot the window on the Layout event so Repaint draws an identical control count — otherwise
+            // BeginScrollView reassigning _itemScroll mid-pass causes the IMGUI "control N in a group with only N
+            // controls" crash (same fix as DrawCreaturesTab).
             const float rowH = 32f;
             const float viewH = 350f;
-            var filtered = FilteredItems();
-            var total = filtered.Count;
-            var first = Mathf.Max(0, Mathf.FloorToInt(_itemScroll.y / rowH) - 1);
-            var visible = Mathf.Min(total - first, Mathf.CeilToInt(viewH / rowH) + 3);
+            if (Event.current.type == EventType.Layout || _itemWindowList == null)
+            {
+                _itemWindowList = FilteredItems();
+                _itemWindowTotal = _itemWindowList.Count;
+                _itemWindowFirst = Mathf.Clamp(Mathf.FloorToInt(_itemScroll.y / rowH) - 1, 0, Mathf.Max(0, _itemWindowTotal));
+                _itemWindowVisible = Mathf.Max(0, Mathf.Min(_itemWindowTotal - _itemWindowFirst, Mathf.CeilToInt(viewH / rowH) + 3));
+            }
+            var filtered = _itemWindowList;
+            var total = _itemWindowTotal;
+            var first = _itemWindowFirst;
+            var visible = _itemWindowVisible;
 
             _itemScroll = GUILayout.BeginScrollView(_itemScroll, GUILayout.Height(viewH));
             if (first > 0) GUILayout.Space(first * rowH);
@@ -940,7 +1052,7 @@ namespace AdminPanel
         // ==================== Creatures tab ====================
         private List<CreatureEntry> FilteredCreatures()
         {
-            var key = $"{_creatureCat}|{_creatureSearch}";
+            var key = $"{_creatureCat}|{_creatureSearch}|{_creatureSort}";
             if (_filteredCreaturesCache != null && key == _creatureFilterKey) return _filteredCreaturesCache;
 
             IEnumerable<CreatureEntry> src = _creatureIndex;
@@ -951,6 +1063,13 @@ namespace AdminPanel
                 src = src.Where(e =>
                     e.Display.IndexOf(_creatureSearch, StringComparison.OrdinalIgnoreCase) >= 0 ||
                     e.Name.IndexOf(_creatureSearch, StringComparison.OrdinalIgnoreCase) >= 0);
+
+            switch (_creatureSort)
+            {
+                case 1: src = src.OrderByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                case 2: src = src.OrderBy(e => e.Faction).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                default: src = src.OrderBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+            }
 
             _filteredCreaturesCache = src.ToList();
             _creatureFilterKey = key;
@@ -986,7 +1105,9 @@ namespace AdminPanel
             var lStr = GUILayout.TextField((_creatureLevel - 1).ToString(), _textFieldStyle, GUILayout.Width(30));
             if (int.TryParse(lStr, out var stars)) _creatureLevel = Mathf.Clamp(stars, 0, 10) + 1;
             _spawnAtCrosshair = GUILayout.Toggle(_spawnAtCrosshair, " At crosshair", _toggleStyle);
+            DropdownButton("creatureSort", "Sort", CreatureSortModes, _creatureSort, 150);
             GUILayout.EndHorizontal();
+            DropdownOptions("creatureSort", CreatureSortModes, ref _creatureSort, 150);
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Pet name:", _labelStyle, GUILayout.Width(60));
@@ -1027,10 +1148,21 @@ namespace AdminPanel
             GUILayout.Space(6);
             const float rowH = 32f;
             const float viewH = 320f;
-            var filtered = FilteredCreatures();
-            var total = filtered.Count;
-            var first = Mathf.Max(0, Mathf.FloorToInt(_creatureScroll.y / rowH) - 1);
-            var visible = Mathf.Min(total - first, Mathf.CeilToInt(viewH / rowH) + 3);
+            // Snapshot the list + virtualization window ONCE per frame, on the Layout event, and reuse it for
+            // Repaint/mouse passes. BeginScrollView reassigns _creatureScroll mid-pass, so deriving the window
+            // live would give Layout and Repaint different control counts (the IMGUI "control N in a group with
+            // only N controls" / unbalanced GUIClips crash).
+            if (Event.current.type == EventType.Layout || _creWindowList == null)
+            {
+                _creWindowList = FilteredCreatures();
+                _creWindowTotal = _creWindowList.Count;
+                _creWindowFirst = Mathf.Clamp(Mathf.FloorToInt(_creatureScroll.y / rowH) - 1, 0, Mathf.Max(0, _creWindowTotal));
+                _creWindowVisible = Mathf.Max(0, Mathf.Min(_creWindowTotal - _creWindowFirst, Mathf.CeilToInt(viewH / rowH) + 3));
+            }
+            var filtered = _creWindowList;
+            var total = _creWindowTotal;
+            var first = _creWindowFirst;
+            var visible = _creWindowVisible;
 
             _creatureScroll = GUILayout.BeginScrollView(_creatureScroll, GUILayout.Height(viewH));
             if (first > 0) GUILayout.Space(first * rowH);
