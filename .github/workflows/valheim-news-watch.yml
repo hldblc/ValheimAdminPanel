@@ -1,0 +1,72 @@
+name: Watch Valheim patch notes
+
+on:
+  schedule:
+    - cron: '30 12 * * *'   # daily at 12:30 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for new Valheim announcements
+        env:
+          WEBHOOK: ${{ secrets.VALHEIM_NEWS_WEBHOOK }}
+        run: |
+          set -e
+          json=$(curl -sS "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=892970&count=15&maxlength=500&format=json")
+          # official Iron Gate posts only (patch notes / dev word), newest first
+          items=$(echo "$json" | jq -c '[.appnews.newsitems[] | select(.feedname=="steam_community_announcements")]')
+          newest=$(echo "$items" | jq -r '.[0].gid // empty')
+          if [ -z "$newest" ]; then echo "No official items."; exit 0; fi
+
+          prev=""
+          [ -f .valheim-news-gid ] && prev=$(cat .valheim-news-gid)
+          echo "newest=$newest prev=${prev:-none}"
+
+          if [ -z "$prev" ]; then
+            echo "$newest" > .valheim-news-gid
+            git config user.name "valheim-watch-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add .valheim-news-gid && git commit -m "Valheim news baseline: $newest" && git push
+            echo "Baseline set (no post on first run)."
+            exit 0
+          fi
+          if [ "$newest" = "$prev" ]; then echo "No change."; exit 0; fi
+
+          # items newer than prev = everything before prev's index (or up to 3 if prev fell out of window)
+          idx=$(echo "$items" | jq --arg p "$prev" 'map(.gid) | index($p)')
+          if [ "$idx" = "null" ] || [ -z "$idx" ]; then
+            newitems=$(echo "$items" | jq -c '.[0:3]')
+          else
+            newitems=$(echo "$items" | jq -c ".[0:$idx]")
+          fi
+
+          # post oldest-first
+          echo "$newitems" | jq -c 'reverse[]' | while read -r it; do
+            title=$(echo "$it" | jq -r '.title')
+            url=$(echo "$it" | jq -r '.url')
+            body=$(echo "$it" | jq -r '.contents' | sed 's/\[[^]]*\]//g' | tr -s ' \n' ' ' | head -c 450)
+            payload=$(jq -n --arg t "$title" --arg u "$url" --arg d "$body" '{
+              username: "Ikarus-Servant",
+              embeds: [{
+                title: ("🪓 " + $t),
+                url: $u,
+                description: $d,
+                color: 2263842,
+                footer: { text: "Valheim — Iron Gate (via Steam news)" }
+              }]
+            }')
+            [ -n "$WEBHOOK" ] && curl -sS -H "Content-Type: application/json" -X POST -d "$payload" "$WEBHOOK"
+          done
+
+          echo "$newest" > .valheim-news-gid
+          git config user.name "valheim-watch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add .valheim-news-gid && git commit -m "Valheim news: $newest" && git push
+          echo "Posted new Valheim announcements."
