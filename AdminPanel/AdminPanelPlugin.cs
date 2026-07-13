@@ -19,6 +19,7 @@ namespace AdminPanel
         internal static AdminPanelPlugin Instance;
 
         private ConfigEntry<KeyCode> _toggleKey;
+        private ConfigEntry<KeyCode> _mapTpKey;
 
         private bool _visible;
         private Rect _windowRect = new Rect(60, 60, 740, 680);
@@ -235,6 +236,8 @@ namespace AdminPanel
         {
             Instance = this;
             _toggleKey = Config.Bind("General", "ToggleKey", KeyCode.F7, "Key that opens/closes the admin panel");
+            _mapTpKey = Config.Bind("General", "MapTeleportKey", KeyCode.T,
+                "With the full map open, hover a spot and press this key to teleport there");
             _favoritesCfg = Config.Bind("Items", "Favorites", "", "Comma-separated favorite item prefabs");
             _crafterNameCfg = Config.Bind("Items", "CrafterName", "", "Crafter signature on given items (empty = none)");
             _bulkPackCfg = Config.Bind("Items", "BulkPack", "Wood:50,Stone:50,FineWood:30,Iron:30,BronzeNails:100",
@@ -325,6 +328,13 @@ namespace AdminPanel
                 if (_visible) RefreshCaches();
             }
 
+            // map-point teleport: full map open + hover a spot + press the map-teleport key
+            if (Input.GetKeyDown(_mapTpKey.Value) && LocalPlayer != null &&
+                Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large)
+            {
+                TeleportToMapCursor();
+            }
+
             // block clicks from passing through the panel to the game's UI behind it
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es != null)
@@ -391,6 +401,25 @@ namespace AdminPanel
         }
 
         private static Player LocalPlayer => Player.m_localPlayer;
+
+        // Minimap.ScreenToWorldPoint is non-public — reflect it once and cache.
+        private static System.Reflection.MethodInfo _screenToWorld;
+
+        // Teleport the local player to the world point under the cursor on the open map.
+        private void TeleportToMapCursor()
+        {
+            if (_screenToWorld == null)
+                _screenToWorld = AccessTools.Method(typeof(Minimap), "ScreenToWorldPoint", new[] { typeof(Vector3) });
+            if (_screenToWorld == null) { Message("Map teleport unavailable (game API changed)"); return; }
+
+            var world = (Vector3)_screenToWorld.Invoke(Minimap.instance, new object[] { Input.mousePosition });
+            var y = world.y;
+            if (ZoneSystem.instance != null && ZoneSystem.instance.GetGroundHeight(world, out var gh))
+                y = gh;
+            var dest = new Vector3(world.x, y + 1.5f, world.z);
+            LocalPlayer.TeleportTo(dest, LocalPlayer.transform.rotation, true);
+            Message($"Teleporting to map point ({dest.x:0}, {dest.z:0})");
+        }
 
         // ==================== Item / creature indexing ====================
         private static (string cat, string sub) Categorize(ItemDrop drop)
@@ -1270,6 +1299,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
 
             GUILayout.Label("Teleport:", _headerStyle);
+            GUILayout.Label($"🗺  Open the full map (M), hover a spot, press [{_mapTpKey.Value}] to teleport there.", _dimLabelStyle);
             var pos = LocalPlayer.transform.position;
             GUILayout.BeginHorizontal();
             GUILayout.Label($"You are at: {pos.x:0}, {pos.y:0}, {pos.z:0}", _labelStyle, GUILayout.Width(220));
