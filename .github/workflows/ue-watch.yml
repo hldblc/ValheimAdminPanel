@@ -1,0 +1,71 @@
+name: Watch Unreal Engine releases
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # daily at 12:00 UTC
+  workflow_dispatch: {}     # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for a new Unreal Engine version
+        env:
+          WEBHOOK: ${{ secrets.UE_DISCORD_WEBHOOK }}
+        run: |
+          set -e
+          wt=$(curl -sS "https://en.wikipedia.org/w/api.php?action=parse&page=Unreal_Engine&prop=wikitext&section=0&format=json" \
+               | jq -r '.parse.wikitext["*"]')
+          latest=$(printf '%s' "$wt" \
+               | grep -ioE 'latest[ _]release[ _]version[[:space:]]*=[[:space:]]*[0-9]+\.[0-9]+(\.[0-9]+)?' \
+               | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+
+          if [ -z "$latest" ]; then
+            echo "Could not parse a version — leaving state unchanged."
+            exit 0
+          fi
+          echo "Latest reported: $latest"
+
+          prev=""
+          [ -f .ue-version ] && prev=$(cat .ue-version)
+          echo "Previously seen: ${prev:-none}"
+
+          if [ "$latest" = "$prev" ]; then
+            echo "No change."
+            exit 0
+          fi
+
+          # record the new version
+          echo "$latest" > .ue-version
+          git config user.name "ue-watch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add .ue-version
+          git commit -m "UE version detected: $latest"
+          git push
+
+          # announce only on a real change (skip the very first baseline)
+          if [ -n "$prev" ] && [ -n "$WEBHOOK" ]; then
+            payload=$(jq -n --arg v "$latest" '{
+              username: "Ikarus-Servant",
+              embeds: [{
+                title: ("🎮 Unreal Engine " + $v + " is out!"),
+                url: "https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-5-release-notes",
+                description: ("Epic has released **Unreal Engine " + $v + "**. Check the official release notes for the full list of new features, improvements, and fixes."),
+                color: 1146986,
+                fields: [
+                  { name: "🔖 Version", value: $v, inline: true },
+                  { name: "📖 Release notes", value: "[Epic Dev Docs](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-5-release-notes)", inline: true }
+                ],
+                footer: { text: "Auto-detected — Hephaestus Labs UE watcher" }
+              }]
+            }')
+            curl -sS -H "Content-Type: application/json" -X POST -d "$payload" "$WEBHOOK"
+            echo "Announcement posted for $latest."
+          else
+            echo "Baseline set to $latest (no announcement on first run)."
+          fi
