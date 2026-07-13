@@ -14,7 +14,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.0";
+        public const string PluginVersion = "2.2.1";
 
         internal static AdminPanelPlugin Instance;
 
@@ -333,8 +333,6 @@ namespace AdminPanel
         }
 
         // ==================== Lifecycle ====================
-        private bool _eventSystemDisabled;
-
         private void Update()
         {
             if (Input.GetKeyDown(_toggleKey.Value))
@@ -350,16 +348,9 @@ namespace AdminPanel
                 TeleportToMapCursor();
             }
 
-            // block clicks from passing through the panel to the game's UI behind it
+            // safety: if a previous build left the UI input system disabled, restore it
             var es = UnityEngine.EventSystems.EventSystem.current;
-            if (es != null)
-            {
-                var mouse = Input.mousePosition;
-                var guiPoint = new Vector2(mouse.x, Screen.height - mouse.y);
-                var overPanel = _visible && _windowRect.Contains(guiPoint);
-                if (overPanel && !_eventSystemDisabled) { es.enabled = false; _eventSystemDisabled = true; }
-                else if (!overPanel && _eventSystemDisabled) { es.enabled = true; _eventSystemDisabled = false; }
-            }
+            if (es != null && !es.enabled) es.enabled = true;
 
             // re-apply persistent buffs when the local Player instance changes (death/respawn/teleport)
             var lp = Player.m_localPlayer;
