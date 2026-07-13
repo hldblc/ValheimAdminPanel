@@ -190,6 +190,8 @@ namespace AdminPanel
         private Vector2 _playersScroll;
         private string _broadcastText = "";
         private ConfigEntry<string> _playerNotesCfg;
+        private ConfigEntry<string> _windowRectCfg;
+        private bool _resizing;
         private Dictionary<string, string> _playerNotes;
         private string _inspectPlayerName;
         private List<(string name, int stack, int quality)> _inspectInventory;
@@ -286,6 +288,19 @@ namespace AdminPanel
             }
         }
 
+        // Hard-block the local player's attacks while the panel is open. TakeInput being false doesn't stop
+        // the same mouse click that presses a GUI button from also triggering an attack, so skip StartAttack.
+        [HarmonyPatch(typeof(Humanoid), "StartAttack")]
+        private static class BlockAttackPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(Humanoid __instance)
+            {
+                // skip the attack entirely while the panel is open (prevents click-through swings/bow)
+                return !(Instance != null && Instance._visible && __instance == Player.m_localPlayer);
+            }
+        }
+
         private void Awake()
         {
             Instance = this;
@@ -299,6 +314,17 @@ namespace AdminPanel
             _spawnPresetsCfg = Config.Bind("Creatures", "SpawnPresets", "", "Saved creature spawn presets");
             _bookmarksCfg = Config.Bind("World", "Bookmarks", "", "Saved teleport bookmarks");
             _playerNotesCfg = Config.Bind("Players", "Notes", "", "Per-player admin notes");
+            _windowRectCfg = Config.Bind("General", "WindowRect", "60,60,740,680",
+                "Admin panel window position+size x,y,width,height (auto-saved)");
+            try
+            {
+                var parts = _windowRectCfg.Value.Split(',');
+                if (parts.Length == 4 &&
+                    float.TryParse(parts[0], out var wx) && float.TryParse(parts[1], out var wy) &&
+                    float.TryParse(parts[2], out var ww) && float.TryParse(parts[3], out var wh))
+                    _windowRect = new Rect(wx, wy, ww, wh);
+            }
+            catch (Exception e) { Logger.LogWarning($"Bad WindowRect config, using default: {e.Message}"); }
             _favorites = new HashSet<string>(
                 _favoritesCfg.Value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
                 StringComparer.OrdinalIgnoreCase);
@@ -309,6 +335,8 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Cursor patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(InputBlockPatch)); }
             catch (Exception e) { Logger.LogWarning($"Input-block patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(BlockAttackPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Attack-block patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
         }
 
@@ -702,7 +730,18 @@ namespace AdminPanel
             ApplyFont();
             _windowRect = GUILayout.Window(918273, _windowRect, DrawWindow,
                 $"⚔ Valheim Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
+            // Save after the user finishes moving or resizing the window (only runs while _visible).
+            if (Event.current.type == EventType.MouseUp) SaveWindowRect();
         }
+
+        private void SaveWindowRect()
+        {
+            _windowRectCfg.Value = $"{_windowRect.x:0},{_windowRect.y:0},{_windowRect.width:0},{_windowRect.height:0}";
+            Config.Save();
+        }
+
+        // Scale a scroll-view height with the window height so a taller window shows more rows.
+        private float ListView(float reserve) => Mathf.Clamp(_windowRect.height - reserve, 160f, 4000f);
 
         private void DrawWindow(int id)
         {
@@ -731,6 +770,28 @@ namespace AdminPanel
                 case 4: DrawWorldTab(); break;
                 case 5: DrawPlayersTab(); break;
                 case 6: DrawServerTab(); break;
+            }
+
+            // Resize grip in the bottom-right corner. mousePosition inside a GUILayout.Window is relative to the
+            // window's top-left, so using it directly for width/height is correct.
+            var grip = new Rect(_windowRect.width - 22, _windowRect.height - 22, 22, 22);
+            GUI.Label(grip, "◢", _dimLabelStyle);
+            var e = Event.current;
+            if (e.type == EventType.MouseDown && grip.Contains(e.mousePosition))
+            {
+                _resizing = true;
+                e.Use();
+            }
+            else if (_resizing && e.type == EventType.MouseDrag)
+            {
+                _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, 640f, Screen.width);
+                _windowRect.height = Mathf.Clamp(e.mousePosition.y + 11, 420f, Screen.height);
+                e.Use();
+            }
+            else if (e.type == EventType.MouseUp && _resizing)
+            {
+                _resizing = false;
+                SaveWindowRect();
             }
 
             GUI.DragWindow(new Rect(0, 0, 10000, 20));
@@ -916,7 +977,7 @@ namespace AdminPanel
                 if (GUILayout.Button(GiveTargetName(others), _buttonStyle, GUILayout.Width(180)))
                     _giveTargetIndex = others.Count == 0 ? -1 : (_giveTargetIndex + 1) % others.Count;
                 GUILayout.EndHorizontal();
-                _itemScroll = GUILayout.BeginScrollView(_itemScroll, GUILayout.Height(380));
+                _itemScroll = GUILayout.BeginScrollView(_itemScroll, GUILayout.Height(ListView(300f)));
                 foreach (var kit in GearKits)
                 {
                     GUILayout.BeginHorizontal();
@@ -998,7 +1059,7 @@ namespace AdminPanel
             // BeginScrollView reassigning _itemScroll mid-pass causes the IMGUI "control N in a group with only N
             // controls" crash (same fix as DrawCreaturesTab).
             const float rowH = 32f;
-            const float viewH = 350f;
+            float viewH = ListView(330f);
             if (Event.current.type == EventType.Layout || _itemWindowList == null)
             {
                 _itemWindowList = FilteredItems();
@@ -1147,7 +1208,7 @@ namespace AdminPanel
 
             GUILayout.Space(6);
             const float rowH = 32f;
-            const float viewH = 320f;
+            float viewH = ListView(360f);
             // Snapshot the list + virtualization window ONCE per frame, on the Layout event, and reuse it for
             // Repaint/mouse passes. BeginScrollView reassigns _creatureScroll mid-pass, so deriving the window
             // live would give Layout and Repaint different control counts (the IMGUI "control N in a group with
@@ -1198,7 +1259,7 @@ namespace AdminPanel
         private void DrawBossesTab()
         {
             GUILayout.Label("Bosses — spawn directly, or grab the altar offering items:", _headerStyle);
-            _bossScroll = GUILayout.BeginScrollView(_bossScroll, GUILayout.Height(380));
+            _bossScroll = GUILayout.BeginScrollView(_bossScroll, GUILayout.Height(ListView(140f)));
             foreach (var (prefabName, label, offerPrefab, offerCount) in BossList)
             {
                 GUILayout.BeginHorizontal();
