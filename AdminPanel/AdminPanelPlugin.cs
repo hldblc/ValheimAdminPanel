@@ -267,6 +267,10 @@ namespace AdminPanel
         private GUIStyle _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle, _toggleStyle;
         private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle;
         private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
+        private Texture2D _logoTex;   // embedded logo header (null = missing/failed, panel renders without it)
+        private bool _logoTried;
+        private float _logoAspect = 3.63f;   // width/height; recomputed from the decoded texture
+        private ConfigEntry<bool> _showLogoCfg;
         private bool _skinReady;
         private bool _fontApplied;
         private float _nextFontTry;   // throttle the (expensive) font-asset scan while the native font is unresolved
@@ -395,6 +399,8 @@ namespace AdminPanel
                 "Panel background opacity in percent.", new AcceptableValueRange<int>(55, 100)));
             _cameraLockCfg = Config.Bind("UI", "CameraLockWhilePanelOpen", true,
                 "Lock mouse-look while the panel is open (like the inventory). Turn off to keep the camera live.");
+            _showLogoCfg = Config.Bind("UI", "ShowLogoHeader", true,
+                "Show the Advanced Admin Panel logo at the top of the panel.");
             _fontSizeLive = _fontSizeCfg.Value;
             _panelAlphaLive = _panelAlphaCfg.Value;
             try
@@ -1035,6 +1041,76 @@ namespace AdminPanel
             _fontApplied = true;
         }
 
+        // ==================== Logo header ====================
+        // Load the embedded logo once. Any failure (missing resource, decode error, stripped module)
+        // leaves _logoTex null and the panel simply renders with its text title instead.
+        private Texture2D LogoTex()
+        {
+            if (_logoTried) return _logoTex;
+            _logoTried = true;
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                var name = asm.GetManifestResourceNames()
+                    .FirstOrDefault(n => n.EndsWith("logo.png", StringComparison.OrdinalIgnoreCase));
+                if (name == null) return null;
+                byte[] bytes;
+                using (var s = asm.GetManifestResourceStream(name))
+                {
+                    if (s == null) return null;
+                    bytes = new byte[s.Length];
+                    var off = 0;
+                    while (off < bytes.Length)
+                    {
+                        var n = s.Read(bytes, off, bytes.Length - off);
+                        if (n <= 0) break;
+                        off += n;
+                    }
+                }
+                // ImageConversion lives in UnityEngine.ImageConversionModule, which targets netstandard 2.1
+                // and can't be compile-referenced from net48 — resolve LoadImage at runtime instead.
+                var loadImage = AccessTools.Method(
+                    AccessTools.TypeByName("UnityEngine.ImageConversion"), "LoadImage",
+                    new[] { typeof(Texture2D), typeof(byte[]) });
+                if (loadImage == null) return null;
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, true) { filterMode = FilterMode.Trilinear };
+                if (!(bool)loadImage.Invoke(null, new object[] { tex, bytes })) return null;
+                _logoAspect = (float)tex.width / tex.height;
+                _logoTex = tex;
+            }
+            catch (Exception e) { Logger.LogWarning($"Logo header failed to load (panel still works): {e.Message}"); }
+            return _logoTex;
+        }
+
+        // One source of truth for the drawn size so the ListView reserve always matches the header.
+        // 55% of the window width reads large without dwarfing the tabs; capped so huge windows
+        // don't turn the header into a banner.
+        private Vector2 LogoSize()
+        {
+            var w = Mathf.Min(_windowRect.width * 0.55f, 430f);
+            return new Vector2(w, w / _logoAspect);
+        }
+
+        private float LogoHeaderHeight()
+        {
+            if (_logoTex == null || _showLogoCfg == null || !_showLogoCfg.Value) return 0f;
+            return LogoSize().y + 6f;
+        }
+
+        private void DrawLogoHeader()
+        {
+            if (LogoTex() == null || !_showLogoCfg.Value) return;
+            var size = LogoSize();
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            var r = GUILayoutUtility.GetRect(size.x, size.y, GUILayout.Width(size.x), GUILayout.Height(size.y));
+            if (Event.current.type == EventType.Repaint)
+                GUI.DrawTexture(r, _logoTex, ScaleMode.ScaleToFit, true);
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6);
+        }
+
         // ==================== GUI root ====================
         private void OnGUI()
         {
@@ -1051,8 +1127,11 @@ namespace AdminPanel
             // GUI.Window (NOT GUILayout.Window) uses the rect size exactly. GUILayout.Window auto-grows to fit
             // its content, which — combined with the list height being derived from the window height — created a
             // runaway feedback loop that stretched the panel to full screen. GUI.Window breaks that loop.
+            // With the logo header shown the title text would be redundant — keep just the close hint.
+            var logoShown = _logoTex != null && _showLogoCfg.Value;
             _windowRect = GUI.Window(918273, _windowRect, DrawWindow,
-                $"⚔ Valheim Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
+                logoShown ? $"[{_toggleKey.Value} to close]"
+                          : $"⚔ Advanced Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
             // Save after the user finishes moving or resizing the window (only runs while _visible).
             if (Event.current.type == EventType.MouseUp) SaveWindowRect();
         }
@@ -1074,7 +1153,8 @@ namespace AdminPanel
         // The reserves were tuned at font size 13; bigger fonts grow the title/tab rows, so compensate here
         // centrally instead of at every call site.
         private float ListView(float reserve) =>
-            Mathf.Clamp(_windowRect.height - reserve - Mathf.Max(0, _fontSizeLive - 13) * 3f, 160f, 4000f);
+            Mathf.Clamp(_windowRect.height - reserve - LogoHeaderHeight()
+                        - Mathf.Max(0, _fontSizeLive - 13) * 3f, 160f, 4000f);
 
         private void DrawWindow(int id)
         {
@@ -1093,6 +1173,8 @@ namespace AdminPanel
                 _openDropdownLayout = _openDropdown;
                 _rebindTargetLayout = _rebindTarget;
             }
+
+            DrawLogoHeader();
 
             GUILayout.BeginHorizontal();
             for (var i = 0; i < TabNames.Length; i++)
@@ -2406,6 +2488,10 @@ namespace AdminPanel
                 _panelAlphaLive = newAlpha;
                 ApplyPanelAlpha();
             }
+
+            GUILayout.Space(6);
+            var logo = GUILayout.Toggle(_showLogoCfg.Value, " Show logo header", _toggleStyle);
+            if (logo != _showLogoCfg.Value) { _showLogoCfg.Value = logo; Config.Save(); }
 
             GUILayout.Space(10);
             GUILayout.Label("Behavior:", _headerStyle);

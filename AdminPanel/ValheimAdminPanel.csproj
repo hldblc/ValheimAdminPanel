@@ -64,4 +64,8 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="logo.png" />
+  </ItemGroup>
+
 </Project>

@@ -1,4 +1,6 @@
-# ⚔ Valheim Admin Panel
+<p align="center">
+  <img src="AdminPanel/logo.png" alt="Advanced Admin Panel" width="720">
+</p>
 
 A full-featured in-game admin panel for Valheim dedicated servers, with **server-side admin authentication** — only Steam IDs on the server's `adminlist.txt` can use it. In everyone else's hands, the panel is completely dead.
 
@@ -6,7 +8,7 @@ A full-featured in-game admin panel for Valheim dedicated servers, with **server
 
 ## ✨ Features
 
-Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel with seven tabs:
+Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel with eight tabs:
 
 ### 🎁 Items
 - Every item in the game, organized by category (Weapons, Shields, Armor, Ammo, Tools, Food & Potions, Materials, Trophies…) with **sub-categories** — weapons by skill type, armor by slot, **materials by biome**
