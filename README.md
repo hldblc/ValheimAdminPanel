@@ -6,6 +6,12 @@ A full-featured in-game admin panel for Valheim dedicated servers, with **server
 
 ![BepInEx](https://img.shields.io/badge/BepInEx-5.4.23-blue) ![Valheim](https://img.shields.io/badge/Valheim-0.221.x-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen)
 
+<p align="center">
+  <a href="https://discord.gg/2RVn78hNrz"><img src="assets/discord.png" width="56" alt="Discord"></a><br>
+  <a href="https://discord.gg/2RVn78hNrz"><b>Join the Hephaestus Labs Discord</b></a><br>
+  <i>support · bug reports · release announcements</i>
+</p>
+
 ## ✨ Features
 
 Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel with eight tabs:
@@ -47,6 +53,12 @@ Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel wi
 ### 📊 Server
 - Live stats (world day, players online, loaded creatures, FPS)
 - Unban by Steam ID, join/leave history
+
+### ⚙ Settings
+- **Font** (Norse auto / Norse Bold / Norse / Averia Serif / Default) and **font size** — the whole panel scales
+- **Panel opacity**, **logo header toggle**, **camera-lock-while-open toggle**
+- **Rebind hotkeys** (panel key, map-teleport key) straight from the UI
+- Reset window / reset appearance — everything persists in the BepInEx config
 
 ## 🔒 Security model
 
@@ -91,3 +103,7 @@ Config file is created at `BepInEx/config/com.halitb.adminpanel.cfg`:
 ## 📜 License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+<sub><i>Advanced Admin Panel is an unofficial, fan-made mod and is not affiliated with or endorsed by Iron Gate AB or Coffee Stain Publishing. Valheim™ and its visual style are the property of Iron Gate AB. The logo is fan art inspired by Valheim's official logo design.</i></sub>
