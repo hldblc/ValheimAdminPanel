@@ -1012,6 +1012,8 @@ namespace AdminPanel
         }
 
         // Scale a scroll-view height with the window height so a taller window shows more rows.
+        // reserve must cover everything that is NOT the scroll view: the title bar + tab row + spacing
+        // (~75px) plus any per-tab content outside the list, plus ~25px so the resize grip stays clickable.
         private float ListView(float reserve) => Mathf.Clamp(_windowRect.height - reserve, 160f, 4000f);
 
         private void DrawWindow(int id)
@@ -1645,7 +1647,7 @@ namespace AdminPanel
         {
             var player = LocalPlayer;
             EnsureBaseStats();
-            _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(Mathf.Min(470f, ListView(150f))));
+            _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(ListView(100f)));
 
             GUILayout.Label("Toggles:", _headerStyle);
             var god = GUILayout.Toggle(_god, " God mode (no damage)", _toggleStyle);
@@ -1830,7 +1832,7 @@ namespace AdminPanel
 
         private void DrawWorldTab()
         {
-            _worldScroll = GUILayout.BeginScrollView(_worldScroll, GUILayout.Height(Mathf.Min(470f, ListView(150f))));
+            _worldScroll = GUILayout.BeginScrollView(_worldScroll, GUILayout.Height(ListView(100f)));
 
             // Capture the environment manager once. It can be momentarily null (e.g. during a world load/teardown),
             // and it drives the time/weather/wind actions below — dereferencing it raw would throw an NRE out of
@@ -2210,7 +2212,7 @@ namespace AdminPanel
         // ==================== Server tab ====================
         private void DrawServerTab()
         {
-            _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(Mathf.Min(470f, ListView(150f))));
+            _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(ListView(100f)));
 
             GUILayout.Label("Live stats:", _headerStyle);
             var day = EnvMan.instance != null && ZNet.instance != null
