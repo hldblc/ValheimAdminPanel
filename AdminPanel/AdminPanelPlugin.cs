@@ -22,11 +22,23 @@ namespace AdminPanel
         private ConfigEntry<KeyCode> _toggleKey;
         private ConfigEntry<KeyCode> _mapTpKey;
 
+        // ==================== Settings tab state ====================
+        private ConfigEntry<string> _fontChoiceCfg;
+        private ConfigEntry<int> _fontSizeCfg;
+        private ConfigEntry<int> _panelAlphaCfg;
+        private ConfigEntry<bool> _cameraLockCfg;
+        private int _fontSizeLive;      // sliders preview live via these; committed to config on mouse-release
+        private int _panelAlphaLive;
+        private int _rebindTarget;         // 0 = none, 1 = panel toggle key, 2 = map-teleport key
+        private int _rebindTargetLayout;   // snapshot taken on the Layout pass (same pattern as _openDropdownLayout)
+        private Vector2 _settingsScroll;
+        private static readonly string[] FontChoices = { "Norse (auto)", "Norse Bold", "Norse", "Averia Serif", "Default" };
+
         private bool _visible;
         private Rect _windowRect = new Rect(60, 60, 740, 680);
         private Rect _lastSavedRect;   // last rect persisted to disk — save only when the rect actually changes
         private int _tab;
-        private static readonly string[] TabNames = { "Items", "Creatures", "Bosses", "Player", "World", "Players", "Server" };
+        private static readonly string[] TabNames = { "Items", "Creatures", "Bosses", "Player", "World", "Players", "Server", "Settings" };
 
         // ==================== Items tab state ====================
         private string _itemSearch = "";
@@ -254,6 +266,7 @@ namespace AdminPanel
         // ==================== Skin ====================
         private GUIStyle _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle, _toggleStyle;
         private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle;
+        private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
         private bool _skinReady;
         private bool _fontApplied;
         private float _nextFontTry;   // throttle the (expensive) font-asset scan while the native font is unresolved
@@ -350,7 +363,10 @@ namespace AdminPanel
             [HarmonyPostfix]
             private static void Postfix(ref Vector2 __result)
             {
-                if (Instance != null && Instance._visible) __result = Vector2.zero;
+                // honors the Settings-tab toggle; null check covers the window before the config binds in Awake
+                if (Instance != null && Instance._visible &&
+                    (Instance._cameraLockCfg == null || Instance._cameraLockCfg.Value))
+                    __result = Vector2.zero;
             }
         }
 
@@ -369,6 +385,18 @@ namespace AdminPanel
             _playerNotesCfg = Config.Bind("Players", "Notes", "", "Per-player admin notes");
             _windowRectCfg = Config.Bind("General", "WindowRect", "60,60,740,680",
                 "Admin panel window position+size x,y,width,height (auto-saved)");
+            _fontChoiceCfg = Config.Bind("UI", "Font", FontChoices[0], new ConfigDescription(
+                "Panel font. 'Norse (auto)' picks the best available game font; 'Default' is Unity's built-in font.",
+                new AcceptableValueList<string>(FontChoices)));
+            _fontSizeCfg = Config.Bind("UI", "FontSize", 13, new ConfigDescription(
+                "Base font size for panel text; headers, tabs and the title scale with it.",
+                new AcceptableValueRange<int>(10, 20)));
+            _panelAlphaCfg = Config.Bind("UI", "PanelOpacity", 96, new ConfigDescription(
+                "Panel background opacity in percent.", new AcceptableValueRange<int>(55, 100)));
+            _cameraLockCfg = Config.Bind("UI", "CameraLockWhilePanelOpen", true,
+                "Lock mouse-look while the panel is open (like the inventory). Turn off to keep the camera live.");
+            _fontSizeLive = _fontSizeCfg.Value;
+            _panelAlphaLive = _panelAlphaCfg.Value;
             try
             {
                 var parts = _windowRectCfg.Value.Split(',');
@@ -482,11 +510,13 @@ namespace AdminPanel
         // ==================== Lifecycle ====================
         private void Update()
         {
-            if (Input.GetKeyDown(_toggleKey.Value))
+            // While the Settings tab is listening for a rebind, the hotkeys are suppressed so pressing the key
+            // being (re)assigned doesn't also fire its old action in the same frame.
+            if (_rebindTarget == 0 && Input.GetKeyDown(_toggleKey.Value))
             {
                 _visible = !_visible;
                 if (_visible) RefreshCaches();
-                else { FlushNotes(); _openDropdown = null; }   // persist edited notes + drop leaked UI state on close
+                else { FlushNotes(); CommitUiSettings(); _openDropdown = null; }   // persist edits + drop leaked UI state on close
             }
 
             // Lazily (re)build the item/creature indices once their game DBs finish loading, in case the panel was
@@ -496,11 +526,15 @@ namespace AdminPanel
                 RefreshCaches();
 
             // map-point teleport: full map open + hover a spot + press the map-teleport key
-            if (Input.GetKeyDown(_mapTpKey.Value) && LocalPlayer != null &&
+            if (_rebindTarget == 0 && Input.GetKeyDown(_mapTpKey.Value) && LocalPlayer != null &&
                 Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large)
             {
                 TeleportToMapCursor();
             }
+
+            // Commit slider-adjusted UI settings once the drag ends (mirrors SaveWindowRect's write-on-release,
+            // so dragging a slider never writes the config file per tick).
+            if (_visible && Input.GetMouseButtonUp(0)) CommitUiSettings();
 
             // safety: if a previous build left the UI input system disabled, restore it
             var es = UnityEngine.EventSystems.EventSystem.current;
@@ -868,7 +902,7 @@ namespace AdminPanel
         private void EnsureSkin()
         {
             if (_skinReady) return;
-            var wood = SolidTex(new Color(0.118f, 0.082f, 0.055f, 0.96f));
+            _texWood = SolidTex(WoodColor(_panelAlphaLive));
             var woodLight = SolidTex(new Color(0.220f, 0.160f, 0.100f, 1f));
             var woodHover = SolidTex(new Color(0.310f, 0.230f, 0.130f, 1f));
             var woodActive = SolidTex(new Color(0.160f, 0.115f, 0.070f, 1f));
@@ -877,8 +911,8 @@ namespace AdminPanel
             var gold = new Color(0.980f, 0.780f, 0.350f);
 
             _windowStyle = new GUIStyle(GUI.skin.window);
-            _windowStyle.normal.background = wood;
-            _windowStyle.onNormal.background = wood;
+            _windowStyle.normal.background = _texWood;
+            _windowStyle.onNormal.background = _texWood;
             _windowStyle.normal.textColor = gold;
             _windowStyle.onNormal.textColor = gold;
             _windowStyle.fontStyle = FontStyle.Bold;
@@ -944,6 +978,8 @@ namespace AdminPanel
             _dimLabelStyle = new GUIStyle(_labelStyle) { fontSize = 12 };
             _dimLabelStyle.normal.textColor = new Color(0.62f, 0.55f, 0.44f);
 
+            ApplyFontSizes();   // override the hardcoded defaults above with the configured base size
+
             _skinReady = true;
         }
 
@@ -956,19 +992,39 @@ namespace AdminPanel
                 ?? fonts.FirstOrDefault(f => f.name.IndexOf("Norse", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        // Apply the native font to every text GUIStyle once it becomes available.
+        // Resolve the font the Settings tab picked. Any choice that can't be found falls back to null,
+        // which GUIStyle renders with Unity's built-in default font.
+        private static Font FindFontFor(string choice)
+        {
+            var fonts = Resources.FindObjectsOfTypeAll<Font>();
+            switch (choice)
+            {
+                case "Norse Bold":
+                    return fonts.FirstOrDefault(f => f.name.IndexOf("Norsebold", StringComparison.OrdinalIgnoreCase) >= 0);
+                case "Norse":
+                    return fonts.FirstOrDefault(f => f.name.IndexOf("Norse", StringComparison.OrdinalIgnoreCase) >= 0
+                                                  && f.name.IndexOf("bold", StringComparison.OrdinalIgnoreCase) < 0);
+                case "Averia Serif":
+                    return fonts.FirstOrDefault(f => f.name.IndexOf("AveriaSerifLibre", StringComparison.OrdinalIgnoreCase) >= 0);
+                default:   // "Norse (auto)" — best available game font
+                    return FindValheimFont();
+            }
+        }
+
+        // Apply the configured font to every text GUIStyle once it becomes available.
         private void ApplyFont()
         {
             if (_fontApplied) return;
-            // Throttle the engine-wide font scan to at most once per second (it is otherwise called every OnGUI
-            // pass), and give up after a few tries so a font that never resolves can't peg the frame forever.
-            if (Time.time < _nextFontTry) return;
-            _nextFontTry = Time.time + 1f;
-            var f = FindValheimFont();
-            if (f == null)
+            Font f = null;
+            if (_fontChoiceCfg.Value != "Default")
             {
-                if (++_fontTries >= 10) _fontApplied = true; // give up gracefully, keep the default GUI font
-                return;
+                // Throttle the engine-wide font scan to at most once per second (it is otherwise called every OnGUI
+                // pass), and give up after a few tries so a font that never resolves can't peg the frame forever
+                // (falling back to the default font instead).
+                if (Time.time < _nextFontTry) return;
+                _nextFontTry = Time.time + 1f;
+                f = FindFontFor(_fontChoiceCfg.Value);
+                if (f == null && ++_fontTries < 10) return;
             }
             foreach (var s in new[]
             {
@@ -987,7 +1043,8 @@ namespace AdminPanel
             ApplyFont();
             // Keep the window sanely sized and fully on-screen. This also self-heals a bad saved size
             // (e.g. one left over from an older build) so it can never get stuck stretched off-screen.
-            _windowRect.width = Mathf.Clamp(_windowRect.width, 560f, Screen.width);
+            // Min width 660 keeps all 8 tabs clickable in one row (the tab row can't shrink below its text).
+            _windowRect.width = Mathf.Clamp(_windowRect.width, 660f, Screen.width);
             _windowRect.height = Mathf.Clamp(_windowRect.height, 300f, Screen.height);
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Mathf.Max(0f, Screen.width - _windowRect.width));
             _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Mathf.Max(0f, Screen.height - _windowRect.height));
@@ -1014,7 +1071,10 @@ namespace AdminPanel
         // Scale a scroll-view height with the window height so a taller window shows more rows.
         // reserve must cover everything that is NOT the scroll view: the title bar + tab row + spacing
         // (~75px) plus any per-tab content outside the list, plus ~25px so the resize grip stays clickable.
-        private float ListView(float reserve) => Mathf.Clamp(_windowRect.height - reserve, 160f, 4000f);
+        // The reserves were tuned at font size 13; bigger fonts grow the title/tab rows, so compensate here
+        // centrally instead of at every call site.
+        private float ListView(float reserve) =>
+            Mathf.Clamp(_windowRect.height - reserve - Mathf.Max(0, _fontSizeLive - 13) * 3f, 160f, 4000f);
 
         private void DrawWindow(int id)
         {
@@ -1028,13 +1088,17 @@ namespace AdminPanel
             // Snapshot which dropdown is open on the Layout pass so option controls emitted on later passes of the
             // same frame match the Layout control count (a live _openDropdown flips on the click/MouseUp pass,
             // diverging from Layout -> IMGUI "control N in a group with only M controls" exception).
-            if (Event.current.type == EventType.Layout) _openDropdownLayout = _openDropdown;
+            if (Event.current.type == EventType.Layout)
+            {
+                _openDropdownLayout = _openDropdown;
+                _rebindTargetLayout = _rebindTarget;
+            }
 
             GUILayout.BeginHorizontal();
             for (var i = 0; i < TabNames.Length; i++)
             {
                 var pressed = GUILayout.Toggle(_tab == i, TabNames[i], _tabStyle);
-                if (pressed && _tab != i) { _tab = i; _openDropdown = null; }
+                if (pressed && _tab != i) { _tab = i; _openDropdown = null; _rebindTarget = 0; }
             }
             GUILayout.EndHorizontal();
             GUILayout.Space(14);
@@ -1053,6 +1117,7 @@ namespace AdminPanel
                     case 4: DrawWorldTab(); break;
                     case 5: DrawPlayersTab(); break;
                     case 6: DrawServerTab(); break;
+                    case 7: DrawSettingsTab(); break;
                 }
             }
             catch (Exception ex) { Logger.LogError($"AdminPanel tab {_tab} draw error: {ex.Message}"); }
@@ -1069,7 +1134,7 @@ namespace AdminPanel
             }
             else if (_resizing && e.type == EventType.MouseDrag)
             {
-                _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, 560f, Screen.width - _windowRect.x);
+                _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, 660f, Screen.width - _windowRect.x);
                 _windowRect.height = Mathf.Clamp(e.mousePosition.y + 11, 300f, Screen.height - _windowRect.y);
                 e.Use();
             }
@@ -2247,5 +2312,162 @@ namespace AdminPanel
         }
 
         private string _unbanId = "";
+
+        // ==================== Settings tab ====================
+        private static Color WoodColor(int alphaPct) =>
+            new Color(0.118f, 0.082f, 0.055f, Mathf.Clamp(alphaPct, 55, 100) / 100f);
+
+        // All sizes derive from one base so the hierarchy (headers/title slightly larger, chips/dim smaller)
+        // survives any base the user picks. Mutating fontSize on the live styles is safe mid-frame: it changes
+        // no control counts, so IMGUI's Layout/Repaint passes stay consistent. At the default base (13) every
+        // value below equals the pre-settings hardcoded sizes, so a fresh install renders pixel-identical.
+        private void ApplyFontSizes()
+        {
+            var s = Mathf.Clamp(_fontSizeLive, 10, 20);
+            _labelStyle.fontSize = s;
+            _buttonStyle.fontSize = s;
+            _toggleStyle.fontSize = s;
+            // 0 = "use the font's own default size", which is exactly how text fields rendered before this
+            // setting existed — keep that at the default base so nothing shifts for existing users.
+            _textFieldStyle.fontSize = s == 13 ? 0 : s;
+            _headerStyle.fontSize = s + 1;
+            _windowStyle.fontSize = Mathf.Min(s + 2, 18);
+            // The tab bar and category chips must stay one row wide even at the largest base sizes
+            // (the row can't shrink below its text and would push the last tabs off-window), so cap them.
+            _tabStyle.fontSize = Mathf.Clamp(s + 1, 12, 15);
+            _catStyle.fontSize = Mathf.Clamp(s - 1, 10, 14);
+            _dimLabelStyle.fontSize = Mathf.Max(s - 1, 10);
+        }
+
+        // Recolor the window-background texture in place — no new textures and no style rebuild, so the
+        // opacity slider can preview live without leaking a Texture2D per tick.
+        private void ApplyPanelAlpha()
+        {
+            if (_texWood == null) return;
+            _texWood.SetPixel(0, 0, WoodColor(_panelAlphaLive));
+            _texWood.Apply();
+        }
+
+        // Sliders preview by mutating the live styles/texture every tick; the config file is only written
+        // here — on mouse-release and panel close (same anti-thrash pattern as SaveWindowRect).
+        private void CommitUiSettings()
+        {
+            if (_fontSizeCfg == null || _panelAlphaCfg == null) return;
+            var dirty = false;
+            if (_fontSizeCfg.Value != _fontSizeLive) { _fontSizeCfg.Value = _fontSizeLive; dirty = true; }
+            if (_panelAlphaCfg.Value != _panelAlphaLive) { _panelAlphaCfg.Value = _panelAlphaLive; dirty = true; }
+            if (dirty) Config.Save();
+        }
+
+        private void SelectFont(string choice)
+        {
+            if (_fontChoiceCfg.Value == choice) return;
+            _fontChoiceCfg.Value = choice;   // one write per click — saved immediately
+            _fontApplied = false;            // make ApplyFont re-resolve on the next OnGUI pass
+            _fontTries = 0;
+            _nextFontTry = 0f;
+        }
+
+        private void DrawSettingsTab()
+        {
+            _settingsScroll = GUILayout.BeginScrollView(_settingsScroll, GUILayout.Height(ListView(100f)));
+
+            GUILayout.Label("Appearance:", _headerStyle);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Font:", _labelStyle, GUILayout.Width(90));
+            foreach (var choice in FontChoices)
+            {
+                var on = _fontChoiceCfg.Value == choice;
+                if (GUILayout.Toggle(on, choice, _catStyle) && !on) SelectFont(choice);
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Label("'Norse (auto)' picks the best available game font. A font the game hasn't loaded falls back to Default.", _dimLabelStyle);
+
+            GUILayout.Space(6);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Font size: {_fontSizeLive}", _labelStyle, GUILayout.Width(120));
+            var newSize = Mathf.RoundToInt(GUILayout.HorizontalSlider(_fontSizeLive, 10f, 20f, GUILayout.Width(220)));
+            if (GUILayout.Button("−", _buttonStyle, GUILayout.Width(30))) newSize = Mathf.Max(10, _fontSizeLive - 1);
+            if (GUILayout.Button("+", _buttonStyle, GUILayout.Width(30))) newSize = Mathf.Min(20, _fontSizeLive + 1);
+            GUILayout.EndHorizontal();
+            if (newSize != _fontSizeLive)
+            {
+                _fontSizeLive = newSize;
+                ApplyFontSizes();   // live preview; committed to disk on mouse-release (CommitUiSettings)
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Opacity: {_panelAlphaLive}%", _labelStyle, GUILayout.Width(120));
+            var newAlpha = Mathf.RoundToInt(GUILayout.HorizontalSlider(_panelAlphaLive, 55f, 100f, GUILayout.Width(220)));
+            GUILayout.EndHorizontal();
+            if (newAlpha != _panelAlphaLive)
+            {
+                _panelAlphaLive = newAlpha;
+                ApplyPanelAlpha();
+            }
+
+            GUILayout.Space(10);
+            GUILayout.Label("Behavior:", _headerStyle);
+            var cam = GUILayout.Toggle(_cameraLockCfg.Value, " Lock camera while the panel is open (like the inventory)", _toggleStyle);
+            if (cam != _cameraLockCfg.Value) { _cameraLockCfg.Value = cam; Config.Save(); }
+
+            GUILayout.Space(10);
+            GUILayout.Label("Hotkeys:", _headerStyle);
+            DrawRebindRow("Open / close panel", _toggleKey, 1);
+            DrawRebindRow("Map teleport", _mapTpKey, 2);
+            // Emit the "listening" hint only when the Layout pass saw the rebind active (same control-count
+            // rule as _openDropdownLayout: _rebindTarget flips mid-frame on the click pass).
+            if (_rebindTargetLayout != 0)
+                GUILayout.Label("Press the new key…   (Esc cancels)", _headerStyle);
+            if (_rebindTarget != 0)
+            {
+                var ev = Event.current;
+                if (ev.type == EventType.KeyDown && ev.keyCode != KeyCode.None)
+                {
+                    if (ev.keyCode != KeyCode.Escape)
+                    {
+                        var target = _rebindTarget == 1 ? _toggleKey : _mapTpKey;
+                        target.Value = ev.keyCode;
+                        Config.Save();
+                    }
+                    _rebindTarget = 0;
+                    ev.Use();
+                }
+            }
+
+            GUILayout.Space(10);
+            GUILayout.Label("Reset:", _headerStyle);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Reset window size & position", _buttonStyle, GUILayout.Width(230)))
+            {
+                _windowRect = new Rect(60, 60, 740, 680);
+                SaveWindowRect();
+            }
+            if (GUILayout.Button("Reset appearance", _buttonStyle, GUILayout.Width(160)))
+            {
+                _fontSizeLive = 13;
+                _panelAlphaLive = 96;
+                ApplyFontSizes();
+                ApplyPanelAlpha();
+                CommitUiSettings();
+                SelectFont(FontChoices[0]);
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Label("Settings are saved to the BepInEx config file and survive restarts.", _dimLabelStyle);
+
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawRebindRow(string label, ConfigEntry<KeyCode> entry, int target)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"{label}:", _labelStyle, GUILayout.Width(170));
+            GUILayout.Label($"[{entry.Value}]", _headerStyle, GUILayout.Width(100));
+            var listening = _rebindTarget == target;
+            if (GUILayout.Button(listening ? "Listening…" : "Rebind", _buttonStyle, GUILayout.Width(110)))
+                _rebindTarget = listening ? 0 : target;
+            GUILayout.EndHorizontal();
+        }
     }
 }
