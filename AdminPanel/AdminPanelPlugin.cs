@@ -15,7 +15,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.4";
+        public const string PluginVersion = "2.2.5";
 
         internal static AdminPanelPlugin Instance;
 
