@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
@@ -15,7 +16,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.7";
+        public const string PluginVersion = "2.2.8";
 
         internal static AdminPanelPlugin Instance;
 
@@ -250,6 +251,43 @@ namespace AdminPanel
             "surtlings", "wolves", "bats", "army_charred"
         };
 
+        // ==================== Side window (What's New / Bug Report) ====================
+        private enum SideMode { None, WhatsNew, BugReport }
+        private SideMode _sideMode = SideMode.None;
+        private SideMode _sideModeLayout;             // Layout-pass snapshot (same control-count rule as _openDropdownLayout)
+        private Vector2 _sideScroll;
+        private ConfigEntry<bool> _autoWhatsNewCfg;   // auto-open What's New once per new version
+        private ConfigEntry<string> _seenVersionCfg;  // last version whose What's New was shown
+        private ConfigEntry<string> _bugWebhookCfg;   // Discord webhook receiving in-panel bug reports ("" = sending disabled)
+        private ConfigEntry<string> _lastDeathCfg;    // "x,y,z" of the local admin's last death ("" = none yet)
+        private string _bugText = "";
+        private bool _bugAttachShot = true;
+        private volatile string _bugStatus;           // result line from the async sender (worker thread writes it)
+        private string _bugStatusLayout;              // Layout-pass snapshot — the status label must not (dis)appear mid-frame
+        private bool _bugCoolLayout;                  // Layout-pass snapshot of the cooldown state (same reason)
+        private bool _bugSending;
+        private float _nextBugSend;                   // client-side cooldown so the webhook can't be spammed
+        private const string DiscordInvite = "https://discord.gg/2RVn78hNrz";
+
+        // ==================== Update check ====================
+        private volatile string _updateAvailable;   // newer version string once the check finds one (null = none/unknown)
+        private string _updateBannerLayout;         // Layout-pass snapshot — the banner must not appear mid-frame
+        private const string ReleasesApi = "https://api.github.com/repos/hldblc/ValheimAdminPanel/releases/latest";
+        private const string ReleasesPage = "https://github.com/hldblc/ValheimAdminPanel/releases/latest";
+        // Baked-in so reports work out of the box; server owners can point BugReport.WebhookUrl elsewhere.
+        // Targets the 🐞-bug-reports FORUM channel, so every payload must carry a thread_name (see PostToWebhook).
+        private const string DefaultBugWebhook =
+            "https://discord.com/api/webhooks/1527589135672672266/vqCLH1pZV8mRtKauUCcRxExWGwTazxkSJ6gz75Ey6yQoSfriVnuc4b07e3DYNvCaUPK3";
+
+        private const string WhatsNewText =
+            "• Panel styles no longer break after logging out to the menu and back in.\n\n" +
+            "• All tabs reorganized with section dividers for readability.\n\n" +
+            "• This side panel: What's New after updates (toggle in Settings) and in-panel bug reports " +
+            "with optional screenshot.\n\n" +
+            "• New: teleport to your last death point (Player tab → Quick actions).\n\n" +
+            "• New: the panel tells you when a newer version is released (banner at the top).\n\n" +
+            "• 2.2.7: fixed single-player / listen-server hosts being denied all spawn & give actions.";
+
         // ==================== Bosses ====================
         private Vector2 _bossScroll;
         private static readonly (string Prefab, string Label, string OfferPrefab, int OfferCount)[] BossList =
@@ -265,14 +303,17 @@ namespace AdminPanel
 
         // ==================== Skin ====================
         private GUIStyle _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle, _toggleStyle;
-        private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle;
+        private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle, _textAreaStyle;
         private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
+        private Texture2D _texRule;   // thin gold rule used by DrawSection dividers
         private Texture2D _logoTex;   // embedded logo header (null = missing/failed, panel renders without it)
         private bool _logoTried;
         private float _logoAspect = 3.63f;   // width/height; recomputed from the decoded texture
         private ConfigEntry<bool> _showLogoCfg;
         private bool _skinReady;
         private bool _fontApplied;
+        private Font _appliedFont;    // the font actually applied to the styles (null = Unity default) — destroyed-check canary
+        private bool _wasInWorld;     // tracks ZNet presence so per-session state resets exactly once per logout
         private float _nextFontTry;   // throttle the (expensive) font-asset scan while the native font is unresolved
         private int _fontTries;       // give up after a few attempts so the scan never runs every frame forever
 
@@ -374,6 +415,46 @@ namespace AdminPanel
             }
         }
 
+        // Record where the local player died so the Player tab can teleport back there. Prefix, because the
+        // position must be read before OnDeath hands the body to the ragdoll/teardown path. Persisted to
+        // config so the death point survives a relog (deaths are rare; one small config write is fine).
+        [HarmonyPatch(typeof(Player), "OnDeath")]
+        private static class DeathPointPatch
+        {
+            [HarmonyPrefix]
+            private static void Prefix(Player __instance)
+            {
+                if (Instance == null || __instance == null || __instance != Player.m_localPlayer) return;
+                var p = __instance.transform.position;
+                Instance._lastDeathCfg.Value =
+                    string.Format(CultureInfo.InvariantCulture, "{0:0.#},{1:0.#},{2:0.#}", p.x, p.y, p.z);
+                Instance.Config.Save();
+            }
+        }
+
+        // While the panel is open, zero the scroll wheel the same way CameraLockPatch zeroes mouse-look:
+        // GameCamera reads its zoom through ZInput.GetMouseScrollWheel(), so scrolling a panel list was also
+        // zooming the camera. IMGUI scroll views read Unity's own event stream, not ZInput, so the panel
+        // keeps scrolling normally. Honors the same Settings toggle as the camera lock, resolved by name for
+        // the same reason (ZInput lives in assembly_utils; a rename makes the patch inert, never load-fatal).
+        [HarmonyPatch]
+        private static class ScrollLockPatch
+        {
+            private static System.Reflection.MethodBase TargetMethod()
+            {
+                var t = AccessTools.TypeByName("ZInput");
+                return t == null ? null : AccessTools.Method(t, "GetMouseScrollWheel", Type.EmptyTypes);
+            }
+
+            [HarmonyPostfix]
+            private static void Postfix(ref float __result)
+            {
+                if (Instance != null && Instance._visible &&
+                    (Instance._cameraLockCfg == null || Instance._cameraLockCfg.Value))
+                    __result = 0f;
+            }
+        }
+
         private void Awake()
         {
             Instance = this;
@@ -401,6 +482,14 @@ namespace AdminPanel
                 "Lock mouse-look while the panel is open (like the inventory). Turn off to keep the camera live.");
             _showLogoCfg = Config.Bind("UI", "ShowLogoHeader", true,
                 "Show the Advanced Admin Panel logo at the top of the panel.");
+            _autoWhatsNewCfg = Config.Bind("UI", "ShowWhatsNewOnUpdate", true,
+                "Open the What's New side panel once after the mod updates.");
+            _seenVersionCfg = Config.Bind("UI", "WhatsNewSeenVersion", "",
+                "Last version whose What's New was shown (internal bookkeeping).");
+            _bugWebhookCfg = Config.Bind("BugReport", "WebhookUrl", DefaultBugWebhook,
+                "Discord webhook that receives in-panel bug reports. Empty disables the Send button.");
+            _lastDeathCfg = Config.Bind("Player", "LastDeathPos", "",
+                "Your last death position, auto-recorded for the 'TP to last death' button (x,y,z).");
             _fontSizeLive = _fontSizeCfg.Value;
             _panelAlphaLive = _panelAlphaCfg.Value;
             try
@@ -427,7 +516,35 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Attack-block patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(CameraLockPatch)); }
             catch (Exception e) { Logger.LogWarning($"Camera-lock patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(DeathPointPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Death-point patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(ScrollLockPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Scroll-lock patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
+            StartUpdateCheck();
+        }
+
+        // One GitHub-releases lookup per game launch, on a worker thread — the game never waits on it.
+        // Any failure (offline, rate-limited, renamed repo) just means no banner.
+        private void StartUpdateCheck()
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
+                    using (var http = new System.Net.Http.HttpClient())
+                    {
+                        http.Timeout = TimeSpan.FromSeconds(10);
+                        http.DefaultRequestHeaders.UserAgent.ParseAdd("AdvancedAdminPanel/" + PluginVersion);   // GitHub requires a UA
+                        var json = http.GetStringAsync(ReleasesApi).GetAwaiter().GetResult();
+                        var m = System.Text.RegularExpressions.Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9.]+)\"");
+                        if (m.Success && new System.Version(m.Groups[1].Value) > new System.Version(PluginVersion))
+                            _updateAvailable = m.Groups[1].Value;
+                    }
+                }
+                catch { /* stay silent — an update notice is never worth an error */ }
+            });
         }
 
         // The '|' record and '=' field separators are structural, so any '|'/'=' inside a key or value must be
@@ -521,7 +638,18 @@ namespace AdminPanel
             if (_rebindTarget == 0 && Input.GetKeyDown(_toggleKey.Value))
             {
                 _visible = !_visible;
-                if (_visible) RefreshCaches();
+                if (_visible)
+                {
+                    RefreshCaches();
+                    // One-shot What's New after an update (opt-out in Settings). Marked seen immediately so
+                    // closing it without reading doesn't re-trigger it every open.
+                    if (_autoWhatsNewCfg.Value && _seenVersionCfg.Value != PluginVersion)
+                    {
+                        _sideMode = SideMode.WhatsNew;
+                        _seenVersionCfg.Value = PluginVersion;
+                        Config.Save();
+                    }
+                }
                 else { FlushNotes(); CommitUiSettings(); _openDropdown = null; }   // persist edits + drop leaked UI state on close
             }
 
@@ -545,6 +673,16 @@ namespace AdminPanel
             // safety: if a previous build left the UI input system disabled, restore it
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es != null && !es.enabled) es.enabled = true;
+
+            // Per-session state reset, fired once when leaving a world. Logout destroys the objects behind
+            // the caches (ObjectDB prefabs, sprites, ZNet roster), so drop everything that points at them
+            // and let the existing lazy rebuilds re-create it all on the next login.
+            if (ZNet.instance != null) _wasInWorld = true;
+            else if (_wasInWorld)
+            {
+                _wasInWorld = false;
+                ResetSessionState();
+            }
 
             // re-apply persistent buffs when the local Player instance changes (death/respawn/teleport)
             var lp = Player.m_localPlayer;
@@ -592,6 +730,31 @@ namespace AdminPanel
         }
 
         private void OnDisable() => FlushNotes();   // last-chance persist if the plugin is unloaded with edits pending
+
+        // Everything here references per-world objects (prefabs, sprites, peers) that logout destroys.
+        // Cheat flags (_god/_ghost/...) deliberately survive — ReapplyPlayerState restores them on the next
+        // spawn, and the skin textures/font self-heal separately (SolidTex hideFlags + ApplyFont canary).
+        private void ResetSessionState()
+        {
+            FlushNotes();
+            _visible = false;                       // panel is meaningless at the main menu; reopen re-runs RefreshCaches
+            _itemIndex = null; _seIndex = null;
+            _creatureIndex = null; _creatureCats = null;
+            _filteredItemsCache = null; _itemFilterKey = "";
+            _filteredCreaturesCache = null; _creatureFilterKey = "";
+            _seFilteredCache = null; _seFilterKey = null;
+            _subCatsCache = null; _subCatsKey = null;
+            _itemWindowList = null; _creWindowList = null;
+            _othersSnapshot = null;
+            _recentItems.Clear(); _recentVersion++;  // entries hold dead ItemDrop/Sprite refs from the old world
+            _giveTargetId = 0;
+            _openDropdown = null; _openDropdownLayout = null;
+            _sideMode = SideMode.None;
+            _inspectPlayerName = null; _inspectInventory = null; _inspectPending = false;
+            _joinLog.Clear(); _lastSeenPlayers.Clear(); _seenPlayersInit = false;
+            _appliedTo = null;
+            _baseWalk = -1f;                        // force a fresh base-stat capture on the next player
+        }
 
         // Persist per-player notes once, when the panel closes — instead of rewriting the whole config file on
         // every keystroke while the admin is typing (which stutters the GUI thread and thrashes the disk).
@@ -899,7 +1062,10 @@ namespace AdminPanel
         // ==================== Skin ====================
         private static Texture2D SolidTex(Color c)
         {
-            var t = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+            // Logout runs Resources.UnloadUnusedAssets(); textures referenced only from non-serialized
+            // plugin fields count as "unused" to that sweep and get destroyed, which silently strips the
+            // background off every style (flat, unboxed buttons after a relog). HideAndDontSave exempts them.
+            var t = new Texture2D(1, 1, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
             t.SetPixel(0, 0, c);
             t.Apply();
             return t;
@@ -907,8 +1073,11 @@ namespace AdminPanel
 
         private void EnsureSkin()
         {
-            if (_skinReady) return;
+            // _texWood doubles as the canary: if the asset sweep destroyed the skin textures anyway
+            // (fake-null), rebuild the whole skin instead of trusting the latch.
+            if (_skinReady && _texWood != null) return;
             _texWood = SolidTex(WoodColor(_panelAlphaLive));
+            _texRule = SolidTex(new Color(0.62f, 0.46f, 0.22f, 0.45f));
             var woodLight = SolidTex(new Color(0.220f, 0.160f, 0.100f, 1f));
             var woodHover = SolidTex(new Color(0.310f, 0.230f, 0.130f, 1f));
             var woodActive = SolidTex(new Color(0.160f, 0.115f, 0.070f, 1f));
@@ -948,6 +1117,8 @@ namespace AdminPanel
             _textFieldStyle.normal.textColor = parchment;
             _textFieldStyle.focused.textColor = gold;
             _textFieldStyle.hover.textColor = parchment;
+
+            _textAreaStyle = new GUIStyle(_textFieldStyle) { wordWrap = true };
 
             _toggleStyle = new GUIStyle(GUI.skin.toggle) { fontSize = 13 };
             _toggleStyle.normal.textColor = parchment;
@@ -1020,6 +1191,15 @@ namespace AdminPanel
         // Apply the configured font to every text GUIStyle once it becomes available.
         private void ApplyFont()
         {
+            // Self-heal: logout can unload the game font we applied (a destroyed Font reads as fake-null);
+            // drop the latch so the next pass re-resolves it once the fonts are loaded again.
+            if (_fontApplied && !ReferenceEquals(_appliedFont, null) && _appliedFont == null)
+            {
+                _fontApplied = false;
+                _fontTries = 0;
+                _nextFontTry = 0f;
+                _appliedFont = null;
+            }
             if (_fontApplied) return;
             Font f = null;
             if (_fontChoiceCfg.Value != "Default")
@@ -1035,9 +1215,10 @@ namespace AdminPanel
             foreach (var s in new[]
             {
                 _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle,
-                _toggleStyle, _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle
+                _toggleStyle, _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle, _textAreaStyle
             })
                 if (s != null) s.font = f;
+            _appliedFont = f;
             _fontApplied = true;
         }
 
@@ -1073,7 +1254,8 @@ namespace AdminPanel
                     AccessTools.TypeByName("UnityEngine.ImageConversion"), "LoadImage",
                     new[] { typeof(Texture2D), typeof(byte[]) });
                 if (loadImage == null) return null;
-                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, true) { filterMode = FilterMode.Trilinear };
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, true)
+                { filterMode = FilterMode.Trilinear, hideFlags = HideFlags.HideAndDontSave };   // survive the logout asset sweep
                 if (!(bool)loadImage.Invoke(null, new object[] { tex, bytes })) return null;
                 _logoAspect = (float)tex.width / tex.height;
                 _logoTex = tex;
@@ -1111,6 +1293,20 @@ namespace AdminPanel
             GUILayout.Space(6);
         }
 
+        // ==================== Section divider ====================
+        // One visual language for section breaks across all tabs: a thin gold rule, then the section
+        // title. Replaces the bare header Labels that made long tabs read as one undifferentiated column.
+        // Emits the same controls on every IMGUI pass (GetRect + Label), so control counts stay stable.
+        private void DrawSection(string title)
+        {
+            GUILayout.Space(10);
+            var r = GUILayoutUtility.GetRect(1f, 2f, GUILayout.ExpandWidth(true));
+            if (Event.current.type == EventType.Repaint && _texRule != null)
+                GUI.DrawTexture(new Rect(r.x, r.y, r.width - 14f, 2f), _texRule);   // -14 keeps clear of the scrollbar
+            GUILayout.Space(4);
+            if (!string.IsNullOrEmpty(title)) GUILayout.Label(title, _headerStyle);
+        }
+
         // ==================== GUI root ====================
         private void OnGUI()
         {
@@ -1134,6 +1330,20 @@ namespace AdminPanel
                           : $"⚔ Advanced Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
             // Save after the user finishes moving or resizing the window (only runs while _visible).
             if (Event.current.type == EventType.MouseUp) SaveWindowRect();
+
+            // Docked side window (What's New / Bug Report). Its rect derives from the panel's every frame,
+            // so it stays glued to the panel's right edge (flipping to the left edge at the screen border);
+            // the returned rect is deliberately discarded — the side window is not independently draggable.
+            if (_sideMode != SideMode.None)
+            {
+                const float sideW = 340f;
+                var sideH = Mathf.Clamp(_windowRect.height, 380f, 560f);
+                var sx = _windowRect.xMax + 6f + sideW <= Screen.width
+                    ? _windowRect.xMax + 6f
+                    : _windowRect.x - sideW - 6f;
+                GUI.Window(918274, new Rect(sx, _windowRect.y, sideW, sideH), DrawSideWindow,
+                    _sideMode == SideMode.WhatsNew ? "What's New" : "Bug Report", _windowStyle);
+            }
         }
 
         private void SaveWindowRect()
@@ -1172,9 +1382,20 @@ namespace AdminPanel
             {
                 _openDropdownLayout = _openDropdown;
                 _rebindTargetLayout = _rebindTarget;
+                _updateBannerLayout = _updateAvailable;   // arrives from a worker thread — pin it per frame
             }
 
             DrawLogoHeader();
+
+            if (_updateBannerLayout != null)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"⬆ Update available: v{_updateBannerLayout} — you have v{PluginVersion}", _headerStyle);
+                if (GUILayout.Button("Get update", _buttonStyle, GUILayout.Width(110)))
+                    Application.OpenURL(ReleasesPage);
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
+            }
 
             GUILayout.BeginHorizontal();
             for (var i = 0; i < TabNames.Length; i++)
@@ -1746,7 +1967,8 @@ namespace AdminPanel
         // ==================== Bosses tab ====================
         private void DrawBossesTab()
         {
-            GUILayout.Label("Bosses — spawn directly, or grab the altar offering items:", _headerStyle);
+            DrawSection("Bosses");
+            GUILayout.Label("Spawn directly, or grab the altar offering items:", _dimLabelStyle);
             // short fixed list — size to content so it doesn't balloon to fill a tall window (leaving a dead gap)
             _bossScroll = GUILayout.BeginScrollView(_bossScroll, GUILayout.Height(Mathf.Min(ListView(140f), BossList.Length * 28f + 8f)));
             foreach (var (prefabName, label, offerPrefab, offerCount) in BossList)
@@ -1763,7 +1985,8 @@ namespace AdminPanel
             }
             GUILayout.EndScrollView();
 
-            GUILayout.Label("Raid events (started server-side at your position):", _headerStyle);
+            DrawSection("Raid events");
+            GUILayout.Label("Started server-side at your position:", _dimLabelStyle);
             GUILayout.BeginHorizontal();
             var col = 0;
             foreach (var ev in RaidEvents)
@@ -1796,7 +2019,7 @@ namespace AdminPanel
             EnsureBaseStats();
             _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(ListView(100f)));
 
-            GUILayout.Label("Toggles:", _headerStyle);
+            DrawSection("Toggles");
             var god = GUILayout.Toggle(_god, " God mode (no damage)", _toggleStyle);
             if (god != _god) { _god = god; player.SetGodMode(_god); Message($"God mode {(_god ? "ON" : "OFF")}"); }
 
@@ -1829,8 +2052,7 @@ namespace AdminPanel
                 Message($"Infinite carry weight {(weight ? "ON" : "OFF")}");
             }
 
-            GUILayout.Space(8);
-            GUILayout.Label("Multipliers:", _headerStyle);
+            DrawSection("Multipliers");
             GUILayout.BeginHorizontal();
             GUILayout.Label($"Speed x{_speedMult:0.0}", _labelStyle, GUILayout.Width(90));
             var newSpeed = GUILayout.HorizontalSlider(_speedMult, 1f, 10f, GUILayout.Width(250));
@@ -1863,7 +2085,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(8);
+            DrawSection("Quick actions");
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Full heal", _buttonStyle)) { player.Heal(player.GetMaxHealth()); Message("Healed"); }
             if (GUILayout.Button("Full stamina", _buttonStyle)) { player.AddStamina(player.GetMaxStamina()); Message("Stamina restored"); }
@@ -1893,15 +2115,33 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(8);
-            GUILayout.Label("Skills:", _headerStyle);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("TP to last death", _buttonStyle))
+            {
+                var parts = _lastDeathCfg.Value.Split(',');
+                if (parts.Length == 3 &&
+                    float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var dx) &&
+                    float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var dy) &&
+                    float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var dz))
+                {
+                    player.TeleportTo(new Vector3(dx, dy + 0.5f, dz), player.transform.rotation, true);
+                    Message("Teleporting to your last death point");
+                }
+                else Message("No death recorded yet");
+            }
+            GUILayout.Label(string.IsNullOrEmpty(_lastDeathCfg.Value)
+                ? "(no death recorded yet)"
+                : $"last death: {_lastDeathCfg.Value}", _dimLabelStyle);
+            GUILayout.EndHorizontal();
+
+            DrawSection("Skills");
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("All skills +10", _buttonStyle)) ChangeSkills(10);
             if (GUILayout.Button("All skills 100", _buttonStyle)) SetSkills(100);
             if (GUILayout.Button("Reset skills", _buttonStyle)) SetSkills(0);
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(8);
+            DrawSection("Status effects");
             _showStatusEffects = GUILayout.Toggle(_showStatusEffects, " Show status effect browser", _toggleStyle);
             if (_showStatusEffects && ObjectDB.instance != null)
             {
@@ -1986,7 +2226,7 @@ namespace AdminPanel
             // the OnGUI callback. The controls always render (stable IMGUI control count); only the click acts.
             var env = EnvMan.instance;
 
-            GUILayout.Label("Time of day:", _headerStyle);
+            DrawSection("Time & weather");
             GUILayout.BeginHorizontal();
             _timeSlider = GUILayout.HorizontalSlider(_timeSlider, 0f, 1f, GUILayout.Width(280));
             GUILayout.Label(TimeLabel(_timeSlider), _labelStyle, GUILayout.Width(50));
@@ -2020,7 +2260,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label("Wind:", _headerStyle);
+            DrawSection("Wind");
             GUILayout.BeginHorizontal();
             GUILayout.Label($"Dir {_windAngle:0}°", _labelStyle, GUILayout.Width(70));
             _windAngle = GUILayout.HorizontalSlider(_windAngle, 0f, 360f, GUILayout.Width(160));
@@ -2032,7 +2272,7 @@ namespace AdminPanel
             { env.ResetDebugWind(); _windLocked = false; Message("Wind reset"); }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label("Teleport:", _headerStyle);
+            DrawSection("Teleport");
             GUILayout.Label($"🗺  Open the full map (M), hover a spot, press [{_mapTpKey.Value}] to teleport there.", _dimLabelStyle);
 
             // quick jump to known world locations (spawn + boss altars)
@@ -2109,7 +2349,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
             }
 
-            GUILayout.Label("Area actions:", _headerStyle);
+            DrawSection("Area actions");
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Kill enemies 50m", _buttonStyle)) KillNearby(50f, false);
             if (GUILayout.Button("Kill ALL loaded", _buttonStyle)) KillNearby(100000f, false);
@@ -2132,7 +2372,8 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label("Global keys (world progression flags — control raids and boss state):", _headerStyle);
+            DrawSection("Global keys");
+            GUILayout.Label("World progression flags — control raids and boss state:", _dimLabelStyle);
             if (ZoneSystem.instance != null)
             {
                 foreach (var key in ZoneSystem.instance.GetGlobalKeys().ToList())
@@ -2245,6 +2486,7 @@ namespace AdminPanel
         {
             if (ZNet.instance == null) { GUILayout.Label("Not connected.", _labelStyle); return; }
 
+            DrawSection("Broadcast");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Broadcast:", _labelStyle, GUILayout.Width(70));
             _broadcastText = GUILayout.TextField(_broadcastText, _textFieldStyle);
@@ -2261,7 +2503,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label("Connected players:", _headerStyle);
+            DrawSection("Connected players");
             _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUILayout.Height(Mathf.Min(250f, ListView(330f))));
             foreach (var info in ZNet.instance.GetPlayerList())
             {
@@ -2325,7 +2567,8 @@ namespace AdminPanel
             }
             GUILayout.EndScrollView();
 
-            GUILayout.Label($"Inventory viewer: {_inspectPlayerName ?? "(pick a player above)"}", _headerStyle);
+            DrawSection("Inventory viewer");
+            GUILayout.Label(_inspectPlayerName ?? "(pick a player above)", _labelStyle);
             if (_inspectPending)
             {
                 GUILayout.Label(Time.time - _inspectRequestTime > 5f
@@ -2361,7 +2604,7 @@ namespace AdminPanel
         {
             _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(ListView(100f)));
 
-            GUILayout.Label("Live stats:", _headerStyle);
+            DrawSection("Live stats");
             var day = EnvMan.instance != null && ZNet.instance != null
                 ? EnvMan.instance.GetDay(ZNet.instance.GetTimeSeconds()) : 0;
             var players = ZNet.instance != null ? ZNet.instance.GetPlayerList().Count : 0;
@@ -2372,8 +2615,7 @@ namespace AdminPanel
             if (serverPeer != null && serverPeer.m_socket != null)
                 GUILayout.Label($"Server: {serverPeer.m_socket.GetHostName()}", _labelStyle);
 
-            GUILayout.Space(8);
-            GUILayout.Label("Unban a player (Steam ID):", _headerStyle);
+            DrawSection("Unban a player (Steam ID)");
             GUILayout.BeginHorizontal();
             _unbanId = GUILayout.TextField(_unbanId, _textFieldStyle, GUILayout.Width(220));
             if (GUILayout.Button("Unban", _buttonStyle, GUILayout.Width(70)) && !string.IsNullOrEmpty(_unbanId))
@@ -2384,8 +2626,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(8);
-            GUILayout.Label("Join/leave history (this session):", _headerStyle);
+            DrawSection("Join/leave history (this session)");
             if (_joinLog.Count == 0) GUILayout.Label("Nothing yet.", _labelStyle);
             foreach (var line in _joinLog.Take(40))
                 GUILayout.Label(line, _labelStyle);
@@ -2394,6 +2635,198 @@ namespace AdminPanel
         }
 
         private string _unbanId = "";
+
+        // ==================== Side window (What's New / Bug Report) ====================
+        private void DrawSideWindow(int id)
+        {
+            // Snapshot mutable state on Layout so mid-frame changes (mode switch, async status arriving,
+            // cooldown expiring) can't desync IMGUI control counts (same rule as _openDropdownLayout).
+            if (Event.current.type == EventType.Layout)
+            {
+                _sideModeLayout = _sideMode;
+                _bugStatusLayout = _bugStatus;
+                _bugCoolLayout = Time.time < _nextBugSend;
+            }
+            var mode = _sideModeLayout;
+
+            GUILayout.Space(12);   // breathing room under the window title
+            GUILayout.BeginHorizontal();
+            // Switch only when a toggle flips off→on. Comparing against _sideMode instead would let the
+            // still-on old-mode toggle (which just returns its input) immediately switch the mode back —
+            // that made "What's New" unclickable from Bug Report.
+            var wnOn = mode == SideMode.WhatsNew;
+            var brOn = mode == SideMode.BugReport;
+            if (GUILayout.Toggle(wnOn, "What's New", _catStyle) && !wnOn) _sideMode = SideMode.WhatsNew;
+            if (GUILayout.Toggle(brOn, "Bug Report", _catStyle) && !brOn) _sideMode = SideMode.BugReport;
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("✕", _buttonStyle, GUILayout.Width(30))) _sideMode = SideMode.None;
+            GUILayout.EndHorizontal();
+
+            if (mode == SideMode.WhatsNew)
+            {
+                DrawSection($"Version {PluginVersion}");
+                _sideScroll = GUILayout.BeginScrollView(_sideScroll);
+                GUILayout.Label(WhatsNewText, _labelStyle);
+                GUILayout.EndScrollView();
+                GUILayout.Label("Opens once per update — toggle in Settings → Panel.", _dimLabelStyle);
+            }
+            else if (mode == SideMode.BugReport)
+            {
+                DrawSection("Describe the bug");
+                _bugText = GUILayout.TextArea(_bugText, _textAreaStyle,
+                    GUILayout.MinHeight(120f), GUILayout.MaxHeight(170f), GUILayout.ExpandHeight(false));
+                _bugAttachShot = GUILayout.Toggle(_bugAttachShot,
+                    " Attach screenshot (panel hides for one frame)", _toggleStyle);
+                GUILayout.Space(4);
+
+                var webhookSet = !string.IsNullOrEmpty(_bugWebhookCfg.Value);
+                var coolingDown = _bugCoolLayout;
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(_bugSending ? "Sending…" : "Send report", _buttonStyle)
+                    && !_bugSending && webhookSet && !coolingDown)
+                {
+                    if (_bugText.Trim().Length < 10)
+                        _bugStatus = "Please describe the bug first (a sentence or two).";
+                    else
+                        StartCoroutine(SendBugReport());
+                }
+                if (GUILayout.Button("Join our Discord", _buttonStyle)) Application.OpenURL(DiscordInvite);
+                GUILayout.EndHorizontal();
+
+                if (!webhookSet)
+                    GUILayout.Label("Sending is disabled — no webhook configured (BugReport.WebhookUrl).", _dimLabelStyle);
+                else if (coolingDown)
+                    GUILayout.Label($"Report sent — you can send another in {Mathf.Max(1, Mathf.CeilToInt(_nextBugSend - Time.time))}s.", _dimLabelStyle);
+                if (_bugStatusLayout != null) GUILayout.Label(_bugStatusLayout, _dimLabelStyle);
+
+                GUILayout.FlexibleSpace();
+                GUILayout.Label("The report contains your text, mod/game versions and (optionally) the screenshot — nothing else.", _dimLabelStyle);
+            }
+        }
+
+        // Capture (optionally) a screenshot with the panel hidden for exactly one frame, then hand the
+        // HTTP POST to a worker thread — the OnGUI/game loop never blocks on Discord.
+        private System.Collections.IEnumerator SendBugReport()
+        {
+            _bugSending = true;
+            _bugStatus = null;
+
+            byte[] jpg = null;
+            if (_bugAttachShot)
+            {
+                var wasVisible = _visible;
+                _visible = false;
+                yield return new WaitForEndOfFrame();   // render one panel-free frame, then read it back
+                try
+                {
+                    var tex = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+                    tex.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+                    tex.Apply();
+                    jpg = EncodeJpg(tex);
+                    Destroy(tex);
+                }
+                catch (Exception e) { Logger.LogWarning($"Bug-report screenshot failed (sending without it): {e.Message}"); }
+                _visible = wasVisible;
+            }
+
+            var report =
+                $"**Bug report** — Advanced Admin Panel {PluginVersion}\n" +
+                $"Game: {GameVersionString()}   ·   Mode: {SessionModeString()}\n" +
+                $"Reporter: {(LocalPlayer != null ? LocalPlayer.GetPlayerName() : "(not in game)")}\n\n" +
+                _bugText.Trim();
+
+            // Forum-post title: version + reporter + the first words of the description.
+            var firstLine = _bugText.Trim().Split('\n')[0];
+            var title = $"[{PluginVersion}] {(LocalPlayer != null ? LocalPlayer.GetPlayerName() : "unknown")}: {firstLine}";
+            if (title.Length > 95) title = title.Substring(0, 95) + "…";   // Discord caps thread names at 100
+
+            var url = _bugWebhookCfg.Value;
+            var task = System.Threading.Tasks.Task.Run(() => PostToWebhook(url, title, report, jpg));
+            while (!task.IsCompleted) yield return null;
+
+            _bugStatus = task.Result;
+            if (task.Result != null && task.Result.StartsWith("Sent", StringComparison.Ordinal))
+            {
+                _bugText = "";
+                _nextBugSend = Time.time + 60f;   // one report per minute per client
+            }
+            _bugSending = false;
+        }
+
+        // Runs on a worker thread — must not touch Unity APIs. Discord webhook: multipart form with a
+        // payload_json part (content capped at 2000 chars by Discord) plus an optional image attachment.
+        // thread_name makes each report its own post in the target FORUM channel (required there —
+        // Discord rejects forum webhook posts without it).
+        private static string PostToWebhook(string url, string threadName, string content, byte[] jpg)
+        {
+            try
+            {
+                System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
+                using (var http = new System.Net.Http.HttpClient())
+                using (var form = new System.Net.Http.MultipartFormDataContent())
+                {
+                    if (content.Length > 1900) content = content.Substring(0, 1900) + "…";
+                    form.Add(new System.Net.Http.StringContent(
+                        "{\"content\":" + JsonString(content) + ",\"thread_name\":" + JsonString(threadName) + "}",
+                        Encoding.UTF8, "application/json"), "payload_json");
+                    if (jpg != null)
+                    {
+                        var file = new System.Net.Http.ByteArrayContent(jpg);
+                        file.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+                        form.Add(file, "files[0]", "screenshot.jpg");
+                    }
+                    var resp = http.PostAsync(url, form).GetAwaiter().GetResult();
+                    return resp.IsSuccessStatusCode
+                        ? "Sent — thank you!"
+                        : $"Discord rejected the report (HTTP {(int)resp.StatusCode}).";
+                }
+            }
+            catch (Exception e) { return $"Send failed: {e.Message}"; }
+        }
+
+        private static string JsonString(string s)
+        {
+            var sb = new StringBuilder("\"");
+            foreach (var c in s)
+                switch (c)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        else sb.Append(c);
+                        break;
+                }
+            return sb.Append('"').ToString();
+        }
+
+        // ImageConversion targets netstandard 2.1 and can't be compile-referenced from net48 —
+        // resolve EncodeToJPG at runtime, exactly like the logo loader resolves LoadImage.
+        private static byte[] EncodeJpg(Texture2D tex)
+        {
+            var m = AccessTools.Method(
+                AccessTools.TypeByName("UnityEngine.ImageConversion"), "EncodeToJPG",
+                new[] { typeof(Texture2D), typeof(int) });
+            return m != null ? (byte[])m.Invoke(null, new object[] { tex, 85 }) : null;
+        }
+
+        private static string GameVersionString()
+        {
+            try
+            {
+                var m = AccessTools.Method(AccessTools.TypeByName("Version"), "GetVersionString", Type.EmptyTypes);
+                return m?.Invoke(null, null)?.ToString() ?? Application.version;
+            }
+            catch { return "unknown"; }
+        }
+
+        private static string SessionModeString() =>
+            ZNet.instance == null ? "menu"
+            : ZNet.instance.IsServer() ? "host / single-player"
+            : "client on dedicated server";
 
         // ==================== Settings tab ====================
         private static Color WoodColor(int alphaPct) =>
@@ -2412,6 +2845,7 @@ namespace AdminPanel
             // 0 = "use the font's own default size", which is exactly how text fields rendered before this
             // setting existed — keep that at the default base so nothing shifts for existing users.
             _textFieldStyle.fontSize = s == 13 ? 0 : s;
+            if (_textAreaStyle != null) _textAreaStyle.fontSize = _textFieldStyle.fontSize;
             _headerStyle.fontSize = s + 1;
             _windowStyle.fontSize = Mathf.Min(s + 2, 18);
             // The tab bar and category chips must stay one row wide even at the largest base sizes
@@ -2454,7 +2888,7 @@ namespace AdminPanel
         {
             _settingsScroll = GUILayout.BeginScrollView(_settingsScroll, GUILayout.Height(ListView(100f)));
 
-            GUILayout.Label("Appearance:", _headerStyle);
+            DrawSection("Appearance");
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Font:", _labelStyle, GUILayout.Width(90));
@@ -2493,13 +2927,19 @@ namespace AdminPanel
             var logo = GUILayout.Toggle(_showLogoCfg.Value, " Show logo header", _toggleStyle);
             if (logo != _showLogoCfg.Value) { _showLogoCfg.Value = logo; Config.Save(); }
 
-            GUILayout.Space(10);
-            GUILayout.Label("Behavior:", _headerStyle);
+            DrawSection("Behavior");
             var cam = GUILayout.Toggle(_cameraLockCfg.Value, " Lock camera while the panel is open (like the inventory)", _toggleStyle);
             if (cam != _cameraLockCfg.Value) { _cameraLockCfg.Value = cam; Config.Save(); }
 
-            GUILayout.Space(10);
-            GUILayout.Label("Hotkeys:", _headerStyle);
+            DrawSection("Panel");
+            var wnAuto = GUILayout.Toggle(_autoWhatsNewCfg.Value, " Show What's New once after each update", _toggleStyle);
+            if (wnAuto != _autoWhatsNewCfg.Value) { _autoWhatsNewCfg.Value = wnAuto; Config.Save(); }
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("What's New?", _buttonStyle, GUILayout.Width(150))) _sideMode = SideMode.WhatsNew;
+            if (GUILayout.Button("Report a bug", _buttonStyle, GUILayout.Width(130))) _sideMode = SideMode.BugReport;
+            GUILayout.EndHorizontal();
+
+            DrawSection("Hotkeys");
             DrawRebindRow("Open / close panel", _toggleKey, 1);
             DrawRebindRow("Map teleport", _mapTpKey, 2);
             // Emit the "listening" hint only when the Layout pass saw the rebind active (same control-count
@@ -2522,8 +2962,7 @@ namespace AdminPanel
                 }
             }
 
-            GUILayout.Space(10);
-            GUILayout.Label("Reset:", _headerStyle);
+            DrawSection("Reset");
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Reset window size & position", _buttonStyle, GUILayout.Width(230)))
             {
