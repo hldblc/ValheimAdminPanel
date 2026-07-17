@@ -12,17 +12,20 @@ namespace AdminPanelCompanion
     {
         public const string PluginGuid = "com.halitb.adminpanelcompanion";
         public const string PluginName = "AdminPanelCompanion";
-        public const string PluginVersion = "2.1.1";
+        public const string PluginVersion = "2.1.2";
 
         internal static CompanionPlugin Instance;
 
         private static readonly List<ZDOID> LastSpawnBatch = new List<ZDOID>();
 
+        // Recognising the host by its session id is only safe while the sanitizer is re-stamping incoming senders.
+        private static bool SenderSanitizerActive;
+
         private void Awake()
         {
             Instance = this;
             Harmony.CreateAndPatchAll(typeof(RpcRegistration));
-            try { Harmony.CreateAndPatchAll(typeof(RouteRpcSanitizer)); }
+            try { Harmony.CreateAndPatchAll(typeof(RouteRpcSanitizer)); SenderSanitizerActive = true; }
             catch (Exception e) { Logger.LogWarning($"RoutedRPC sender-sanitizer patch failed (server security reduced): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
@@ -105,7 +108,24 @@ namespace AdminPanelCompanion
             return peer != null ? peer.m_uid : 0L;
         }
 
-        private static bool SenderIsServer(long sender) => sender == ServerUid();
+        // A host (single-player or listen-server) is never in ZNet.m_peers — that list is filled only from
+        // OnNewConnection, i.e. remote sockets — so it cannot be resolved by peer lookup and ServerUid() is
+        // structurally 0 for it (GetServerPeer() returns null when IsServer()). Both checks below therefore have
+        // to recognise the host by its own session id, which is what ZRoutedRpc stamps on a locally dispatched
+        // packet. A remote client cannot forge it: RouteRpcSanitizer overwrites the sender of every
+        // socket-delivered packet with the real peer uid before dispatch.
+        // Gated on the sanitizer: if that patch ever fails to apply, an incoming packet's sender is attacker-chosen,
+        // so the host's session id would be forgeable and this would become a privilege escalation.
+        private static bool IsLocalHostSender(long sender) =>
+            SenderSanitizerActive && ZNet.instance != null && ZNet.instance.IsServer() &&
+            ZDOMan.instance != null && sender == ZDOMan.GetSessionID();
+
+        private static bool SenderIsServer(long sender)
+        {
+            var s = ServerUid();
+            if (s != 0L && sender == s) return true;   // client: the packet really came from the server peer
+            return IsLocalHostSender(sender);          // host: we are the server
+        }
 
         private static string BareId(string host) =>
             !string.IsNullOrEmpty(host) && host.Contains("_") ? host.Substring(host.IndexOf('_') + 1) : host;
@@ -116,9 +136,13 @@ namespace AdminPanelCompanion
         private static bool SenderIsAdmin(long sender)
         {
             if (ZNet.instance == null) return false;
+            // The host is implicitly admin, exactly as the engine treats it in ZNet.LocalPlayerIsAdminOrHost().
+            // Without this the peer lookup below returns null for the host and denies every admin action before
+            // adminlist.txt is ever consulted, which is why adding your own id to the list had no effect.
+            if (IsLocalHostSender(sender)) return true;
             var peer = ZNet.instance.GetPeer(sender);
             var host = peer != null && peer.m_socket != null ? peer.m_socket.GetHostName() : null;
-            if (string.IsNullOrEmpty(host)) return false;
+            if (string.IsNullOrEmpty(host)) { Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
 
             var adminList = GetList("m_adminList");
             var isAdmin = adminList != null && (adminList.Contains(host) || adminList.Contains(BareId(host)));
