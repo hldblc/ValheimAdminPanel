@@ -12,7 +12,9 @@ namespace AdminPanelCompanion
     {
         public const string PluginGuid = "com.halitb.adminpanelcompanion";
         public const string PluginName = "AdminPanelCompanion";
-        public const string PluginVersion = "2.1.2";
+        // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
+        // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
+        public const string PluginVersion = "2.2.9";
 
         internal static CompanionPlugin Instance;
 
@@ -54,8 +56,14 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register<long, string>("AP_SrvMsg", OnServerMessage);
                 ZRoutedRpc.instance.Register<string, Vector3>("AP_SrvEvent", OnServerEvent);
                 ZRoutedRpc.instance.Register<bool>("AP_SrvPeaceful", OnServerPeaceful);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_SrvInvRemove", OnServerInvRemove);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_SrvSkillRaise", OnServerSkillRaise);
+                ZRoutedRpc.instance.Register("AP_SrvVersion", new Action<long>(OnServerVersionReq));
+                ZRoutedRpc.instance.Register("AP_SrvSkipNight", new Action<long>(OnServerSkipNight));
                 // client-side executors (only accepted when sent by the server)
                 ZRoutedRpc.instance.Register<string, int, int, string>("AP_GiveItem", OnGiveItem);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_RemoveItem", OnRemoveItem);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_SkillRaise", OnSkillRaise);
                 ZRoutedRpc.instance.Register<long>("AP_InvRequest", OnInventoryRequest);
                 ZRoutedRpc.instance.Register<Vector3>("AP_Teleport", OnTeleport);
                 ZRoutedRpc.instance.Register("AP_HealSelf", new Action<long>(OnHealSelf));
@@ -427,6 +435,135 @@ namespace AdminPanelCompanion
                 }
             }
             player.Message(MessageHud.MessageType.Center, $"An admin granted you {amount}x {prefabName}!");
+        }
+
+        // ---------- server: remove items from a player's inventory (admin moderation) ----------
+        private static void OnServerInvRemove(long sender, ZPackage pkg)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            long targetUid; string itemName; int amount;
+            try
+            {
+                targetUid = pkg.ReadLong();
+                itemName = pkg.ReadString();
+                amount = pkg.ReadInt();
+            }
+            catch (Exception e) { Log($"AP_SrvInvRemove: malformed packet dropped ({e.Message})"); return; }
+            if (string.IsNullOrEmpty(itemName) || amount <= 0) return;
+            Log($"Admin {sender} removes {amount}x {itemName} from peer {targetUid}");
+            var relay = new ZPackage();
+            relay.Write(itemName);
+            relay.Write(amount);
+            relay.Write(sender);   // whom the target pushes its refreshed inventory to
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_RemoveItem", relay);
+        }
+
+        // Runs on the TARGET player's client (inventory lives with its owner). Matches items by the same
+        // key OnInventoryRequest serializes (prefab name, falling back to shared name), removes up to the
+        // requested amount across stacks, then pushes the fresh inventory back to the admin's viewer.
+        private static void OnRemoveItem(long sender, ZPackage pkg)
+        {
+            var player = Player.m_localPlayer;
+            if (player == null || !SenderIsServer(sender)) return;
+            string itemName; int amount; long replyTo;
+            try
+            {
+                itemName = pkg.ReadString();
+                amount = pkg.ReadInt();
+                replyTo = pkg.ReadLong();
+            }
+            catch { return; }
+            if (string.IsNullOrEmpty(itemName) || amount <= 0) return;
+
+            var inv = player.GetInventory();
+            var removed = 0;
+            foreach (var item in new List<ItemDrop.ItemData>(inv.GetAllItems()))
+            {
+                if (removed >= amount) break;
+                var key = item.m_dropPrefab != null ? item.m_dropPrefab.name : item.m_shared.m_name;
+                if (key != itemName) continue;
+                // an equipped item must be unequipped first, or the player keeps a ghost-equipped
+                // copy in hand (invisible in the bag, still usable) until they relog
+                if (item.m_equipped) player.UnequipItem(item, false);
+                var take = Mathf.Min(item.m_stack, amount - removed);
+                inv.RemoveItem(item, take);
+                removed += take;
+            }
+            if (removed > 0)
+                player.Message(MessageHud.MessageType.Center, $"An admin removed {removed}x {itemName} from your inventory");
+            OnInventoryRequest(sender, replyTo);   // refresh the admin's inventory viewer
+        }
+
+        // ---------- server: version handshake ----------
+        // Any client may ask; the reply goes only to the asker. No admin gate needed — the version string
+        // is not sensitive, and gating it would hide exactly the mismatch the panel wants to display.
+        private static void OnServerVersionReq(long sender)
+        {
+            if (!IsDedicatedServer) return;
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_VersionData", PluginVersion);
+        }
+
+        // ---------- server: skip to morning ----------
+        // World time is server-owned (ZNet.m_netTime), so a client can't skip night by itself — the old
+        // panel button only flipped a local debug flag and changed nothing. EnvMan.SkipToMorning() is the
+        // game's own sleep-skip: it advances net time to the next morning for everyone.
+        private static void OnServerSkipNight(long sender)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            if (EnvMan.instance == null) return;
+            Log($"Admin {sender} skips to morning");
+            EnvMan.instance.SkipToMorning();
+        }
+
+        // ---------- server: raise a skill on any player ----------
+        private static void OnServerSkillRaise(long sender, ZPackage pkg)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            long targetUid; string skillName; float amount; string note;
+            try
+            {
+                targetUid = pkg.ReadLong();
+                skillName = pkg.ReadString();
+                amount = pkg.ReadSingle();
+                note = pkg.ReadString();
+            }
+            catch (Exception e) { Log($"AP_SrvSkillRaise: malformed packet dropped ({e.Message})"); return; }
+            if (string.IsNullOrEmpty(skillName)) return;
+            amount = Mathf.Clamp(amount, -100f, 100f);   // one click can never exceed the whole skill range
+            Log($"Admin {sender} raises {skillName} by {amount} for peer {targetUid}");
+            var relay = new ZPackage();
+            relay.Write(skillName);
+            relay.Write(amount);
+            relay.Write(note ?? "");
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_SkillRaise", relay);
+        }
+
+        // Runs on the TARGET player's client (skills live with their owner, like inventories).
+        private static void OnSkillRaise(long sender, ZPackage pkg)
+        {
+            var player = Player.m_localPlayer;
+            if (player == null || !SenderIsServer(sender)) return;
+            string skillName; float amount; string note;
+            try
+            {
+                skillName = pkg.ReadString();
+                amount = pkg.ReadSingle();
+                note = pkg.ReadString();
+            }
+            catch { return; }
+            if (string.IsNullOrEmpty(skillName)) return;
+            player.GetSkills().CheatRaiseSkill(skillName, Mathf.Clamp(amount, -100f, 100f), false);
+            // Only the admin's own note is shown, and only on THIS client (the routed RPC targets one
+            // peer). Empty note = the change is completely silent — the admin decides what, if anything,
+            // the player gets told. When a note is present it pops center-screen together with the
+            // skill's NEW level, read back after the change was applied.
+            if (!string.IsNullOrEmpty(note))
+            {
+                var levelLine = "";
+                if (Enum.TryParse<Skills.SkillType>(skillName, out var st))
+                    levelLine = $"\n{skillName}: {player.GetSkills().GetSkillLevel(st):0.#}";
+                player.Message(MessageHud.MessageType.Center, note + levelLine);
+            }
         }
 
         private static void OnInventoryRequest(long sender, long replyTo)
