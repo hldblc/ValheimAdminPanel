@@ -1789,21 +1789,30 @@ namespace AdminPanel
             var grip = new Rect(_windowRect.width - 22, _windowRect.height - 22, 22, 22);
             GUI.Label(grip, "◢", _dimLabelStyle);
             var e = Event.current;
-            if (e.type == EventType.MouseDown && grip.Contains(e.mousePosition))
+
+            // End a resize on ANY release, not just a MouseUp delivered inside this window. GUI.Window scopes
+            // events to its rect, so releasing the grip outside the panel (or over the docked side window)
+            // never reached the plain MouseUp branch and _resizing stayed latched — the NEXT title-bar drag
+            // then fell into the resize branch, where a title-height mouse position slammed the panel to its
+            // minimum size (field-reported; the saved rect sat at exactly the 300px floor). rawType still
+            // carries the real MouseUp when the typed event is scoped away, and the Input poll catches any
+            // release that produced no event here at all.
+            if (_resizing && (e.rawType == EventType.MouseUp || !Input.GetMouseButton(0)))
+            {
+                _resizing = false;
+                SaveWindowRect();
+            }
+
+            if (e.type == EventType.MouseDown && e.button == 0 && grip.Contains(e.mousePosition))
             {
                 _resizing = true;
                 e.Use();
             }
-            else if (_resizing && e.type == EventType.MouseDrag)
+            else if (_resizing && e.type == EventType.MouseDrag && e.button == 0)
             {
                 _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, 660f, Screen.width - _windowRect.x);
                 _windowRect.height = Mathf.Clamp(e.mousePosition.y + 11, 300f, Screen.height - _windowRect.y);
                 e.Use();
-            }
-            else if (e.type == EventType.MouseUp && _resizing)
-            {
-                _resizing = false;
-                SaveWindowRect();
             }
 
             GUI.DragWindow(new Rect(0, 0, 10000, 20));
