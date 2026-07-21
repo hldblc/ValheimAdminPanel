@@ -334,3 +334,6 @@ side.privacy=De melding bevat jouw tekst, mod-/spelversies en (optioneel) de sch
 side.sent_thanks=Verzonden — bedankt!
 side.rejected=Discord heeft de melding geweigerd (HTTP {0}).
 side.send_failed=Versturen mislukt: {0}
+player.msg_applied_to={0} toegepast → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll is niet geïnstalleerd op deze host — serveracties (spawnen, geven, teleporteren, ongedaan maken…) doen niets. Installeer BEIDE modbestanden.
+player.se_target_hint=Externe doelen hebben companion 2.3.0 aan hun kant nodig — oudere versies negeren dit stilzwijgend.

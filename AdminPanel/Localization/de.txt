@@ -334,3 +334,6 @@ side.privacy=Der Bericht enthält deinen Text, Mod-/Spielversionen und (optional
 side.sent_thanks=Gesendet — vielen Dank!
 side.rejected=Discord hat den Bericht abgelehnt (HTTP {0}).
 side.send_failed=Senden fehlgeschlagen: {0}
+player.msg_applied_to={0} angewendet → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll ist auf diesem Host nicht installiert — Serveraktionen (Spawnen, Geben, Teleport, Rückgängig…) bewirken nichts. Installiere BEIDE Moddateien.
+player.se_target_hint=Entfernte Ziele benötigen Companion 2.3.0 auf ihrer Seite — ältere Versionen ignorieren dies stillschweigend.

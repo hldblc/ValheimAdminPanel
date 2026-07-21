@@ -334,3 +334,6 @@ side.privacy=Zgłoszenie zawiera twój tekst, wersje moda/gry i (opcjonalnie) zr
 side.sent_thanks=Wysłano — dziękujemy!
 side.rejected=Discord odrzucił zgłoszenie (HTTP {0}).
 side.send_failed=Wysyłanie nie powiodło się: {0}
+player.msg_applied_to=Zastosowano {0} → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll nie jest zainstalowany na tym hoście — akcje serwerowe (przywoływanie, dawanie, teleportacja, cofanie…) nic nie zrobią. Zainstaluj OBA pliki moda.
+player.se_target_hint=Zdalne cele wymagają companion 2.3.0 po ich stronie — starsze wersje po cichu to ignorują.

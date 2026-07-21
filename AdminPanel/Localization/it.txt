@@ -334,3 +334,6 @@ side.privacy=La segnalazione contiene il tuo testo, le versioni di mod/gioco e (
 side.sent_thanks=Inviato — grazie!
 side.rejected=Discord ha rifiutato la segnalazione (HTTP {0}).
 side.send_failed=Invio fallito: {0}
+player.msg_applied_to={0} applicato → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll non è installato su questo host — le azioni server (evocare, dare, teletrasporto, annulla…) non faranno nulla. Installa ENTRAMBI i file della mod.
+player.se_target_hint=I bersagli remoti richiedono companion 2.3.0 dalla loro parte — le versioni più vecchie lo ignorano in silenzio.

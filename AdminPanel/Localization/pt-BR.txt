@@ -334,3 +334,6 @@ side.privacy=O relatório contém seu texto, versões do mod/jogo e (opcionalmen
 side.sent_thanks=Enviado — obrigado!
 side.rejected=O Discord rejeitou o relatório (HTTP {0}).
 side.send_failed=Falha ao enviar: {0}
+player.msg_applied_to={0} aplicado → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll não está instalado neste host — ações de servidor (invocar, dar, teletransporte, desfazer…) não farão nada. Instale AMBOS os arquivos do mod.
+player.se_target_hint=Alvos remotos precisam do companion 2.3.0 no lado deles — versões antigas ignoram isto silenciosamente.

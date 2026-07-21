@@ -64,6 +64,7 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register<bool>("AP_SrvPeaceful", OnServerPeaceful);
                 ZRoutedRpc.instance.Register<ZPackage>("AP_SrvInvRemove", OnServerInvRemove);
                 ZRoutedRpc.instance.Register<ZPackage>("AP_SrvSkillRaise", OnServerSkillRaise);
+                ZRoutedRpc.instance.Register<long, int>("AP_SrvApplySE", OnServerApplyStatusEffect);
                 ZRoutedRpc.instance.Register("AP_SrvVersion", new Action<long>(OnServerVersionReq));
                 ZRoutedRpc.instance.Register("AP_SrvSkipNight", new Action<long>(OnServerSkipNight));
                 // client-side executors (only accepted when sent by the server)
@@ -73,6 +74,7 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register<long>("AP_InvRequest", OnInventoryRequest);
                 ZRoutedRpc.instance.Register<Vector3>("AP_Teleport", OnTeleport);
                 ZRoutedRpc.instance.Register("AP_HealSelf", new Action<long>(OnHealSelf));
+                ZRoutedRpc.instance.Register<int>("AP_ApplySE", OnApplyStatusEffect);
                 ZRoutedRpc.instance.Register<string>("AP_Msg", OnMessage);
             }
         }
@@ -320,7 +322,18 @@ namespace AdminPanelCompanion
                 var go = ZNetScene.instance.FindInstance(zdo);
                 var nview = go != null ? go.GetComponent<ZNetView>() : null;
                 if (nview != null) { nview.ClaimOwnership(); nview.Destroy(); removed++; }
-                else { ZDOMan.instance.DestroyZDO(zdo); removed++; }
+                else
+                {
+                    // The no-instance path is the NORMAL one on a dedicated server: the server never
+                    // instantiates creatures — the nearest client simulates them and owns their ZDO.
+                    // ZDOMan.DestroyZDO is a SILENT NO-OP unless the caller owns the ZDO (it only queues
+                    // m_destroySendList behind an IsOwner() check), which is why undo "worked" in the log
+                    // (removed++) while the creature kept standing on every client. Claim ownership on the
+                    // raw ZDO first and the destroy actually broadcasts.
+                    zdo.SetOwner(ZDOMan.GetSessionID());
+                    ZDOMan.instance.DestroyZDO(zdo);
+                    removed++;
+                }
             }
 
             var left = stack.Count;
@@ -593,6 +606,37 @@ namespace AdminPanelCompanion
             relay.Write(amount);
             relay.Write(note ?? "");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_SkillRaise", relay);
+        }
+
+        // Status effects live with their owner exactly like skills, so the shape mirrors AP_SrvSkillRaise:
+        // admin-validated on the server, executed on the target's own client. The effect is sent by hash
+        // (StatusEffect.NameHash), which both sides resolve against their own ObjectDB — safe across
+        // panel languages because hashes come from prefab names, not localized text.
+        private static void OnServerApplyStatusEffect(long sender, long targetUid, int seHash)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            Log($"Admin {sender} applies status effect {seHash} to peer {targetUid}");
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_ApplySE", seHash);
+        }
+
+        // Runs on the TARGET player's client. Same trust model as AP_HealSelf: only the server may send it.
+        private static void OnApplyStatusEffect(long sender, int seHash)
+        {
+            var player = Player.m_localPlayer;
+            if (player == null || !SenderIsServer(sender)) return;
+            player.GetSEMan().AddStatusEffect(seHash, true);
+            // Small toast so the buff icon appearing isn't mysterious. The companion deliberately has no
+            // Localization reference (client-only assembly here would add a dependency for one string), so
+            // use the prefab name and skip raw "$se_..." tokens — the icon itself is the real feedback.
+            if (ObjectDB.instance != null)
+                foreach (var se in ObjectDB.instance.m_StatusEffects)
+                    if (se != null && se.NameHash() == seHash)
+                    {
+                        var name = !string.IsNullOrEmpty(se.m_name) && !se.m_name.StartsWith("$") ? se.m_name : se.name;
+                        if (!string.IsNullOrEmpty(name))
+                            player.Message(MessageHud.MessageType.TopLeft, $"[Admin] {name}");
+                        break;
+                    }
         }
 
         // Runs on the TARGET player's client (skills live with their owner, like inventories).

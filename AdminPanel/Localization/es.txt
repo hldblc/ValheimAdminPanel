@@ -334,3 +334,6 @@ side.privacy=El informe contiene tu texto, las versiones del mod/juego y (opcion
 side.sent_thanks=¡Enviado — gracias!
 side.rejected=Discord rechazó el informe (HTTP {0}).
 side.send_failed=Error al enviar: {0}
+player.msg_applied_to={0} aplicado → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll no está instalado en este host — las acciones de servidor (invocar, dar, teletransportar, deshacer…) no harán nada. Instala AMBOS archivos del mod.
+player.se_target_hint=Los objetivos remotos necesitan companion 2.3.0 en su lado — las versiones antiguas lo ignoran en silencio.

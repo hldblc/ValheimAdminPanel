@@ -334,3 +334,6 @@ side.privacy=Rapporten innehåller din text, mod-/spelversioner och (valfritt) s
 side.sent_thanks=Skickat — tack!
 side.rejected=Discord avvisade rapporten (HTTP {0}).
 side.send_failed=Sändningen misslyckades: {0}
+player.msg_applied_to={0} tillämpad → {1}
+chrome.companion_missing_host=⚠ AdminPanelCompanion.dll är inte installerad på denna värd — serveråtgärder (spawna, ge, teleportera, ångra…) gör ingenting. Installera BÅDA modfilerna.
+player.se_target_hint=Fjärrmål kräver companion 2.3.0 på deras sida — äldre versioner ignorerar detta tyst.
