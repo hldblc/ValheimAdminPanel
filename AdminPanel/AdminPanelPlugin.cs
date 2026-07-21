@@ -490,16 +490,18 @@ namespace AdminPanel
         //
         // Deliberately NOT gated on the camera-lock toggle (unlike mouse-LOOK): the wheel over an open panel
         // is always list-scrolling, never an intentional zoom.
-        [HarmonyPatch]
-        private static class ZoomFreezePatch
+        // Shared state for the two zoom-freeze patch classes below. Split into ONE CLASS PER TARGET on
+        // purpose: the earlier single class with per-method [HarmonyPatch(typeof, name)] targets produced
+        // no bind error yet the GetCameraPosition prefix demonstrably never fired in the field (zoom kept
+        // leaking) — attribute merging across a mixed-target class is exactly the pattern nothing else in
+        // this codebase relies on. One target per class is the shape every proven patch here uses.
+        private static class ZoomFreezeState
         {
-            private static readonly AccessTools.FieldRef<GameCamera, float> Distance =
+            internal static readonly AccessTools.FieldRef<GameCamera, float> Distance =
                 AccessTools.FieldRefAccess<GameCamera, float>("m_distance");
-            // The free-fly branch returns before any of the m_distance math and instead feeds the wheel into
-            // its fly-speed multiplier (×1.44 per up-notch), so scrolling a panel list while spectating in
-            // free-fly silently re-scaled the camera speed. Same pin, second field. Resolved defensively:
-            // if the field is ever renamed the FieldRef is null and free-fly simply isn't pinned.
-            private static readonly AccessTools.FieldRef<GameCamera, float> FlySpeed = ResolveFlySpeed();
+            // Free-fly consumes the wheel as a speed multiplier (×1.44 per up-notch) before the zoom code
+            // is ever reached, so it gets its own pin. Resolved defensively: renamed field = null = no pin.
+            internal static readonly AccessTools.FieldRef<GameCamera, float> FlySpeed = ResolveFlySpeed();
 
             private static AccessTools.FieldRef<GameCamera, float> ResolveFlySpeed()
             {
@@ -507,41 +509,50 @@ namespace AdminPanel
                 catch { return null; }
             }
 
-            private static float _pre;
-            private static float _preFly;
-            private static bool _armed;   // only restore within an UpdateCamera call that we snapshotted
+            internal static float Pre;
+            internal static float PreFly;
+            internal static bool Armed;   // only restore within an UpdateCamera call that was snapshotted
 
-            private static bool Active => Instance != null && Instance._visible;
+            internal static bool Active => Instance != null && Instance._visible;
+        }
 
-            [HarmonyPatch(typeof(GameCamera), "UpdateCamera")]
+        [HarmonyPatch(typeof(GameCamera), "UpdateCamera")]
+        private static class ZoomFreezeCapturePatch
+        {
             [HarmonyPrefix]
-            private static void Capture(GameCamera __instance)
+            private static void Prefix(GameCamera __instance)
             {
-                _pre = Distance(__instance);
-                if (FlySpeed != null) _preFly = FlySpeed(__instance);
-                _armed = true;
+                ZoomFreezeState.Pre = ZoomFreezeState.Distance(__instance);
+                if (ZoomFreezeState.FlySpeed != null) ZoomFreezeState.PreFly = ZoomFreezeState.FlySpeed(__instance);
+                ZoomFreezeState.Armed = true;
             }
 
-            // Runs after the wheel has been folded into m_distance but before the camera is positioned.
-            [HarmonyPatch(typeof(GameCamera), "GetCameraPosition")]
-            [HarmonyPrefix]
-            private static void RestoreBeforePositioning(GameCamera __instance)
-            {
-                if (_armed && Active) Distance(__instance) = _pre;
-            }
-
-            // Belt-and-braces: keep the field clean even on frames where GetCameraPosition is skipped
-            // (dead/ragdoll, attached) so no wheel delta survives into the next frame.
-            [HarmonyPatch(typeof(GameCamera), "UpdateCamera")]
+            // Belt-and-braces: also restore after the call so no wheel delta survives into the next frame
+            // on paths that skip GetCameraPosition (dead/ragdoll, attached, free-fly early return).
             [HarmonyPostfix]
-            private static void RestoreAfter(GameCamera __instance)
+            private static void Postfix(GameCamera __instance)
             {
-                if (_armed && Active)
+                if (ZoomFreezeState.Armed && ZoomFreezeState.Active)
                 {
-                    Distance(__instance) = _pre;
-                    if (FlySpeed != null) FlySpeed(__instance) = _preFly;
+                    ZoomFreezeState.Distance(__instance) = ZoomFreezeState.Pre;
+                    if (ZoomFreezeState.FlySpeed != null) ZoomFreezeState.FlySpeed(__instance) = ZoomFreezeState.PreFly;
                 }
-                _armed = false;
+                ZoomFreezeState.Armed = false;
+            }
+        }
+
+        // The restore that actually stops visible zoom: UpdateCamera folds the wheel into m_distance and
+        // then positions the camera FROM that field inside the same call — restoring only afterwards (the
+        // 2.2.9 approach) left every scrolled frame rendered at the zoomed distance. This prefix runs
+        // between the wheel math and the positioning.
+        [HarmonyPatch(typeof(GameCamera), "GetCameraPosition")]
+        private static class ZoomFreezeApplyPatch
+        {
+            [HarmonyPrefix]
+            private static void Prefix(GameCamera __instance)
+            {
+                if (ZoomFreezeState.Armed && ZoomFreezeState.Active)
+                    ZoomFreezeState.Distance(__instance) = ZoomFreezeState.Pre;
             }
         }
 
@@ -633,8 +644,10 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Camera-lock patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(DeathPointPatch)); }
             catch (Exception e) { Logger.LogWarning($"Death-point patch failed (panel still works): {e.Message}"); }
-            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezePatch)); }
-            catch (Exception e) { Logger.LogWarning($"Zoom-freeze patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeCapturePatch)); }
+            catch (Exception e) { Logger.LogWarning($"Zoom-freeze capture patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeApplyPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Zoom-freeze apply patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(MenuVersionPatch)); }
             catch (Exception e) { Logger.LogWarning($"Menu version-line patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
@@ -1296,6 +1309,12 @@ namespace AdminPanel
 
             _labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13 };
             _labelStyle.normal.textColor = parchment;
+            // Labels size to their text. GUI.skin.label stretches by default, which was invisible while
+            // every form label had a fixed Width — the moment those became MinWidth, labels started
+            // absorbing row slack ("Dir 0°" ballooning half the Wind row, field-reported). Rows now lay
+            // out as: content-sized labels/buttons, stretching text fields, FlexibleSpace where a gap is
+            // wanted.
+            _labelStyle.stretchWidth = false;
 
             _headerStyle = new GUIStyle(_labelStyle) { fontStyle = FontStyle.Bold, fontSize = 14 };
             _headerStyle.normal.textColor = gold;
@@ -1310,7 +1329,7 @@ namespace AdminPanel
 
             _textAreaStyle = new GUIStyle(_textFieldStyle) { wordWrap = true };
 
-            _toggleStyle = new GUIStyle(GUI.skin.toggle) { fontSize = 13 };
+            _toggleStyle = new GUIStyle(GUI.skin.toggle) { fontSize = 13, stretchWidth = false };
             _toggleStyle.normal.textColor = parchment;
             _toggleStyle.onNormal.textColor = gold;
             _toggleStyle.hover.textColor = parchment;
