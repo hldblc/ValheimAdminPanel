@@ -62,7 +62,9 @@ Press **F7** (configurable) in-game to open a draggable, Valheim-styled panel wi
 
 ## 🔒 Security model
 
-Every meaningful action is routed through the **server**, which validates the sender's Steam ID against `adminlist.txt` before executing. Denied attempts are logged with the offender's Steam ID. Clients additionally refuse admin commands that don't originate from the server. If someone copies the panel DLL, every button does nothing.
+Every action that touches the world or another player — spawn, give, teleport, kick, ban, unban, heal, inventory view/remove, broadcast, world events, skills, skip night — is routed through the **server**, which validates the sender's Steam ID against `adminlist.txt` before executing and re-stamps the true sender ID so requests can't be forged. Denied attempts are logged with the offender's Steam ID. Clients additionally refuse admin commands that don't originate from the server. If someone copies the panel DLL onto your server, every one of those buttons does nothing.
+
+Being a client mod, the panel *window* still opens for anyone who installs the DLL, and self-only toggles (god mode, fly, no-stamina) run on that player's own client without server validation — inherent to every Valheim client mod, since the game trusts clients for their own character. Pair with a server-side anticheat if you need to prevent that too.
 
 ## 📦 Installation
 
