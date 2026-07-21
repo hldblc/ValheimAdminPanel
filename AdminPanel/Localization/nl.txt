@@ -1,0 +1,336 @@
+# Advanced Admin Panel - Nederlands
+# Keys must match en.txt exactly. Translate only the right-hand side.
+# Keep every {0}, {1} ... placeholder; you may reorder them to suit Dutch word order.
+
+# ---- Tabs ----
+tab.items=Voorwerpen
+tab.creatures=Wezens
+tab.bosses=Bazen
+tab.player=Speler
+tab.world=Wereld
+tab.players=Spelers
+tab.server=Server
+tab.settings=Instellingen
+
+# ---- Shared ----
+common.all=Alle
+common.search=Zoeken:
+common.sort=Sorteren
+common.me=Ik
+common.nobody=(niemand)
+common.on=AAN
+common.off=UIT
+common.nothing_yet=Nog niets.
+common.confirm_prompt=Klik nogmaals om te bevestigen
+common.not_connected_srv=Niet verbonden met een server
+
+# ---- Panel chrome ----
+chrome.title_full=⚔ Advanced Admin Panel ⚔   [{0} om te sluiten]
+chrome.title_hint=[{0} om te sluiten]
+chrome.not_in_game=Niet in het spel (geen lokale speler).
+chrome.update_available=⬆ Update beschikbaar: v{0} — jij hebt v{1}
+chrome.get_update=Update ophalen
+chrome.version_mismatch=⚠ Versieconflict: paneel v{0} maar de server-companion is v{1}. Werk BEIDE bestanden bij — tot dan werken sommige functies niet.
+chrome.companion_silent=⚠ De companion van de server antwoordde niet (ouder dan 2.2.9 of afwezig). Serverzijdige acties kunnen stilzwijgend mislukken — vraag de eigenaar beide modbestanden bij te werken.
+
+# ---- Item categories (chips) ----
+cat.all=Alle
+cat.fav=★ Fav
+cat.recent=Recent
+cat.kits=Sets
+cat.weapons=Wapens
+cat.shields=Schilden
+cat.armor=Harnas
+cat.accessories=Accessoires
+cat.ammo=Munitie
+cat.tools=Gereedschap
+cat.food=Eten & Drankjes
+cat.materials=Materialen
+cat.trophies=Trofeeën
+cat.misc=Overig
+
+# ---- Sort modes ----
+sort.az=A → Z
+sort.za=Z → A
+sort.category=Categorie
+sort.faction=Factie
+
+# ---- Items tab ----
+items.kits_title=Uitrustingssets (via de server in je inventaris geleverd):
+items.give_target=Ontvanger:
+items.to_me=Naar mij
+items.give=Geven
+items.bulk_title=Bulkpakket (aanpasbaar in het configuratiebestand):
+items.bulk_grab=Bulkpakket pakken
+items.bulk_requested=Bulkpakket aangevraagd
+items.amount=Aantal:
+items.quality=Kwaliteit:
+items.legend=Drop = grond | Tas = jouw tas | Geven = tas van het doel
+items.db_not_loaded=Voorwerpendatabase niet geladen.
+items.drop=Drop
+items.bag=Tas
+items.count={0} voorwerpen
+items.kit_sent=Set '{0}' verzonden
+items.msg_requested={0}x {1} aangevraagd
+items.msg_requested_bag={0}x {1} naar de tas aangevraagd
+items.msg_no_icon_drop={0} heeft geen pictogram — dit zou je inventaris beschadigen (alleen droppen)
+items.msg_no_icon_give={0} heeft geen pictogram — kan niet gegeven worden
+items.msg_sent={0}x {1} naar {2} verzonden
+items.msg_no_target=Geen ontvanger geselecteerd
+
+# ---- Creatures tab ----
+cre.db_not_loaded=Scènedatabase niet geladen.
+cre.bosses=Bazen
+cre.tamable=Temmbaar
+cre.count=Aantal:
+cre.stars=Sterren:
+cre.at_crosshair=Op het kruispunt
+cre.pet_name=Naam huisdier:
+cre.undo=Spawn ongedaan maken
+cre.undo_requested=Ongedaan maken aangevraagd
+cre.arena=Arena: A={0} tegen B={1}
+cre.fight=VECHTEN!
+cre.arena_started=Arena: {0}x {1} tegen {2}x {3}
+cre.preset=Voorinstelling:
+cre.preset_spawned=Voorinstelling '{0}' gespawned
+cre.preset_saved=Voorinstelling '{0}' opgeslagen
+cre.save=Opslaan
+cre.spawn=Spawnen
+cre.tame=Temmen
+cre.tag_boss=[BAAS]
+cre.tag_tamable=[temmbaar]
+cre.msg_requested={0} aangevraagd
+cre.msg_requested_tamed=Getemde {0} aangevraagd
+cre.count_total={0} wezens
+
+# ---- Bosses tab ----
+boss.section=Bazen
+boss.hint=Spawn direct, of pak de offervoorwerpen van het altaar:
+boss.offering=Offer ({0}x {1})
+boss.msg_requested=Baas {0} aangevraagd
+boss.raids=Raid-gebeurtenissen
+boss.raids_hint=Serverzijdig gestart op jouw positie:
+boss.msg_event=Gebeurtenis '{0}' aangevraagd
+
+# ---- Player tab ----
+player.toggles=Schakelaars
+player.god=Godmodus (geen schade)
+player.ghost=Spookmodus (vijanden negeren je)
+player.fly=Vliegen (debugvlucht)
+player.free_build=Vrij bouwen (geen grondstofkosten)
+player.no_stamina=Geen uithoudingsverlies
+player.one_hit=Eén klap dodelijk (je aanvallen doen enorme schade)
+player.inf_weight=Oneindig draaggewicht
+player.msg_god=Godmodus {0}
+player.msg_ghost=Spookmodus {0}
+player.msg_fly_on=Vliegen AAN — springen om te vliegen, sluipen om te dalen
+player.msg_fly_off=Vliegen UIT
+player.msg_free_build=Vrij bouwen {0}
+player.msg_no_stamina=Geen uithoudingsverlies {0}
+player.msg_one_hit=Eén klap dodelijk {0}
+player.msg_inf_weight=Oneindig draaggewicht {0}
+player.multipliers=Vermenigvuldigers
+player.speed=Snelheid x{0}
+player.jump=Sprong x{0}
+player.pickup=Oprapen {0}m
+player.quick_actions=Snelle acties
+player.full_heal=Volledig genezen
+player.full_stamina=Volle uithouding
+player.full_eitr=Volle eitr
+player.msg_healed=Genezen
+player.msg_stamina=Uithouding hersteld
+player.msg_eitr=Eitr hersteld
+player.repair_all=Alle voorwerpen repareren
+player.clear_se=Statuseffecten wissen
+player.fix_broken=Kapotte inventarisvoorwerpen herstellen
+player.msg_repaired=Alle voorwerpen gerepareerd
+player.msg_se_cleared=Statuseffecten gewist
+player.msg_fixed_broken={0} kapotte (pictogramloze) voorwerpen uit de inventaris verwijderd
+player.tp_death=TP naar laatste dood
+player.msg_tp_death=Teleporteren naar je laatste sterfpunt
+player.msg_no_death=Nog geen dood geregistreerd
+player.no_death_yet=(nog geen dood geregistreerd)
+player.last_death=laatste dood: {0}
+player.skills=Vaardigheden
+player.skills_plus10=Alle vaardigheden +10
+player.skills_100=Alle vaardigheden 100
+player.skills_reset=Vaardigheden resetten
+player.show_skills=Vaardighedenbrowser tonen
+player.apply_to=Toepassen op:
+player.custom=Eigen:
+player.custom_pm=±Eigen
+player.private_note=Privénotitie:
+player.private_note_hint=Alleen aan die speler getoond wanneer je een vaardigheid verhoogt — laat leeg voor een stille verhoging. (De getoonde niveaus zijn die van jou. Vereist companion 2.2.0 aan hun kant.)
+player.level_short=Niv {0}
+player.msg_custom_hint=Typ eerst een getal ongelijk aan nul in het eigen veld (negatief verlaagt)
+player.msg_skill_self={0} +{1}
+player.msg_skill_target={0} +{1} → {2}
+player.msg_skills_changed=Vaardigheden gewijzigd met {0}
+player.msg_skills_set=Alle vaardigheden ingesteld op {0}
+player.status_effects=Statuseffecten
+player.show_se=Statuseffectbrowser tonen
+player.no_se_match=Geen overeenkomende statuseffecten.
+player.apply=Toepassen
+player.msg_applied={0} toegepast
+
+# ---- Status-effect buckets ----
+se.boss_powers=Baaskrachten
+se.set_bonuses=Harnasset-bonussen
+se.potions=Drankjes & Mede
+se.debuffs=Verzwakkingen & Omgeving
+se.comfort=Comfort & Rust
+se.other=Overig
+
+# ---- World tab ----
+world.time_weather=Tijd & weer
+world.set=Instellen
+world.release=Vrijgeven
+world.skip_night=Nacht overslaan
+world.msg_skip_night=Doorspoelen naar de ochtend (vereist companion 2.2.9 op de server)
+world.weather_hint=Weer (leeg = resetten). Clear, Rain, ThunderStorm, Snow, Mist, Twilight_Clear:
+world.msg_weather_reset=Weer gereset
+world.msg_weather_forced=Weer geforceerd: {0}
+world.wind=Wind
+world.wind_dir=Richt {0}°
+world.wind_str=Kr {0}
+world.reset=Resetten
+world.msg_wind_set=Wind ingesteld
+world.msg_wind_reset=Wind gereset
+world.teleport=Teleporteren
+world.map_hint=🗺  Kaart: open de volledige kaart (M), zweef over een plek en druk op [{0}] om daarheen te teleporteren.
+world.to_player=Naar speler:
+world.no_others=(geen andere spelers online)
+world.msg_tp_to=Teleporteren naar {0}
+world.bosses=Bazen:
+world.no_altars=(nog geen bekende altaren — verken / versla bazen)
+world.position=Positie:
+world.now_at=nu: {0}, {1}, {2}
+world.go=Ga
+world.msg_teleporting=Teleporteren
+world.msg_map_tp_unavailable=Kaartteleport niet beschikbaar (game-API gewijzigd)
+world.bookmark=Bladwijzer:
+world.save_here=Hier opslaan
+world.del=Verw
+world.msg_bookmark_saved=Bladwijzer '{0}' opgeslagen
+world.area_actions=Gebiedsacties
+world.combat=Gevecht:
+world.kill_50=Vijanden doden 50m
+world.kill_all=ALLES geladen doden
+world.tame_30=Dieren temmen 30m
+world.cleanup=Opruimen:
+world.ground_items=Voorwerpen op de grond 50m
+world.repair_builds=Bouwwerken repareren 50m
+world.clear_trees=Bomen verwijderen 20m
+world.world=Wereld:
+world.explore_map=Hele kaart onthullen
+world.ping_pos=Mijn positie pingen
+world.peaceful=Vredige modus (geen raids)
+world.msg_map_explored=Kaart onthuld
+world.msg_pinged=Gepingd
+world.msg_peaceful=Vredige modus {0} aangevraagd
+world.msg_killed={0} wezens gedood
+world.msg_tamed={0} dieren getemd
+world.msg_drops_removed={0} voorwerpen van de grond verwijderd
+world.msg_repaired={0} bouwonderdelen gerepareerd
+world.msg_trees_removed={0} bomen/stammen verwijderd
+world.global_keys=Globale sleutels
+world.global_keys_hint=Wereldvoortgangsvlaggen — sturen raids en de baasstatus:
+world.remove=Verwijderen
+world.add_key=Sleutel toevoegen
+world.msg_key_removed=Sleutel {0} verwijderd
+world.msg_key_added=Sleutel {0} toegevoegd
+
+# ---- Players tab ----
+players.not_connected=Niet verbonden.
+players.broadcast_section=Omroep
+players.broadcast=Omroep:
+players.send_all=Naar iedereen sturen
+players.msg_broadcast_sent=Omroep verzonden
+players.summon_all=IEDEREEN oproepen
+players.msg_summon_all=Iedereen oproepen
+players.connected=Verbonden spelers
+players.you_suffix=(jij)
+players.tp_to=TP naar
+players.summon=Oproepen
+players.watch=Bekijken
+players.heal=Genezen
+players.map=Kaart
+players.inventory=Inventaris
+players.kick=Schoppen
+players.ban=Verbannen
+players.note=Notitie:
+players.msg_watching={0} bekijken (spook+vliegen ingeschakeld)
+players.msg_healing={0} genezen
+players.msg_pinged=Positie van {0} gepingd
+players.msg_lightning=Bliksem op {0}!
+players.msg_kicked={0} geschopt
+players.msg_banned={0} verbannen
+players.msg_summoning={0} oproepen
+players.inv_viewer=Inventarisweergave
+players.pick_player=(kies hierboven een speler)
+players.no_response=Geen reactie — die speler heeft de companion-mod waarschijnlijk niet geïnstalleerd.
+players.waiting=Wachten op reactie...
+players.remove_1=1 verwijderen
+players.remove_all=Alles verwijderen
+players.remove_hint=Verwijderen vereist companion 2.2.0 bij de doelspeler (en op de server).
+players.msg_removing={0}x {1} van {2} verwijderen
+
+# ---- Server tab ----
+srv.live_stats=Live statistieken
+srv.stats_line=Werelddag: {0}     Spelers online: {1}     Geladen wezens: {2}     Jouw FPS: {3}
+srv.load_line=ZDO's geladen: {0}     Zones geladen: {1}     Sessie: {2}
+srv.host=Server: {0}
+srv.versions=Paneel v{0}   ·   server-companion: {1}
+srv.no_reply=(geen antwoord - ouder dan 2.2.9 of afwezig)
+srv.unban_title=Speler deblokkeren (Steam ID)
+srv.unban=Deblokkeren
+srv.unban_requested=Deblokkering aangevraagd voor {0}
+srv.joinlog_title=Geschiedenis van binnenkomst/vertrek (deze sessie)
+
+# ---- Settings tab ----
+set.appearance=Uiterlijk
+set.font=Lettertype:
+set.font_hint='Norse (auto)' kiest het beste beschikbare spellettertype. Een niet-geladen lettertype valt terug op Default.
+set.font_fallback_note=Valheims Norse-lettertype kan deze taal niet weergeven, dus het paneel gebruikt het standaardlettertype.
+set.font_size=Tekengrootte: {0}
+set.opacity=Dekking: {0}%
+set.show_logo=Logokop tonen
+set.language=Taal:
+set.language_hint='Auto' volgt de taalinstelling van Valheim zelf. Namen van voorwerpen en wezens volgen altijd het spel.
+set.behavior=Gedrag
+set.camera_lock=Camera vergrendelen zolang het paneel open is (zoals bij de inventaris)
+set.panel=Paneel
+set.auto_whats_new=Nieuws één keer tonen na elke update
+set.whats_new=Wat is er nieuw?
+set.report_bug=Een bug melden
+set.hotkeys=Sneltoetsen
+set.key_toggle=Paneel openen / sluiten
+set.key_map_tp=Kaartteleport
+set.rebind=Opnieuw toewijzen
+set.listening=Luisteren…
+set.rebind_hint=Druk op de nieuwe toets…   (midden-/zijmuisknoppen werken ook · Esc annuleert)
+set.reset=Resetten
+set.reset_window=Venstergrootte & -positie resetten
+set.reset_appearance=Uiterlijk resetten
+set.saved_hint=Instellingen worden opgeslagen in het BepInEx-configuratiebestand en overleven herstarts.
+set.support=Steun
+set.buy_coffee=Trakteer de ontwikkelaar op koffie
+set.support_hint=Opent PayPal in je browser. Volledig optioneel — de mod is gratis en blijft dat.
+
+# ---- Side window (What's New / Bug Report) ----
+side.whats_new=Wat is er nieuw
+side.bug_report=Bugmelding
+side.version=Versie {0}
+side.whats_new_hint=Opent één keer per update — in te stellen bij Instellingen → Paneel.
+side.describe=Beschrijf de bug
+side.attach=Schermafbeelding bijvoegen (paneel inbegrepen)
+side.send=Melding versturen
+side.sending=Versturen…
+side.describe_first=Beschrijf eerst de bug (een zin of twee).
+side.discord=Word lid van onze Discord
+side.no_webhook=Versturen is uitgeschakeld — geen webhook ingesteld (BugReport.WebhookUrl).
+side.cooldown=Melding verzonden — je kunt over {0}s een volgende sturen.
+side.privacy=De melding bevat jouw tekst, mod-/spelversies en (optioneel) de schermafbeelding — verder niets.
+side.sent_thanks=Verzonden — bedankt!
+side.rejected=Discord heeft de melding geweigerd (HTTP {0}).
+side.send_failed=Versturen mislukt: {0}

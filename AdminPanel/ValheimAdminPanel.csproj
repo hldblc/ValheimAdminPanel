@@ -67,6 +67,12 @@
 
   <ItemGroup>
     <EmbeddedResource Include="logo.png" />
+    <!-- Optional: the coffee-cup icon on the support button. Conditional so the mod still builds if the
+         art asset is missing — DrawCoffeeButton falls back to a text-only button. -->
+    <EmbeddedResource Include="coffee.png" Condition="Exists('coffee.png')" />
+    <!-- Translations ship inside the DLL so the mod stays a two-file install. Loc also overlays an optional
+         AdminPanel_Localization\<code>.txt next to the plugin, so translators can iterate without a rebuild. -->
+    <EmbeddedResource Include="Localization\*.txt" />
   </ItemGroup>
 
 </Project>

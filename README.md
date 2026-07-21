@@ -80,6 +80,19 @@ Make sure your Steam ID is in the server's `adminlist.txt`. That's it — press 
 
 ⚠️ Keep `AdminPanel.dll` to yourself. It's harmless in others' hands (the server rejects non-admins), but there's no reason to hand it out.
 
+## 🌍 Localization
+
+The panel ships with **English, Deutsch, Français, Español, Italiano, Português (BR), Polski, Nederlands** and **Svenska**, embedded in the DLL so the install stays two files. By default it follows Valheim's own language setting; override it in **Settings → Language**. Item, creature and status-effect names always come from the game itself.
+
+**Adding or fixing a language** — no rebuild required:
+
+1. Copy [`AdminPanel/Localization/en.txt`](AdminPanel/Localization/en.txt) to `<code>.txt` (e.g. `cs.txt`).
+2. Translate the right-hand side of each `key=value` line. Leave keys alone. Keep every `{0}`/`{1}` placeholder — you may reorder them for your language's word order.
+3. Drop it in `BepInEx/plugins/AdminPanel_Localization/` and restart the game. A disk file overrides the embedded copy key-by-key.
+4. Run `pwsh tools/check-locales.ps1` to verify nothing drifted, then open a PR.
+
+Any line you don't translate falls back to English on its own, so a partial translation is perfectly usable. To have a new language appear in the Settings dropdown it also needs an entry in `Loc.Shipped` / `Loc.MenuNames`.
+
 ## 🔨 Building from source
 
 1. Install the [.NET SDK](https://dotnet.microsoft.com/download)

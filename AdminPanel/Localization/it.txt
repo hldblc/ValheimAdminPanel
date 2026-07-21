@@ -1,0 +1,336 @@
+# Advanced Admin Panel - Italiano
+# Keys must match en.txt exactly. Translate only the right-hand side.
+# Keep every {0}, {1} ... placeholder; you may reorder them to suit Italian word order.
+
+# ---- Tabs ----
+tab.items=Oggetti
+tab.creatures=Creature
+tab.bosses=Boss
+tab.player=Giocatore
+tab.world=Mondo
+tab.players=Giocatori
+tab.server=Server
+tab.settings=Impostazioni
+
+# ---- Shared ----
+common.all=Tutti
+common.search=Cerca:
+common.sort=Ordine
+common.me=Io
+common.nobody=(nessuno)
+common.on=ATTIVO
+common.off=DISATTIVO
+common.nothing_yet=Ancora nulla.
+common.confirm_prompt=Clicca di nuovo per confermare
+common.not_connected_srv=Non connesso a un server
+
+# ---- Panel chrome ----
+chrome.title_full=⚔ Advanced Admin Panel ⚔   [{0} per chiudere]
+chrome.title_hint=[{0} per chiudere]
+chrome.not_in_game=Non in gioco (nessun giocatore locale).
+chrome.update_available=⬆ Aggiornamento disponibile: v{0} — hai la v{1}
+chrome.get_update=Scarica l'aggiornamento
+chrome.version_mismatch=⚠ Versioni non corrispondenti: pannello v{0} ma il companion del server è v{1}. Aggiorna ENTRAMBI i file — fino ad allora alcune funzioni non andranno.
+chrome.companion_silent=⚠ Il companion del server non ha risposto (precedente alla 2.2.9 o assente). Le azioni lato server possono fallire silenziosamente — chiedi al proprietario di aggiornare entrambi i file della mod.
+
+# ---- Item categories (chips) ----
+cat.all=Tutti
+cat.fav=★ Pref
+cat.recent=Recenti
+cat.kits=Kit
+cat.weapons=Armi
+cat.shields=Scudi
+cat.armor=Armatura
+cat.accessories=Accessori
+cat.ammo=Munizioni
+cat.tools=Strumenti
+cat.food=Cibo e Pozioni
+cat.materials=Materiali
+cat.trophies=Trofei
+cat.misc=Varie
+
+# ---- Sort modes ----
+sort.az=A → Z
+sort.za=Z → A
+sort.category=Categoria
+sort.faction=Fazione
+
+# ---- Items tab ----
+items.kits_title=Kit di equipaggiamento (consegnati nell'inventario tramite il server):
+items.give_target=Destinatario:
+items.to_me=A me
+items.give=Dai
+items.bulk_title=Pacchetto in blocco (modificabile nel file di configurazione):
+items.bulk_grab=Prendi il pacchetto
+items.bulk_requested=Pacchetto in blocco richiesto
+items.amount=Quantità:
+items.quality=Qualità:
+items.legend=Drop = terra | Borsa = la tua borsa | Dai = borsa del bersaglio
+items.db_not_loaded=Database oggetti non caricato.
+items.drop=Drop
+items.bag=Borsa
+items.count={0} oggetti
+items.kit_sent=Kit «{0}» inviato
+items.msg_requested=Richiesti {0}x {1}
+items.msg_requested_bag=Richiesti {0}x {1} nella borsa
+items.msg_no_icon_drop={0} non ha un'icona — corromperebbe il tuo inventario (solo drop)
+items.msg_no_icon_give={0} non ha un'icona — non può essere dato
+items.msg_sent=Inviati {0}x {1} a {2}
+items.msg_no_target=Nessun destinatario selezionato
+
+# ---- Creatures tab ----
+cre.db_not_loaded=Database scena non caricato.
+cre.bosses=Boss
+cre.tamable=Addomesticabile
+cre.count=Numero:
+cre.stars=Stelle:
+cre.at_crosshair=Al mirino
+cre.pet_name=Nome del cucciolo:
+cre.undo=Annulla evocazione
+cre.undo_requested=Annullamento richiesto
+cre.arena=Arena: A={0} contro B={1}
+cre.fight=COMBATTI!
+cre.arena_started=Arena: {0}x {1} contro {2}x {3}
+cre.preset=Preimpostazione:
+cre.preset_spawned=Preimpostazione «{0}» evocata
+cre.preset_saved=Preimpostazione «{0}» salvata
+cre.save=Salva
+cre.spawn=Evoca
+cre.tame=Addomestica
+cre.tag_boss=[BOSS]
+cre.tag_tamable=[addomesticabile]
+cre.msg_requested={0} richiesto
+cre.msg_requested_tamed={0} addomesticato richiesto
+cre.count_total={0} creature
+
+# ---- Bosses tab ----
+boss.section=Boss
+boss.hint=Evoca direttamente, o prendi gli oggetti di offerta dell'altare:
+boss.offering=Offerta ({0}x {1})
+boss.msg_requested=Boss {0} richiesto
+boss.raids=Eventi di incursione
+boss.raids_hint=Avviati lato server alla tua posizione:
+boss.msg_event=Evento «{0}» richiesto
+
+# ---- Player tab ----
+player.toggles=Interruttori
+player.god=Modalità dio (nessun danno)
+player.ghost=Modalità fantasma (i nemici ti ignorano)
+player.fly=Volo (volo di debug)
+player.free_build=Costruzione libera (nessun costo di risorse)
+player.no_stamina=Nessun consumo di stamina
+player.one_hit=Uccisione con un colpo (i tuoi attacchi infliggono danni enormi)
+player.inf_weight=Peso trasportabile illimitato
+player.msg_god=Modalità dio {0}
+player.msg_ghost=Modalità fantasma {0}
+player.msg_fly_on=Volo ATTIVO — salta per volare, accovacciati per scendere
+player.msg_fly_off=Volo DISATTIVO
+player.msg_free_build=Costruzione libera {0}
+player.msg_no_stamina=Nessun consumo di stamina {0}
+player.msg_one_hit=Uccisione con un colpo {0}
+player.msg_inf_weight=Peso trasportabile illimitato {0}
+player.multipliers=Moltiplicatori
+player.speed=Velocità x{0}
+player.jump=Salto x{0}
+player.pickup=Raccolta {0}m
+player.quick_actions=Azioni rapide
+player.full_heal=Cura completa
+player.full_stamina=Stamina piena
+player.full_eitr=Eitr pieno
+player.msg_healed=Curato
+player.msg_stamina=Stamina ripristinata
+player.msg_eitr=Eitr ripristinato
+player.repair_all=Ripara tutti gli oggetti
+player.clear_se=Rimuovi effetti di stato
+player.fix_broken=Ripara oggetti rotti nell'inventario
+player.msg_repaired=Tutti gli oggetti riparati
+player.msg_se_cleared=Effetti di stato rimossi
+player.msg_fixed_broken=Rimossi {0} oggetti rotti (senza icona) dall'inventario
+player.tp_death=TP all'ultima morte
+player.msg_tp_death=Teletrasporto al tuo ultimo punto di morte
+player.msg_no_death=Nessuna morte registrata finora
+player.no_death_yet=(nessuna morte registrata finora)
+player.last_death=ultima morte: {0}
+player.skills=Abilità
+player.skills_plus10=Tutte le abilità +10
+player.skills_100=Tutte le abilità 100
+player.skills_reset=Azzera abilità
+player.show_skills=Mostra browser abilità
+player.apply_to=Applica a:
+player.custom=Person.:
+player.custom_pm=±Person.
+player.private_note=Nota privata:
+player.private_note_hint=Mostrata solo a quel giocatore quando aumenti un'abilità — lascia vuoto per un aumento silenzioso. (I livelli mostrati sono i tuoi. Richiede companion 2.2.0 dalla loro parte.)
+player.level_short=Lv {0}
+player.msg_custom_hint=Scrivi prima un numero diverso da zero nel campo personalizzato (negativo abbassa)
+player.msg_skill_self={0} +{1}
+player.msg_skill_target={0} +{1} → {2}
+player.msg_skills_changed=Abilità modificate di {0}
+player.msg_skills_set=Tutte le abilità impostate a {0}
+player.status_effects=Effetti di stato
+player.show_se=Mostra browser effetti di stato
+player.no_se_match=Nessun effetto di stato corrispondente.
+player.apply=Applica
+player.msg_applied={0} applicato
+
+# ---- Status-effect buckets ----
+se.boss_powers=Poteri dei boss
+se.set_bonuses=Bonus set armatura
+se.potions=Pozioni e Idromele
+se.debuffs=Penalità e Ambiente
+se.comfort=Comfort e Riposo
+se.other=Altro
+
+# ---- World tab ----
+world.time_weather=Tempo e meteo
+world.set=Imposta
+world.release=Rilascia
+world.skip_night=Salta la notte
+world.msg_skip_night=Passo al mattino (richiede companion 2.2.9 sul server)
+world.weather_hint=Meteo (vuoto = reimposta). Clear, Rain, ThunderStorm, Snow, Mist, Twilight_Clear:
+world.msg_weather_reset=Meteo reimpostato
+world.msg_weather_forced=Meteo forzato: {0}
+world.wind=Vento
+world.wind_dir=Dir {0}°
+world.wind_str=For {0}
+world.reset=Reimposta
+world.msg_wind_set=Vento impostato
+world.msg_wind_reset=Vento reimpostato
+world.teleport=Teletrasporto
+world.map_hint=🗺  Mappa: apri la mappa completa (M), passa su un punto e premi [{0}] per teletrasportarti lì.
+world.to_player=Al giocatore:
+world.no_others=(nessun altro giocatore online)
+world.msg_tp_to=Teletrasporto verso {0}
+world.bosses=Boss:
+world.no_altars=(nessun altare conosciuto — esplora / sconfiggi boss)
+world.position=Posizione:
+world.now_at=ora: {0}, {1}, {2}
+world.go=Vai
+world.msg_teleporting=Teletrasporto
+world.msg_map_tp_unavailable=Teletrasporto da mappa non disponibile (API del gioco cambiata)
+world.bookmark=Segnalibro:
+world.save_here=Salva qui
+world.del=Elim
+world.msg_bookmark_saved=Segnalibro «{0}» salvato
+world.area_actions=Azioni sull'area
+world.combat=Combattimento:
+world.kill_50=Uccidi nemici 50m
+world.kill_all=Uccidi TUTTO il caricato
+world.tame_30=Addomestica animali 30m
+world.cleanup=Pulizia:
+world.ground_items=Oggetti a terra 50m
+world.repair_builds=Ripara costruzioni 50m
+world.clear_trees=Rimuovi alberi 20m
+world.world=Mondo:
+world.explore_map=Rivela tutta la mappa
+world.ping_pos=Segnala la mia posizione
+world.peaceful=Modalità pacifica (nessuna incursione)
+world.msg_map_explored=Mappa rivelata
+world.msg_pinged=Segnalato
+world.msg_peaceful=Modalità pacifica {0} richiesta
+world.msg_killed={0} creature uccise
+world.msg_tamed={0} animali addomesticati
+world.msg_drops_removed={0} oggetti a terra rimossi
+world.msg_repaired={0} pezzi di costruzione riparati
+world.msg_trees_removed={0} alberi/tronchi rimossi
+world.global_keys=Chiavi globali
+world.global_keys_hint=Flag di progressione del mondo — controllano incursioni e stato dei boss:
+world.remove=Rimuovi
+world.add_key=Aggiungi chiave
+world.msg_key_removed=Chiave {0} rimossa
+world.msg_key_added=Chiave {0} aggiunta
+
+# ---- Players tab ----
+players.not_connected=Non connesso.
+players.broadcast_section=Trasmissione
+players.broadcast=Trasmissione:
+players.send_all=Invia a tutti
+players.msg_broadcast_sent=Trasmissione inviata
+players.summon_all=Evoca TUTTI
+players.msg_summon_all=Evocazione di tutti
+players.connected=Giocatori connessi
+players.you_suffix=(tu)
+players.tp_to=TP a
+players.summon=Evoca
+players.watch=Osserva
+players.heal=Cura
+players.map=Mappa
+players.inventory=Inventario
+players.kick=Espelli
+players.ban=Banna
+players.note=Nota:
+players.msg_watching=Osservazione di {0} (fantasma+volo attivati)
+players.msg_healing=Cura di {0}
+players.msg_pinged=Posizione di {0} segnalata
+players.msg_lightning=Fulmine su {0}!
+players.msg_kicked={0} espulso
+players.msg_banned={0} bannato
+players.msg_summoning=Evocazione di {0}
+players.inv_viewer=Visualizzatore inventario
+players.pick_player=(scegli un giocatore sopra)
+players.no_response=Nessuna risposta — quel giocatore probabilmente non ha la mod companion installata.
+players.waiting=In attesa di risposta...
+players.remove_1=Rimuovi 1
+players.remove_all=Rimuovi tutto
+players.remove_hint=Rimuovi richiede companion 2.2.0 sul giocatore bersaglio (e sul server).
+players.msg_removing=Rimozione di {0}x {1} da {2}
+
+# ---- Server tab ----
+srv.live_stats=Statistiche in tempo reale
+srv.stats_line=Giorno del mondo: {0}     Giocatori online: {1}     Creature caricate: {2}     I tuoi FPS: {3}
+srv.load_line=ZDO caricati: {0}     Zone caricate: {1}     Sessione: {2}
+srv.host=Server: {0}
+srv.versions=Pannello v{0}   ·   companion del server: {1}
+srv.no_reply=(nessuna risposta - precedente alla 2.2.9 o assente)
+srv.unban_title=Sbanna un giocatore (Steam ID)
+srv.unban=Sbanna
+srv.unban_requested=Sbannamento richiesto per {0}
+srv.joinlog_title=Cronologia entrate/uscite (questa sessione)
+
+# ---- Settings tab ----
+set.appearance=Aspetto
+set.font=Carattere:
+set.font_hint='Norse (auto)' sceglie il miglior carattere di gioco disponibile. Un carattere non caricato ricade su Default.
+set.font_fallback_note=Il font Norse di Valheim non può visualizzare questa lingua, quindi il pannello usa il font predefinito.
+set.font_size=Dimensione carattere: {0}
+set.opacity=Opacità: {0}%
+set.show_logo=Mostra intestazione con logo
+set.language=Lingua:
+set.language_hint='Auto' segue l'impostazione della lingua di Valheim. I nomi di oggetti e creature seguono sempre il gioco.
+set.behavior=Comportamento
+set.camera_lock=Blocca la telecamera mentre il pannello è aperto (come l'inventario)
+set.panel=Pannello
+set.auto_whats_new=Mostra le novità una volta dopo ogni aggiornamento
+set.whats_new=Novità?
+set.report_bug=Segnala un bug
+set.hotkeys=Scorciatoie
+set.key_toggle=Apri / chiudi pannello
+set.key_map_tp=Teletrasporto da mappa
+set.rebind=Riassegna
+set.listening=In ascolto…
+set.rebind_hint=Premi il nuovo tasto…   (funzionano anche i tasti centrale/laterali del mouse · Esc annulla)
+set.reset=Reimposta
+set.reset_window=Reimposta dimensione e posizione della finestra
+set.reset_appearance=Reimposta aspetto
+set.saved_hint=Le impostazioni sono salvate nel file di configurazione BepInEx e sopravvivono ai riavvii.
+set.support=Sostegno
+set.buy_coffee=Offri un caffè allo sviluppatore
+set.support_hint=Apre PayPal nel tuo browser. Del tutto facoltativo — la mod è gratuita e lo resterà sempre.
+
+# ---- Side window (What's New / Bug Report) ----
+side.whats_new=Novità
+side.bug_report=Segnalazione bug
+side.version=Versione {0}
+side.whats_new_hint=Si apre una volta per aggiornamento — regolabile in Impostazioni → Pannello.
+side.describe=Descrivi il bug
+side.attach=Allega screenshot (pannello incluso)
+side.send=Invia segnalazione
+side.sending=Invio…
+side.describe_first=Descrivi prima il bug (una o due frasi).
+side.discord=Unisciti al nostro Discord
+side.no_webhook=L'invio è disattivato — nessun webhook configurato (BugReport.WebhookUrl).
+side.cooldown=Segnalazione inviata — puoi inviarne un'altra tra {0}s.
+side.privacy=La segnalazione contiene il tuo testo, le versioni di mod/gioco e (facoltativamente) lo screenshot — nient'altro.
+side.sent_thanks=Inviato — grazie!
+side.rejected=Discord ha rifiutato la segnalazione (HTTP {0}).
+side.send_failed=Invio fallito: {0}

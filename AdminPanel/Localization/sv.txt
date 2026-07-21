@@ -1,0 +1,336 @@
+# Advanced Admin Panel - Svenska
+# Keys must match en.txt exactly. Translate only the right-hand side.
+# Keep every {0}, {1} ... placeholder; you may reorder them to suit Swedish word order.
+
+# ---- Tabs ----
+tab.items=Föremål
+tab.creatures=Varelser
+tab.bosses=Bossar
+tab.player=Spelare
+tab.world=Värld
+tab.players=Spelarlista
+tab.server=Server
+tab.settings=Inställningar
+
+# ---- Shared ----
+common.all=Alla
+common.search=Sök:
+common.sort=Sortering
+common.me=Jag
+common.nobody=(ingen)
+common.on=PÅ
+common.off=AV
+common.nothing_yet=Inget än.
+common.confirm_prompt=Klicka igen för att bekräfta
+common.not_connected_srv=Inte ansluten till en server
+
+# ---- Panel chrome ----
+chrome.title_full=⚔ Advanced Admin Panel ⚔   [{0} för att stänga]
+chrome.title_hint=[{0} för att stänga]
+chrome.not_in_game=Inte i spelet (ingen lokal spelare).
+chrome.update_available=⬆ Uppdatering tillgänglig: v{0} — du har v{1}
+chrome.get_update=Hämta uppdatering
+chrome.version_mismatch=⚠ Versionskonflikt: panelen är v{0} men serverns companion är v{1}. Uppdatera BÅDA filerna — tills dess fungerar vissa funktioner inte.
+chrome.companion_silent=⚠ Serverns companion svarade inte (äldre än 2.2.9 eller saknas). Serversidiga åtgärder kan misslyckas tyst — be ägaren uppdatera båda modfilerna.
+
+# ---- Item categories (chips) ----
+cat.all=Alla
+cat.fav=★ Fav
+cat.recent=Senaste
+cat.kits=Kit
+cat.weapons=Vapen
+cat.shields=Sköldar
+cat.armor=Rustning
+cat.accessories=Tillbehör
+cat.ammo=Ammunition
+cat.tools=Verktyg
+cat.food=Mat & Drycker
+cat.materials=Material
+cat.trophies=Troféer
+cat.misc=Övrigt
+
+# ---- Sort modes ----
+sort.az=A → Ö
+sort.za=Ö → A
+sort.category=Kategori
+sort.faction=Fraktion
+
+# ---- Items tab ----
+items.kits_title=Utrustningskit (levereras till inventariet via servern):
+items.give_target=Mottagare:
+items.to_me=Till mig
+items.give=Ge
+items.bulk_title=Bulkpaket (ändras i konfigurationsfilen):
+items.bulk_grab=Hämta bulkpaket
+items.bulk_requested=Bulkpaket begärt
+items.amount=Antal:
+items.quality=Kvalitet:
+items.legend=Släpp = marken | Väska = din väska | Ge = målets väska
+items.db_not_loaded=Föremålsdatabasen är inte laddad.
+items.drop=Släpp
+items.bag=Väska
+items.count={0} föremål
+items.kit_sent=Kit ”{0}” skickat
+items.msg_requested=Begärde {0}x {1}
+items.msg_requested_bag=Begärde {0}x {1} till väskan
+items.msg_no_icon_drop={0} saknar ikon — det skulle skada ditt inventarium (endast släpp)
+items.msg_no_icon_give={0} saknar ikon — kan inte ges bort
+items.msg_sent=Skickade {0}x {1} till {2}
+items.msg_no_target=Ingen mottagare vald
+
+# ---- Creatures tab ----
+cre.db_not_loaded=Scendatabasen är inte laddad.
+cre.bosses=Bossar
+cre.tamable=Tämjbar
+cre.count=Antal:
+cre.stars=Stjärnor:
+cre.at_crosshair=Vid hårkorset
+cre.pet_name=Namn på husdjur:
+cre.undo=Ångra spawn
+cre.undo_requested=Ångra begärt
+cre.arena=Arena: A={0} mot B={1}
+cre.fight=SLÅSS!
+cre.arena_started=Arena: {0}x {1} mot {2}x {3}
+cre.preset=Förval:
+cre.preset_spawned=Förvalet ”{0}” spawnat
+cre.preset_saved=Förvalet ”{0}” sparat
+cre.save=Spara
+cre.spawn=Spawna
+cre.tame=Tämj
+cre.tag_boss=[BOSS]
+cre.tag_tamable=[tämjbar]
+cre.msg_requested=Begärde {0}
+cre.msg_requested_tamed=Begärde tämjd {0}
+cre.count_total={0} varelser
+
+# ---- Bosses tab ----
+boss.section=Bossar
+boss.hint=Spawna direkt, eller hämta offergåvorna till altaret:
+boss.offering=Offergåva ({0}x {1})
+boss.msg_requested=Begärde bossen {0}
+boss.raids=Räd-händelser
+boss.raids_hint=Startas på servern vid din position:
+boss.msg_event=Händelsen ”{0}” begärd
+
+# ---- Player tab ----
+player.toggles=Reglage
+player.god=Gudsläge (ingen skada)
+player.ghost=Spökläge (fiender ignorerar dig)
+player.fly=Flyg (felsökningsflyg)
+player.free_build=Fritt byggande (ingen resurskostnad)
+player.no_stamina=Ingen uthållighetsförbrukning
+player.one_hit=Dödar med ett slag (dina attacker gör enorm skada)
+player.inf_weight=Obegränsad bärvikt
+player.msg_god=Gudsläge {0}
+player.msg_ghost=Spökläge {0}
+player.msg_fly_on=Flyg PÅ — hoppa för att flyga, smyg för att sjunka
+player.msg_fly_off=Flyg AV
+player.msg_free_build=Fritt byggande {0}
+player.msg_no_stamina=Ingen uthållighetsförbrukning {0}
+player.msg_one_hit=Dödar med ett slag {0}
+player.msg_inf_weight=Obegränsad bärvikt {0}
+player.multipliers=Multiplikatorer
+player.speed=Fart x{0}
+player.jump=Hopp x{0}
+player.pickup=Upplockning {0}m
+player.quick_actions=Snabbåtgärder
+player.full_heal=Full läkning
+player.full_stamina=Full uthållighet
+player.full_eitr=Full eitr
+player.msg_healed=Läkt
+player.msg_stamina=Uthållighet återställd
+player.msg_eitr=Eitr återställd
+player.repair_all=Reparera alla föremål
+player.clear_se=Rensa statuseffekter
+player.fix_broken=Laga trasiga föremål i inventariet
+player.msg_repaired=Alla föremål reparerade
+player.msg_se_cleared=Statuseffekter rensade
+player.msg_fixed_broken=Tog bort {0} trasiga (ikonlösa) föremål från inventariet
+player.tp_death=TP till senaste döden
+player.msg_tp_death=Teleporterar till din senaste dödsplats
+player.msg_no_death=Ingen död registrerad än
+player.no_death_yet=(ingen död registrerad än)
+player.last_death=senaste död: {0}
+player.skills=Färdigheter
+player.skills_plus10=Alla färdigheter +10
+player.skills_100=Alla färdigheter 100
+player.skills_reset=Nollställ färdigheter
+player.show_skills=Visa färdighetsbläddrare
+player.apply_to=Tillämpa på:
+player.custom=Egen:
+player.custom_pm=±Egen
+player.private_note=Privat notis:
+player.private_note_hint=Visas bara för den spelaren när du höjer en färdighet — lämna tomt för en tyst höjning. (Nivåerna som visas är dina. Kräver companion 2.2.0 på deras sida.)
+player.level_short=Nv {0}
+player.msg_custom_hint=Skriv först ett tal skilt från noll i egetfältet (negativt sänker)
+player.msg_skill_self={0} +{1}
+player.msg_skill_target={0} +{1} → {2}
+player.msg_skills_changed=Färdigheter ändrade med {0}
+player.msg_skills_set=Alla färdigheter satta till {0}
+player.status_effects=Statuseffekter
+player.show_se=Visa statuseffektbläddrare
+player.no_se_match=Inga matchande statuseffekter.
+player.apply=Tillämpa
+player.msg_applied={0} tillämpad
+
+# ---- Status-effect buckets ----
+se.boss_powers=Bosskrafter
+se.set_bonuses=Rustningssetbonusar
+se.potions=Drycker & Mjöd
+se.debuffs=Försvagningar & Miljö
+se.comfort=Komfort & Vila
+se.other=Övrigt
+
+# ---- World tab ----
+world.time_weather=Tid & väder
+world.set=Ställ in
+world.release=Släpp
+world.skip_night=Hoppa över natten
+world.msg_skip_night=Hoppar till morgonen (kräver companion 2.2.9 på servern)
+world.weather_hint=Väder (tomt = återställ). Clear, Rain, ThunderStorm, Snow, Mist, Twilight_Clear:
+world.msg_weather_reset=Vädret återställt
+world.msg_weather_forced=Väder framtvingat: {0}
+world.wind=Vind
+world.wind_dir=Riktn {0}°
+world.wind_str=Styr {0}
+world.reset=Återställ
+world.msg_wind_set=Vinden inställd
+world.msg_wind_reset=Vinden återställd
+world.teleport=Teleport
+world.map_hint=🗺  Karta: öppna hela kartan (M), hovra över en plats och tryck [{0}] för att teleportera dit.
+world.to_player=Till spelare:
+world.no_others=(inga andra spelare online)
+world.msg_tp_to=Teleporterar till {0}
+world.bosses=Bossar:
+world.no_altars=(inga kända altaren än — utforska / besegra bossar)
+world.position=Position:
+world.now_at=nu: {0}, {1}, {2}
+world.go=Gå
+world.msg_teleporting=Teleporterar
+world.msg_map_tp_unavailable=Kartteleport otillgänglig (spelets API har ändrats)
+world.bookmark=Bokmärke:
+world.save_here=Spara här
+world.del=Ta bort
+world.msg_bookmark_saved=Bokmärket ”{0}” sparat
+world.area_actions=Områdesåtgärder
+world.combat=Strid:
+world.kill_50=Döda fiender 50m
+world.kill_all=Döda ALLT laddat
+world.tame_30=Tämj djur 30m
+world.cleanup=Städning:
+world.ground_items=Föremål på marken 50m
+world.repair_builds=Reparera byggnader 50m
+world.clear_trees=Ta bort träd 20m
+world.world=Värld:
+world.explore_map=Avslöja hela kartan
+world.ping_pos=Pinga min position
+world.peaceful=Fredligt läge (inga räder)
+world.msg_map_explored=Kartan avslöjad
+world.msg_pinged=Pingad
+world.msg_peaceful=Fredligt läge {0} begärt
+world.msg_killed=Dödade {0} varelser
+world.msg_tamed=Tämjde {0} djur
+world.msg_drops_removed=Tog bort {0} föremål från marken
+world.msg_repaired=Reparerade {0} byggdelar
+world.msg_trees_removed=Tog bort {0} träd/stockar
+world.global_keys=Globala nycklar
+world.global_keys_hint=Flaggor för världsprogression — styr räder och bossarnas tillstånd:
+world.remove=Ta bort
+world.add_key=Lägg till nyckel
+world.msg_key_removed=Nyckeln {0} borttagen
+world.msg_key_added=Nyckeln {0} tillagd
+
+# ---- Players tab ----
+players.not_connected=Inte ansluten.
+players.broadcast_section=Utsändning
+players.broadcast=Utsändning:
+players.send_all=Skicka till alla
+players.msg_broadcast_sent=Utsändning skickad
+players.summon_all=Kalla på ALLA
+players.msg_summon_all=Kallar på alla
+players.connected=Anslutna spelare
+players.you_suffix=(du)
+players.tp_to=TP till
+players.summon=Kalla på
+players.watch=Observera
+players.heal=Läk
+players.map=Karta
+players.inventory=Inventarium
+players.kick=Sparka ut
+players.ban=Banna
+players.note=Notis:
+players.msg_watching=Observerar {0} (spöke+flyg aktiverat)
+players.msg_healing=Läker {0}
+players.msg_pinged=Pingade {0}:s position
+players.msg_lightning=Blixt på {0}!
+players.msg_kicked=Sparkade ut {0}
+players.msg_banned=Bannade {0}
+players.msg_summoning=Kallar på {0}
+players.inv_viewer=Inventarievisare
+players.pick_player=(välj en spelare ovan)
+players.no_response=Inget svar — den spelaren har troligen inte companion-modden installerad.
+players.waiting=Väntar på svar...
+players.remove_1=Ta bort 1
+players.remove_all=Ta bort alla
+players.remove_hint=Ta bort kräver companion 2.2.0 hos målspelaren (och på servern).
+players.msg_removing=Tar bort {0}x {1} från {2}
+
+# ---- Server tab ----
+srv.live_stats=Livestatistik
+srv.stats_line=Världsdag: {0}     Spelare online: {1}     Laddade varelser: {2}     Dina FPS: {3}
+srv.load_line=ZDO:er laddade: {0}     Zoner laddade: {1}     Session: {2}
+srv.host=Server: {0}
+srv.versions=Panel v{0}   ·   server-companion: {1}
+srv.no_reply=(inget svar - äldre än 2.2.9 eller saknas)
+srv.unban_title=Avbanna en spelare (Steam ID)
+srv.unban=Avbanna
+srv.unban_requested=Avbanning begärd för {0}
+srv.joinlog_title=Historik för anslutningar/frånkopplingar (denna session)
+
+# ---- Settings tab ----
+set.appearance=Utseende
+set.font=Typsnitt:
+set.font_hint='Norse (auto)' väljer det bästa tillgängliga speltypsnittet. Ett typsnitt som inte laddats faller tillbaka på Default.
+set.font_fallback_note=Valheims Norse-typsnitt kan inte visa detta språk, så panelen använder standardtypsnittet.
+set.font_size=Teckenstorlek: {0}
+set.opacity=Opacitet: {0}%
+set.show_logo=Visa logotyphuvud
+set.language=Språk:
+set.language_hint='Auto' följer Valheims egen språkinställning. Namn på föremål och varelser följer alltid spelet.
+set.behavior=Beteende
+set.camera_lock=Lås kameran medan panelen är öppen (som med inventariet)
+set.panel=Panel
+set.auto_whats_new=Visa nyheter en gång efter varje uppdatering
+set.whats_new=Nyheter?
+set.report_bug=Rapportera ett fel
+set.hotkeys=Snabbtangenter
+set.key_toggle=Öppna / stäng panelen
+set.key_map_tp=Kartteleport
+set.rebind=Ändra tangent
+set.listening=Lyssnar…
+set.rebind_hint=Tryck på den nya tangenten…   (mitten-/sidoknappar på musen fungerar också · Esc avbryter)
+set.reset=Återställ
+set.reset_window=Återställ fönstrets storlek & position
+set.reset_appearance=Återställ utseende
+set.saved_hint=Inställningarna sparas i BepInEx-konfigurationsfilen och överlever omstarter.
+set.support=Stöd
+set.buy_coffee=Bjud utvecklaren på en kaffe
+set.support_hint=Öppnar PayPal i din webbläsare. Helt frivilligt — modden är gratis och kommer alltid att vara det.
+
+# ---- Side window (What's New / Bug Report) ----
+side.whats_new=Nyheter
+side.bug_report=Felrapport
+side.version=Version {0}
+side.whats_new_hint=Öppnas en gång per uppdatering — ställs in i Inställningar → Panel.
+side.describe=Beskriv felet
+side.attach=Bifoga skärmbild (panelen inkluderad)
+side.send=Skicka rapport
+side.sending=Skickar…
+side.describe_first=Beskriv felet först (en mening eller två).
+side.discord=Gå med i vår Discord
+side.no_webhook=Sändning är avstängd — ingen webhook konfigurerad (BugReport.WebhookUrl).
+side.cooldown=Rapport skickad — du kan skicka en till om {0}s.
+side.privacy=Rapporten innehåller din text, mod-/spelversioner och (valfritt) skärmbilden — inget annat.
+side.sent_thanks=Skickat — tack!
+side.rejected=Discord avvisade rapporten (HTTP {0}).
+side.send_failed=Sändningen misslyckades: {0}

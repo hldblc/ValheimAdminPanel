@@ -14,11 +14,17 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.2.9";
+        public const string PluginVersion = "2.3.0";
 
         internal static CompanionPlugin Instance;
 
-        private static readonly List<ZDOID> LastSpawnBatch = new List<ZDOID>();
+        // Undo history, keyed by admin peer id. Deliberately NOT one shared "last batch" as before: that had two
+        // problems on a multi-admin server — one admin's Undo deleted whichever admin had spawned most recently,
+        // and it could only ever step back a single spawn. Depth is bounded so a long session cannot grow without
+        // limit, and entries for peers that have disconnected are pruned whenever a new batch is pushed.
+        private const int UndoDepth = 20;
+        private static readonly Dictionary<long, List<List<ZDOID>>> UndoHistory =
+            new Dictionary<long, List<List<ZDOID>>>();
 
         // Recognising the host by its session id is only safe while the sanitizer is re-stamping incoming senders.
         private static bool SenderSanitizerActive;
@@ -203,7 +209,7 @@ namespace AdminPanelCompanion
             if (prefab == null) { Log($"AP_SrvSpawn: prefab '{prefabName}' not found"); return; }
 
             Log($"Admin {sender} spawns {count}x {prefabName} (kind {kind}) at {pos}");
-            LastSpawnBatch.Clear();
+            var batch = new List<ZDOID>();
 
             if (kind == 0)
             {
@@ -216,7 +222,7 @@ namespace AdminPanelCompanion
                     var stack = Mathf.Min(remaining, maxStack);
                     remaining -= stack;
                     var go = UnityEngine.Object.Instantiate(prefab, pos, Quaternion.identity);
-                    RememberSpawn(go);
+                    RememberSpawn(go, batch);
                     var d = go.GetComponent<ItemDrop>();
                     if (d != null)
                     {
@@ -232,7 +238,7 @@ namespace AdminPanelCompanion
                 {
                     var offset = new Vector3(UnityEngine.Random.Range(-1.5f, 1.5f), 0.5f, UnityEngine.Random.Range(-1.5f, 1.5f));
                     var go = UnityEngine.Object.Instantiate(prefab, pos + offset, Quaternion.identity);
-                    RememberSpawn(go);
+                    RememberSpawn(go, batch);
                     var character = go.GetComponent<Character>();
                     if (character != null)
                     {
@@ -246,30 +252,81 @@ namespace AdminPanelCompanion
                     }
                 }
             }
+
+            // One spawn action = one undo step, recorded after the whole batch exists so a partially-built
+            // batch can never be popped.
+            PushUndo(sender, batch);
         }
 
-        private static void RememberSpawn(GameObject go)
+        private static void RememberSpawn(GameObject go, List<ZDOID> batch)
         {
             var nview = go.GetComponent<ZNetView>();
             var zdo = nview != null ? nview.GetZDO() : null;
-            if (zdo != null) LastSpawnBatch.Add(zdo.m_uid);
+            if (zdo != null) batch.Add(zdo.m_uid);
+        }
+
+        /// <summary>Record a completed spawn batch as one undo step for this admin.</summary>
+        private static void PushUndo(long sender, List<ZDOID> batch)
+        {
+            if (batch == null || batch.Count == 0) return;   // nothing spawned = nothing to step back over
+            PruneUndoHistory();
+
+            if (!UndoHistory.TryGetValue(sender, out var stack))
+            {
+                stack = new List<List<ZDOID>>();
+                UndoHistory[sender] = stack;
+            }
+            stack.Add(batch);
+            if (stack.Count > UndoDepth) stack.RemoveAt(0);   // drop the oldest step, keep the newest UndoDepth
+        }
+
+        // Forget history for peers that are no longer connected. Peer ids are session-scoped, so without this a
+        // long-lived server would accumulate a stack per admin who ever joined.
+        private static void PruneUndoHistory()
+        {
+            if (UndoHistory.Count == 0 || ZNet.instance == null) return;
+            List<long> dead = null;
+            foreach (var kv in UndoHistory)
+                // The host is never in ZNet.m_peers — only OnNewConnection fills it — so GetPeer() returns null
+                // for our own session id. Without this exemption a host's history would be pruned on the very
+                // next spawn (PushUndo prunes before it pushes) and multi-step undo would silently never work
+                // in single-player, while testing fine against a dedicated server.
+                if (!IsLocalHostSender(kv.Key) && ZNet.instance.GetPeer(kv.Key) == null)
+                    (dead ?? (dead = new List<long>())).Add(kv.Key);
+            if (dead == null) return;
+            foreach (var id in dead) UndoHistory.Remove(id);
         }
 
         private static void OnServerUndo(long sender)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+
+            if (!UndoHistory.TryGetValue(sender, out var stack) || stack.Count == 0)
+            {
+                Log($"Admin {sender} undo: nothing left to undo");
+                ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_Msg", "Nothing left to undo");
+                return;
+            }
+
+            var batch = stack[stack.Count - 1];
+            stack.RemoveAt(stack.Count - 1);
+            if (stack.Count == 0) UndoHistory.Remove(sender);
+
             var removed = 0;
-            foreach (var id in LastSpawnBatch)
+            foreach (var id in batch)
             {
                 var zdo = ZDOMan.instance.GetZDO(id);
-                if (zdo == null) continue;
+                if (zdo == null) continue;   // already gone (killed, despawned, or undone by a world reload)
                 var go = ZNetScene.instance.FindInstance(zdo);
                 var nview = go != null ? go.GetComponent<ZNetView>() : null;
                 if (nview != null) { nview.ClaimOwnership(); nview.Destroy(); removed++; }
                 else { ZDOMan.instance.DestroyZDO(zdo); removed++; }
             }
-            Log($"Admin {sender} undo: removed {removed} spawned objects");
-            LastSpawnBatch.Clear();
+
+            var left = stack.Count;
+            Log($"Admin {sender} undo: removed {removed} spawned objects ({left} step(s) left)");
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_Msg",
+                $"Undo: removed {removed} object(s) — {left} step(s) left");
         }
 
         private static void OnServerRequestInventory(long sender, long targetUid)

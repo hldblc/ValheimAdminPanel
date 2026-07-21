@@ -16,7 +16,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.2.9";
+        public const string PluginVersion = "2.3.0";
 
         internal static AdminPanelPlugin Instance;
 
@@ -26,6 +26,7 @@ namespace AdminPanel
         // ==================== Settings tab state ====================
         private ConfigEntry<string> _fontChoiceCfg;
         private ConfigEntry<int> _fontSizeCfg;
+        private ConfigEntry<string> _languageCfg;
         private ConfigEntry<int> _panelAlphaCfg;
         private ConfigEntry<bool> _cameraLockCfg;
         private int _fontSizeLive;      // sliders preview live via these; committed to config on mouse-release
@@ -39,7 +40,10 @@ namespace AdminPanel
         private Rect _windowRect = new Rect(60, 60, 740, 680);
         private Rect _lastSavedRect;   // last rect persisted to disk — save only when the rect actually changes
         private int _tab;
-        private static readonly string[] TabNames = { "Items", "Creatures", "Bosses", "Player", "World", "Players", "Server", "Settings" };
+        // Localization keys rather than literals: tab labels are resolved through Loc at draw time so a
+        // language change takes effect without rebuilding this array. Order must match the switch in DrawWindow.
+        private static readonly string[] TabKeys =
+        { "tab.items", "tab.creatures", "tab.bosses", "tab.player", "tab.world", "tab.players", "tab.server", "tab.settings" };
 
         // ==================== Items tab state ====================
         private string _itemSearch = "";
@@ -47,7 +51,8 @@ namespace AdminPanel
         private int _itemAmount = 1;
         private int _itemQuality = 1;
         private long _giveTargetId;   // stable id of the selected give target (0 = nobody); survives roster changes
-        private List<ZNet.PlayerInfo> _othersSnapshot;   // OtherPlayers() cached once per frame (Layout) for the Items tab
+        private List<ZNet.PlayerInfo> _othersSnapshot;   // OtherPlayers() built once per frame (Layout) in DrawWindow, shared by all tabs
+        private List<string> _globalKeysLayout;          // ZoneSystem global keys, snapshotted per frame (World tab draws a row each)
         private int _itemSort;   // index into ItemSortModes
         private List<ItemEntry> _itemWindowList; // virtualization window snapshot (Layout->Repaint consistency)
         private int _itemWindowFirst, _itemWindowVisible, _itemWindowTotal;
@@ -78,7 +83,7 @@ namespace AdminPanel
             public string Display;     // localized name
             public string Tooltip;     // short localized description of what it does
             public int Hash;           // NameHash() precomputed for the Apply call
-            public int Bucket;         // index into SeBucketNames
+            public int Bucket;         // index into SeBucketKeys
         }
 
         // cached filter results — recomputed only when filters change (fixes per-frame lag)
@@ -277,6 +282,10 @@ namespace AdminPanel
         private bool _bugSending;
         private float _nextBugSend;                   // client-side cooldown so the webhook can't be spammed
         private const string DiscordInvite = "https://discord.gg/2RVn78hNrz";
+        // Opened with Application.OpenURL, which hands off to the player's default browser rather than any
+        // in-game overlay — the panel never renders or intercepts the payment page itself.
+        private const string DonateUrl =
+            "https://www.paypal.com/donate/?business=HRKGKS3G5JD94&no_recurring=0&item_name=Your+Friendly+Neighborhood+Dev%2C+Halit.%0AMay+the+Lord+bless+you+with+even+more%21&currency_code=USD";
 
         // ==================== Update check ====================
         private volatile string _updateAvailable;   // newer version string once the check finds one (null = none/unknown)
@@ -294,19 +303,25 @@ namespace AdminPanel
         private const string DefaultBugWebhook =
             "https://discord.com/api/webhooks/1527589135672672266/vqCLH1pZV8mRtKauUCcRxExWGwTazxkSJ6gz75Ey6yQoSfriVnuc4b07e3DYNvCaUPK3";
 
+        // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
+        // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
-            "• Manage player inventories: Remove 1 / Remove all in the Players-tab inventory " +
-            "viewer (works on equipped items too).\n\n" +
-            "• Skill browser (Player → Skills): every skill with −10/−1/+1/+10/+100/±custom, " +
-            "for yourself OR any online player — with an optional private note that pops on " +
-            "their screen together with the new level.\n\n" +
-            "• Skip night now actually works (server-side, like everyone sleeping).\n\n" +
-            "• Teleport to any online player; Teleport & Area actions reorganized.\n\n" +
-            "• Version handshake: the panel warns if the server's companion version doesn't " +
-            "match. Both DLLs now always share one version number.\n\n" +
-            "• Also: mod version on the title screen · ✕ close button on the panel · mouse-button " +
-            "hotkey binding · scroll no longer zooms the camera · buttons never clip their text · " +
-            "bug-report screenshots include the panel.";
+            "• The panel speaks your language: German, French, Spanish, Italian, Portuguese (BR), " +
+            "Polish, Dutch and Swedish. It follows Valheim's own language setting by default — " +
+            "change it under Settings → Language.\n\n" +
+            "• Smarter search: results are ranked by relevance, so typing \"iron\" puts Iron first " +
+            "instead of burying it alphabetically. Typing no longer re-sorts the whole list on " +
+            "every keystroke.\n\n" +
+            "• Multi-step undo: Undo spawn now steps back through your last 20 spawns instead of " +
+            "just one, and each admin has their own history — your undo can't delete someone else's " +
+            "work.\n\n" +
+            "• Destructive actions ask first: Kill ALL loaded, Ground items, Clear trees and Ban " +
+            "now need a second click to confirm.\n\n" +
+            "• Server tab: added ZDOs loaded, zones loaded and session uptime.\n\n" +
+            "• Smoother: the panel does far less work per frame across every tab, and switches to a " +
+            "readable font automatically if the game's Norse font can't draw your language.\n\n" +
+            "• If the mod has been useful, there's now a \"Buy the developer a coffee\" button in " +
+            "Settings. Entirely optional — the mod is free and always will be.";
 
         // ==================== Bosses ====================
         private Vector2 _bossScroll;
@@ -518,6 +533,10 @@ namespace AdminPanel
             _fontSizeCfg = Config.Bind("UI", "FontSize", 13, new ConfigDescription(
                 "Base font size for panel text; headers, tabs and the title scale with it.",
                 new AcceptableValueRange<int>(10, 20)));
+            _languageCfg = Config.Bind("UI", "Language", Loc.MenuNames[0], new ConfigDescription(
+                "Panel language. 'Auto' follows Valheim's own language setting. Item and creature names always " +
+                "follow the game regardless of this setting.",
+                new AcceptableValueList<string>(Loc.MenuNames)));
             _panelAlphaCfg = Config.Bind("UI", "PanelOpacity", 96, new ConfigDescription(
                 "Panel background opacity in percent.", new AcceptableValueRange<int>(55, 100)));
             _cameraLockCfg = Config.Bind("UI", "CameraLockWhilePanelOpen", true,
@@ -602,6 +621,47 @@ namespace AdminPanel
         private static string DecKv(string s) => string.IsNullOrEmpty(s)
             ? s
             : s.Replace("%3D", "=").Replace("%7C", "|").Replace("%25", "%");
+
+        // ParseKv splits and allocates a fresh Dictionary on every call, and the presets/bookmarks rows are
+        // drawn from it on both OnGUI passes of every frame. Cache the parse against the raw config string:
+        // any edit changes the string, which invalidates the cache on its own with no explicit bookkeeping.
+        private string _presetsKvRaw, _bookmarksKvRaw;
+        private Dictionary<string, string> _presetsKv, _bookmarksKv;
+
+        private Dictionary<string, string> PresetsKv()
+        {
+            var raw = _spawnPresetsCfg.Value ?? "";
+            if (_presetsKv == null || _presetsKvRaw != raw) { _presetsKv = ParseKv(raw); _presetsKvRaw = raw; }
+            return _presetsKv;
+        }
+
+        private Dictionary<string, string> BookmarksKv()
+        {
+            var raw = _bookmarksCfg.Value ?? "";
+            if (_bookmarksKv == null || _bookmarksKvRaw != raw) { _bookmarksKv = ParseKv(raw); _bookmarksKvRaw = raw; }
+            return _bookmarksKv;
+        }
+
+        // Per-frame snapshots of the two config-backed row lists. These are NOT just a perf cache: clicking Del
+        // on a bookmark (or Save on a preset) rewrites the config during the event pass, so a draw loop reading
+        // the config live would give Repaint a different row count than Layout reserved controls for — IMGUI's
+        // "control N in a group with only M controls". Rebuilding only on Layout pins the count for the frame,
+        // and the edit shows up on the next one.
+        private List<KeyValuePair<string, string>> _presetRowsLayout, _bookmarkRowsLayout;
+
+        private List<KeyValuePair<string, string>> PresetRows()
+        {
+            if (Event.current != null && Event.current.type == EventType.Layout || _presetRowsLayout == null)
+                _presetRowsLayout = new List<KeyValuePair<string, string>>(PresetsKv());
+            return _presetRowsLayout;
+        }
+
+        private List<KeyValuePair<string, string>> BookmarkRows()
+        {
+            if (Event.current != null && Event.current.type == EventType.Layout || _bookmarkRowsLayout == null)
+                _bookmarkRowsLayout = new List<KeyValuePair<string, string>>(BookmarksKv());
+            return _bookmarkRowsLayout;
+        }
 
         private static Dictionary<string, string> ParseKv(string raw)
         {
@@ -691,6 +751,10 @@ namespace AdminPanel
                 _visible = !_visible;
                 if (_visible)
                 {
+                    // Resolve the language here rather than only in Awake: in "Auto" mode this reads
+                    // Localization.instance, which does not exist that early in startup. Refresh early-outs
+                    // unless the resolved code actually changed, so this is a no-op on every later open.
+                    Loc.Refresh(_languageCfg.Value);
                     RefreshCaches();
                     // One-shot What's New after an update (opt-out in Settings). Marked seen immediately so
                     // closing it without reading doesn't re-trigger it every open.
@@ -867,7 +931,7 @@ namespace AdminPanel
         {
             if (_screenToWorld == null)
                 _screenToWorld = AccessTools.Method(typeof(Minimap), "ScreenToWorldPoint", new[] { typeof(Vector3) });
-            if (_screenToWorld == null) { Message("Map teleport unavailable (game API changed)"); return; }
+            if (_screenToWorld == null) { Message(Loc.T("world.msg_map_tp_unavailable")); return; }
 
             var world = (Vector3)_screenToWorld.Invoke(Minimap.instance, new object[] { Input.mousePosition });
             TeleportToWorld(world, $"map point ({world.x:0}, {world.z:0})");
@@ -880,7 +944,7 @@ namespace AdminPanel
             if (ZoneSystem.instance != null && ZoneSystem.instance.GetGroundHeight(world, out var gh))
                 y = gh;
             LocalPlayer.TeleportTo(new Vector3(world.x, y + 1.5f, world.z), LocalPlayer.transform.rotation, true);
-            Message($"Teleporting to {label}");
+            Message(Loc.T("world.msg_tp_to", label));
         }
 
         // ==================== Item / creature indexing ====================
@@ -999,10 +1063,11 @@ namespace AdminPanel
         }
 
         // Fixed, ordered status-effect buckets. Order here is the header order shown in the browser.
-        private static readonly string[] SeBucketNames =
+        // Keys, not literals — ClassifySe returns an index into this array and the header is localized at draw.
+        private static readonly string[] SeBucketKeys =
         {
-            "Boss Powers", "Armor Set Bonuses", "Potions & Mead",
-            "Debuffs & Environment", "Comfort & Rest", "Other"
+            "se.boss_powers", "se.set_bonuses", "se.potions",
+            "se.debuffs", "se.comfort", "se.other"
         };
         private static readonly string[] SeDebuffKeys =
         {
@@ -1251,6 +1316,31 @@ namespace AdminPanel
             }
         }
 
+        /// <summary>
+        /// A bounded sample of the game-supplied names the panel draws, used to decide whether the chosen font
+        /// can actually render them. Bounded because this runs on the font-resolve path: the first entries are
+        /// enough to reveal the script in use, and scanning the whole item DB every resolve would not tell us
+        /// anything the first few hundred names don't.
+        /// </summary>
+        private IEnumerable<string> ContentFontSamples()
+        {
+            const int cap = 200;
+            var n = 0;
+            if (_itemIndex != null)
+                foreach (var e in _itemIndex)
+                {
+                    if (n++ >= cap) break;
+                    yield return e.Display;
+                }
+            n = 0;
+            if (_creatureIndex != null)
+                foreach (var e in _creatureIndex)
+                {
+                    if (n++ >= cap) break;
+                    yield return e.Display;
+                }
+        }
+
         // Apply the configured font to every text GUIStyle once it becomes available.
         private void ApplyFont()
         {
@@ -1276,6 +1366,18 @@ namespace AdminPanel
                 _nextFontTry = Time.time + 1f;
                 f = FindFontFor(_fontChoiceCfg.Value);
                 if (f == null && ++_fontTries < 10) return;
+
+                // Valheim's Norse fonts are Latin-only, but the panel renders text in the *game's* language:
+                // LocalizeSafe returns item/creature names in whatever the player set Valheim to, so a Russian
+                // or Chinese client would draw Cyrillic/CJK through a font with no such glyphs and get blank
+                // boxes. (The game's own UI looking fine proves nothing — that is TextMeshPro, a separate font
+                // system from IMGUI.) If the chosen font can't draw what we're about to show, drop to Unity's
+                // built-in font, which has far broader coverage. Readable beats pretty.
+                if (f != null && Loc.ResolveFontSafety(f, ContentFontSamples()))
+                {
+                    Logger.LogInfo($"Font '{f.name}' lacks glyphs for the current language; using the default font instead.");
+                    f = null;
+                }
             }
             foreach (var s in new[]
             {
@@ -1285,6 +1387,71 @@ namespace AdminPanel
                 if (s != null) s.font = f;
             _appliedFont = f;
             _fontApplied = true;
+        }
+
+        // ==================== Embedded images ====================
+        /// <summary>
+        /// Load an embedded PNG by filename suffix. Returns null on ANY failure (resource absent, decode
+        /// failure, ImageConversion stripped) so a caller can fall back to text — this runs off the OnGUI
+        /// path and an exception there would tear the frame.
+        /// </summary>
+        private static Texture2D LoadEmbeddedPng(string fileSuffix)
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                var name = asm.GetManifestResourceNames()
+                    .FirstOrDefault(n => n.EndsWith(fileSuffix, StringComparison.OrdinalIgnoreCase));
+                if (name == null) return null;
+                byte[] bytes;
+                using (var s = asm.GetManifestResourceStream(name))
+                {
+                    if (s == null) return null;
+                    bytes = new byte[s.Length];
+                    var off = 0;
+                    while (off < bytes.Length)
+                    {
+                        var n = s.Read(bytes, off, bytes.Length - off);
+                        if (n <= 0) break;
+                        off += n;
+                    }
+                }
+                // ImageConversion targets netstandard 2.1 and can't be compile-referenced from net48.
+                var loadImage = AccessTools.Method(
+                    AccessTools.TypeByName("UnityEngine.ImageConversion"), "LoadImage",
+                    new[] { typeof(Texture2D), typeof(byte[]) });
+                if (loadImage == null) return null;
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, true)
+                { filterMode = FilterMode.Trilinear, hideFlags = HideFlags.HideAndDontSave };   // survive the logout asset sweep
+                return (bool)loadImage.Invoke(null, new object[] { tex, bytes }) ? tex : null;
+            }
+            catch { return null; }
+        }
+
+        private Texture2D _coffeeTex;
+        private bool _coffeeTried;
+
+        private Texture2D CoffeeTex()
+        {
+            if (_coffeeTried && _coffeeTex != null) return _coffeeTex;
+            // Re-arm when the texture was swept (fake-null) by the logout asset cleanup, same as the logo.
+            _coffeeTried = true;
+            _coffeeTex = LoadEmbeddedPng("coffee.png");
+            return _coffeeTex;
+        }
+
+        /// <summary>
+        /// Support button that opens the donation page in the player's default browser.
+        /// Renders icon+label when coffee.png is embedded and plain text when it is not, so the mod builds
+        /// and runs either way rather than depending on an art asset being present.
+        /// </summary>
+        private void DrawCoffeeButton(float minWidth)
+        {
+            var tex = CoffeeTex();
+            var label = Loc.T("set.buy_coffee");
+            var content = tex != null ? new GUIContent("  " + label, tex) : new GUIContent(label);
+            if (GUILayout.Button(content, _buttonStyle, GUILayout.MinWidth(minWidth), GUILayout.Height(28)))
+                Application.OpenURL(DonateUrl);
         }
 
         // ==================== Logo header ====================
@@ -1367,11 +1534,9 @@ namespace AdminPanel
             if (_srvCompVersion != null)
                 return _srvCompVersion == PluginVersion
                     ? null
-                    : $"⚠ Version mismatch: panel v{PluginVersion} but the server companion is v{_srvCompVersion}. " +
-                      "Update so BOTH files match — some features will not work until then.";
+                    : Loc.T("chrome.version_mismatch", PluginVersion, _srvCompVersion);
             if (!ZNet.instance.IsServer() && _versionReqFirst > 0f && Time.time - _versionReqFirst > 15f)
-                return $"⚠ The server's companion did not answer (older than 2.2.9 or missing). " +
-                       "Server-side actions may silently fail — ask the owner to update both mod files.";
+                return Loc.T("chrome.companion_silent");
             return null;
         }
 
@@ -1408,8 +1573,8 @@ namespace AdminPanel
             // With the logo header shown the title text would be redundant — keep just the close hint.
             var logoShown = _logoTex != null && _showLogoCfg.Value;
             _windowRect = GUI.Window(918273, _windowRect, DrawWindow,
-                logoShown ? $"[{_toggleKey.Value} to close]"
-                          : $"⚔ Advanced Admin Panel ⚔   [{_toggleKey.Value} to close]", _windowStyle);
+                logoShown ? Loc.T("chrome.title_hint", _toggleKey.Value)
+                          : Loc.T("chrome.title_full", _toggleKey.Value), _windowStyle);
             // Save after the user finishes moving or resizing the window (only runs while _visible).
             if (Event.current.type == EventType.MouseUp) SaveWindowRect();
 
@@ -1463,7 +1628,7 @@ namespace AdminPanel
 
             if (LocalPlayer == null)
             {
-                GUILayout.Label("Not in game (no local player).", _labelStyle);
+                GUILayout.Label(Loc.T("chrome.not_in_game"), _labelStyle);
                 GUI.DragWindow();
                 return;
             }
@@ -1477,6 +1642,15 @@ namespace AdminPanel
                 _rebindTargetLayout = _rebindTarget;
                 _updateBannerLayout = _updateAvailable;   // arrives from a worker thread — pin it per frame
                 _versionWarnLayout = CompanionWarning();  // recomputed once per frame, shown consistently across passes
+                // One roster build per frame, shared by every tab. OtherPlayers() runs GetPlayerList()+LINQ and
+                // allocates a List; several tabs called it independently, each on both the Layout and Repaint
+                // pass. Building it here also guarantees the two passes see an identical roster, which matters
+                // because tabs emit one control row per player.
+                _othersSnapshot = OtherPlayers();
+                // Same reasoning: GetGlobalKeys() allocates and the World tab draws one row per key.
+                _globalKeysLayout = ZoneSystem.instance != null
+                    ? new List<string>(ZoneSystem.instance.GetGlobalKeys())
+                    : null;
             }
 
             DrawLogoHeader();
@@ -1484,8 +1658,8 @@ namespace AdminPanel
             if (_updateBannerLayout != null)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label($"⬆ Update available: v{_updateBannerLayout} — you have v{PluginVersion}", _headerStyle);
-                if (GUILayout.Button("Get update", _buttonStyle, GUILayout.MinWidth(110)))
+                GUILayout.Label(Loc.T("chrome.update_available", _updateBannerLayout, PluginVersion), _headerStyle);
+                if (GUILayout.Button(Loc.T("chrome.get_update"), _buttonStyle, GUILayout.MinWidth(110)))
                     Application.OpenURL(ReleasesPage);
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
@@ -1494,9 +1668,9 @@ namespace AdminPanel
                 GUILayout.Label(_versionWarnLayout, _headerStyle);
 
             GUILayout.BeginHorizontal();
-            for (var i = 0; i < TabNames.Length; i++)
+            for (var i = 0; i < TabKeys.Length; i++)
             {
-                var pressed = GUILayout.Toggle(_tab == i, TabNames[i], _tabStyle);
+                var pressed = GUILayout.Toggle(_tab == i, Loc.T(TabKeys[i]), _tabStyle);
                 if (pressed && _tab != i) { _tab = i; _openDropdown = null; _rebindTarget = 0; }
             }
             GUILayout.EndHorizontal();
@@ -1565,7 +1739,7 @@ namespace AdminPanel
         private string GiveTargetName(List<ZNet.PlayerInfo> others)
         {
             var idx = GiveTargetIndex(others);
-            return idx < 0 ? "(nobody)" : others[idx].m_name;
+            return idx < 0 ? Loc.T("common.nobody") : others[idx].m_name;
         }
 
         private void CycleGiveTarget(List<ZNet.PlayerInfo> others)
@@ -1593,7 +1767,7 @@ namespace AdminPanel
         {
             var s = ServerUid();
             if (s == 0L && !(ZNet.instance != null && ZNet.instance.IsServer()))
-            { Message("Not connected to a server"); return; }
+            { Message(Loc.T("common.not_connected_srv")); return; }
             if (ZRoutedRpc.instance == null) return;
             ZRoutedRpc.instance.InvokeRoutedRPC(s, method, parameters);
         }
@@ -1667,9 +1841,125 @@ namespace AdminPanel
             _recentVersion++;   // invalidate the filter cache even when Count is unchanged (reorder / tail-drop)
         }
 
+        // ==================== Cached localized label arrays ====================
+        // MainCats / *SortModes double as state keys (_mainCat is compared against them and is written into
+        // ItemEntry.Cat), so those arrays stay English and only their *display* is localized. The localized
+        // arrays are cached and rebuilt only when the language changes: DropdownButton/DropdownOptions take a
+        // string[], and building one per OnGUI pass would allocate twice per frame for the life of the panel.
+        private static readonly string[] MainCatKeys =
+        {
+            "cat.all", "cat.fav", "cat.recent", "cat.kits", "cat.weapons", "cat.shields", "cat.armor",
+            "cat.accessories", "cat.ammo", "cat.tools", "cat.food", "cat.materials", "cat.trophies", "cat.misc"
+        };
+
+        private string[] _mainCatLabels, _itemSortLabels, _creatureSortLabels;
+        private string _labelsLang;
+
+        private void EnsureLocalizedLabels()
+        {
+            if (_labelsLang == Loc.ActiveCode && _mainCatLabels != null) return;
+            _labelsLang = Loc.ActiveCode;
+            _mainCatLabels = new string[MainCatKeys.Length];
+            for (var i = 0; i < MainCatKeys.Length; i++) _mainCatLabels[i] = Loc.T(MainCatKeys[i]);
+            _itemSortLabels = new[] { Loc.T("sort.az"), Loc.T("sort.za"), Loc.T("sort.category") };
+            _creatureSortLabels = new[] { Loc.T("sort.az"), Loc.T("sort.za"), Loc.T("sort.faction") };
+        }
+
+        // ==================== Destructive-action confirmation ====================
+        // "Kill ALL loaded", "Clear trees" and friends are irreversible, act on the whole loaded world, and sit
+        // one stray click away from buttons you press constantly. They now arm on the first click and only fire
+        // on a second click within the window below.
+        //
+        // Deliberately a two-step button rather than a modal: a conditionally-rendered popup changes the control
+        // count between the Layout and Repaint passes, which is exactly the IMGUI failure the dropdown code below
+        // already has to work around. Swapping a button's *label* keeps the count identical on every pass.
+        private const float ConfirmWindowSeconds = 3f;
+        private string _confirmAction;
+        private float _confirmExpiresAt;
+
+        /// <summary>
+        /// Draws a button that requires two clicks. Returns true only on the confirming click.
+        /// Arming is per-<paramref name="id"/>, so arming one destructive button disarms any other.
+        /// </summary>
+        private bool ConfirmButton(string id, string label, params GUILayoutOption[] opts)
+        {
+            var armed = _confirmAction == id && Time.realtimeSinceStartup < _confirmExpiresAt;
+            if (!GUILayout.Button(armed ? Loc.T("common.confirm_prompt") : label, _buttonStyle, opts))
+                return false;
+            if (armed) { _confirmAction = null; return true; }
+            _confirmAction = id;
+            _confirmExpiresAt = Time.realtimeSinceStartup + ConfirmWindowSeconds;
+            return false;
+        }
+
+        // ==================== Search: debounce + relevance ranking ====================
+        // The filter cache is keyed on the search text, so every keystroke used to invalidate it and re-run the
+        // whole LINQ chain *and* a full sort over the entire index — twice per frame while typing, since OnGUI
+        // runs Layout and Repaint. Debouncing moves that work to "when the admin stops typing"; the list simply
+        // keeps showing the previous result for the intervening moment, which reads as instant.
+        private const float SearchDebounceSeconds = 0.15f;
+
+        private string _itemSearchApplied = "", _itemSearchLastSeen = "";
+        private float _itemSearchDirtyAt = -1f;
+        private string _creatureSearchApplied = "", _creatureSearchLastSeen = "";
+        private float _creatureSearchDirtyAt = -1f;
+
+        /// <summary>
+        /// Advance a debounced search term and return the value the filter should actually use. Each change
+        /// restarts the window, so holding a key down doesn't rebuild once per character.
+        /// </summary>
+        private static string DebounceSearch(string live, ref string applied, ref string lastSeen, ref float dirtyAt)
+        {
+            // Advance only on the Layout pass. Layout and Repaint run within the same frame and
+            // Time.realtimeSinceStartup moves between them, so letting the window elapse on Repaint could
+            // return a longer/shorter list than Layout already reserved controls for — IMGUI's "control N in a
+            // group with only M controls". Same snapshot-on-Layout rule the dropdown code follows.
+            if (Event.current == null || Event.current.type != EventType.Layout) return applied;
+
+            if (!string.Equals(live, lastSeen, StringComparison.Ordinal))
+            {
+                lastSeen = live;
+                dirtyAt = Time.realtimeSinceStartup;
+            }
+            if (dirtyAt >= 0f && Time.realtimeSinceStartup - dirtyAt >= SearchDebounceSeconds)
+            {
+                applied = live;
+                dirtyAt = -1f;
+            }
+            return applied;
+        }
+
+        /// <summary>
+        /// Relevance rank for a search hit; lower is better. Plain substring matching ranks "Ancient Bark Spear"
+        /// the same as "Bark" for the query "bark", so a short query buries its own obvious answer somewhere in
+        /// an alphabetical list. Exact and prefix hits come first instead.
+        /// </summary>
+        private static int MatchRank(string display, string id, string q)
+        {
+            if (string.Equals(display, q, StringComparison.OrdinalIgnoreCase)) return 0;
+            if (display.StartsWith(q, StringComparison.OrdinalIgnoreCase)) return 1;
+            if (WordStartsWith(display, q)) return 2;
+            if (display.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0) return 3;
+            if (id.StartsWith(q, StringComparison.OrdinalIgnoreCase)) return 4;
+            return 5;   // matched the prefab name only
+        }
+
+        // True when any word after a space starts with q, so "spear" ranks well against "Ancient Bark Spear".
+        private static bool WordStartsWith(string s, string q)
+        {
+            var i = s.IndexOf(' ');
+            while (i >= 0 && i + 1 < s.Length)
+            {
+                if (string.Compare(s, i + 1, q, 0, q.Length, StringComparison.OrdinalIgnoreCase) == 0) return true;
+                i = s.IndexOf(' ', i + 1);
+            }
+            return false;
+        }
+
         private List<ItemEntry> FilteredItems()
         {
-            var key = $"{_mainCat}|{_subCat}|{_itemSearch}|{_favVersion}|{_recentItems.Count}|{_recentVersion}|{_itemSort}";
+            var q = DebounceSearch(_itemSearch, ref _itemSearchApplied, ref _itemSearchLastSeen, ref _itemSearchDirtyAt);
+            var key = $"{_mainCat}|{_subCat}|{q}|{_favVersion}|{_recentItems.Count}|{_recentVersion}|{_itemSort}";
             if (_filteredItemsCache != null && key == _itemFilterKey) return _filteredItemsCache;
 
             IEnumerable<ItemEntry> src = _itemIndex;
@@ -1680,19 +1970,28 @@ namespace AdminPanel
                 src = _itemIndex.Where(e => e.Cat == _mainCat);
                 if (_subCat != "All") src = src.Where(e => e.Sub == _subCat);
             }
-            if (!string.IsNullOrEmpty(_itemSearch))
+            if (!string.IsNullOrEmpty(q))
                 src = src.Where(e =>
-                    e.Display.IndexOf(_itemSearch, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    e.Prefab.IndexOf(_itemSearch, StringComparison.OrdinalIgnoreCase) >= 0);
+                    e.Display.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    e.Prefab.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
 
             if (_mainCat != "Recent") // Recent keeps its most-recent-first order
             {
+                // When a search is active, relevance leads and the shorter name wins ties ("Bark" before
+                // "BarkSpear"); the chosen sort then orders entries *within* a rank band, so picking Z→A still
+                // does something meaningful instead of burying the obvious match. With no search the no-op
+                // primary key collapses this to exactly the old behaviour.
+                var ord = string.IsNullOrEmpty(q)
+                    ? src.OrderBy(_ => 0)
+                    : src.OrderBy(e => MatchRank(e.Display, e.Prefab, q)).ThenBy(e => e.Display.Length);
+
                 switch (_itemSort)
                 {
-                    case 1: src = src.OrderByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
-                    case 2: src = src.OrderBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
-                    default: src = src.OrderBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    case 1: ord = ord.ThenByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    case 2: ord = ord.ThenBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    default: ord = ord.ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
                 }
+                src = ord;
             }
 
             _filteredItemsCache = src.ToList();
@@ -1704,7 +2003,7 @@ namespace AdminPanel
         {
             foreach (var (prefab, count) in kit.Items)
                 SendServerGive(targetUid, prefab, count, 1);
-            Message($"Kit '{kit.Name}' sent");
+            Message(Loc.T("items.kit_sent", kit.Name));
         }
 
         // ---- Reusable inline dropdown ----
@@ -1735,30 +2034,29 @@ namespace AdminPanel
 
         private void DrawItemsTab()
         {
+            EnsureLocalizedLabels();
             for (var row = 0; row < 2; row++)
             {
                 GUILayout.BeginHorizontal();
                 var half = (MainCats.Length + 1) / 2;
                 for (var i = row * half; i < Mathf.Min(MainCats.Length, (row + 1) * half); i++)
                 {
-                    var pressed = GUILayout.Toggle(_mainCat == MainCats[i], MainCats[i], _catStyle);
+                    var pressed = GUILayout.Toggle(_mainCat == MainCats[i], _mainCatLabels[i], _catStyle);
                     if (pressed && _mainCat != MainCats[i]) { _mainCat = MainCats[i]; _subCat = "All"; _itemScroll = Vector2.zero; }
                 }
                 GUILayout.EndHorizontal();
             }
             GUILayout.Space(12);
 
-            // Rebuild the player list at most once per frame (on Layout) and reuse the snapshot for the Repaint
-            // and input passes, instead of allocating a fresh GetPlayerList()+LINQ list on every OnGUI pass.
-            if (Event.current.type == EventType.Layout || _othersSnapshot == null)
-                _othersSnapshot = OtherPlayers();
-            var others = _othersSnapshot;
+            // Built once per frame in DrawWindow's Layout block; the null guard only covers a tab drawn before
+            // that snapshot ever ran.
+            var others = _othersSnapshot ?? (_othersSnapshot = OtherPlayers());
 
             if (_mainCat == "Kits")
             {
-                GUILayout.Label("Gear kits (delivered to inventory via server):", _headerStyle);
+                GUILayout.Label(Loc.T("items.kits_title"), _headerStyle);
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Give target:", _labelStyle, GUILayout.Width(80));
+                GUILayout.Label(Loc.T("items.give_target"), _labelStyle, GUILayout.Width(80));
                 if (GUILayout.Button(GiveTargetName(others), _buttonStyle, GUILayout.MinWidth(180)))
                     CycleGiveTarget(others);
                 GUILayout.EndHorizontal();
@@ -1769,9 +2067,9 @@ namespace AdminPanel
                     GUILayout.Label(kit.Name, _labelStyle, GUILayout.Width(140));
                     GUILayout.Label(string.Join(", ", kit.Items.Select(i => i.Count > 1 ? $"{i.Prefab} x{i.Count}" : i.Prefab)), _labelStyle);
                     GUILayout.FlexibleSpace();
-                    if (GUILayout.Button("To me", _buttonStyle, GUILayout.MinWidth(70)))
+                    if (GUILayout.Button(Loc.T("items.to_me"), _buttonStyle, GUILayout.MinWidth(70)))
                         GiveKit(kit, SelfUid());
-                    if (GUILayout.Button("Give", _buttonStyle, GUILayout.MinWidth(55)))
+                    if (GUILayout.Button(Loc.T("items.give"), _buttonStyle, GUILayout.MinWidth(55)))
                     {
                         var gi = GiveTargetIndex(others);
                         if (gi >= 0) GiveKit(kit, PeerIdOf(others[gi]));
@@ -1779,10 +2077,10 @@ namespace AdminPanel
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.Space(10);
-                GUILayout.Label("Bulk pack (edit in config file):", _headerStyle);
+                GUILayout.Label(Loc.T("items.bulk_title"), _headerStyle);
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(_bulkPackCfg.Value, _labelStyle);
-                if (GUILayout.Button("Grab bulk pack", _buttonStyle, GUILayout.MinWidth(120)))
+                if (GUILayout.Button(Loc.T("items.bulk_grab"), _buttonStyle, GUILayout.MinWidth(120)))
                 {
                     foreach (var part in _bulkPackCfg.Value.Split(','))
                     {
@@ -1790,7 +2088,7 @@ namespace AdminPanel
                         if (bits.Length == 2 && int.TryParse(bits[1], out var n))
                             SendServerGive(SelfUid(), bits[0].Trim(), n, 1);
                     }
-                    Message("Bulk pack requested");
+                    Message(Loc.T("items.bulk_requested"));
                 }
                 GUILayout.EndHorizontal();
                 GUILayout.EndScrollView();
@@ -1809,7 +2107,7 @@ namespace AdminPanel
                 if (subs.Count > 1)
                 {
                     GUILayout.BeginHorizontal();
-                    var allPressed = GUILayout.Toggle(_subCat == "All", "All", _catStyle);
+                    var allPressed = GUILayout.Toggle(_subCat == "All", Loc.T("common.all"), _catStyle);
                     if (allPressed && _subCat != "All") { _subCat = "All"; _itemScroll = Vector2.zero; }
                     foreach (var sub in subs)
                     {
@@ -1822,28 +2120,28 @@ namespace AdminPanel
             }
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Search:", _labelStyle, GUILayout.Width(50));
+            GUILayout.Label(Loc.T("common.search"), _labelStyle, GUILayout.Width(50));
             _itemSearch = GUILayout.TextField(_itemSearch, _textFieldStyle);
-            GUILayout.Label("Amount:", _labelStyle, GUILayout.Width(55));
+            GUILayout.Label(Loc.T("items.amount"), _labelStyle, GUILayout.Width(55));
             var amountStr = GUILayout.TextField(_itemAmount.ToString(), _textFieldStyle, GUILayout.Width(50));
             int.TryParse(amountStr, out _itemAmount);
-            GUILayout.Label("Quality:", _labelStyle, GUILayout.Width(50));
+            GUILayout.Label(Loc.T("items.quality"), _labelStyle, GUILayout.Width(50));
             var qStr = GUILayout.TextField(_itemQuality.ToString(), _textFieldStyle, GUILayout.Width(30));
             int.TryParse(qStr, out _itemQuality);
             GUILayout.EndHorizontal();
             GUILayout.Space(6);
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Give target:", _labelStyle, GUILayout.Width(80));
+            GUILayout.Label(Loc.T("items.give_target"), _labelStyle, GUILayout.Width(80));
             if (GUILayout.Button(GiveTargetName(others), _buttonStyle, GUILayout.MinWidth(180)))
                 CycleGiveTarget(others);
-            GUILayout.Label("Drop = ground | Bag = your bag | Give = target's bag", _labelStyle);
+            GUILayout.Label(Loc.T("items.legend"), _labelStyle);
             GUILayout.FlexibleSpace();
-            DropdownButton("itemSort", "Sort", ItemSortModes, _itemSort, 150);
+            DropdownButton("itemSort", Loc.T("common.sort"), _itemSortLabels, _itemSort, 150);
             GUILayout.EndHorizontal();
-            DropdownOptions("itemSort", ItemSortModes, ref _itemSort, 150);
+            DropdownOptions("itemSort", _itemSortLabels, ref _itemSort, 150);
 
-            if (_itemIndex == null) { GUILayout.Label("Item DB not loaded.", _labelStyle); return; }
+            if (_itemIndex == null) { GUILayout.Label(Loc.T("items.db_not_loaded"), _labelStyle); return; }
 
             GUILayout.Space(10);
 
@@ -1880,60 +2178,81 @@ namespace AdminPanel
                 GUILayout.FlexibleSpace();
                 var amount = Math.Max(1, _itemAmount);
                 var quality = Math.Max(1, _itemQuality);
-                if (GUILayout.Button("Drop", _buttonStyle, GUILayout.MinWidth(58)))
-                { SendServerSpawn(0, e.Prefab, SpawnPos(1.5f), amount, quality, false); MarkRecent(e); Message($"Requested {amount}x {e.Display}"); }
+                if (GUILayout.Button(Loc.T("items.drop"), _buttonStyle, GUILayout.MinWidth(58)))
+                { SendServerSpawn(0, e.Prefab, SpawnPos(1.5f), amount, quality, false); MarkRecent(e); Message(Loc.T("items.msg_requested", amount, e.Display)); }
                 var bagSafe = HasIcon(e.Drop);
-                if (GUILayout.Button(bagSafe ? "Bag" : "✕", _buttonStyle, GUILayout.MinWidth(52)))
+                if (GUILayout.Button(bagSafe ? Loc.T("items.bag") : "✕", _buttonStyle, GUILayout.MinWidth(52)))
                 {
-                    if (bagSafe) { SendServerGive(SelfUid(), e.Prefab, amount, quality); MarkRecent(e); Message($"Requested {amount}x {e.Display} to bag"); }
-                    else Message($"{e.Display} has no icon — it would corrupt your inventory (drop only)");
+                    if (bagSafe) { SendServerGive(SelfUid(), e.Prefab, amount, quality); MarkRecent(e); Message(Loc.T("items.msg_requested_bag", amount, e.Display)); }
+                    else Message(Loc.T("items.msg_no_icon_drop", e.Display));
                 }
-                if (GUILayout.Button(bagSafe ? "Give" : "✕", _buttonStyle, GUILayout.MinWidth(58)))
+                if (GUILayout.Button(bagSafe ? Loc.T("items.give") : "✕", _buttonStyle, GUILayout.MinWidth(58)))
                 {
                     var gi = GiveTargetIndex(others);
-                    if (!bagSafe) Message($"{e.Display} has no icon — cannot be given");
+                    if (!bagSafe) Message(Loc.T("items.msg_no_icon_give", e.Display));
                     else if (gi >= 0)
-                    { SendServerGive(PeerIdOf(others[gi]), e.Prefab, amount, quality); MarkRecent(e); Message($"Sent {amount}x {e.Display} to {others[gi].m_name}"); }
-                    else Message("No give target selected");
+                    { SendServerGive(PeerIdOf(others[gi]), e.Prefab, amount, quality); MarkRecent(e); Message(Loc.T("items.msg_sent", amount, e.Display, others[gi].m_name)); }
+                    else Message(Loc.T("items.msg_no_target"));
                 }
                 GUILayout.EndHorizontal();
             }
             var below = total - (first + visible);
             if (below > 0) GUILayout.Space(below * rowH);
             GUILayout.EndScrollView();
-            GUILayout.Label($"{total} items", _dimLabelStyle);
+            GUILayout.Label(Loc.T("items.count", total), _dimLabelStyle);
         }
 
         // ==================== Creatures tab ====================
         private List<CreatureEntry> FilteredCreatures()
         {
-            var key = $"{_creatureCat}|{_creatureSearch}|{_creatureSort}";
+            var q = DebounceSearch(_creatureSearch, ref _creatureSearchApplied, ref _creatureSearchLastSeen, ref _creatureSearchDirtyAt);
+            var key = $"{_creatureCat}|{q}|{_creatureSort}";
             if (_filteredCreaturesCache != null && key == _creatureFilterKey) return _filteredCreaturesCache;
 
             IEnumerable<CreatureEntry> src = _creatureIndex;
             if (_creatureCat == "Bosses") src = src.Where(e => e.Boss);
             else if (_creatureCat == "Tamable") src = src.Where(e => e.Tamable);
             else if (_creatureCat != "All") src = src.Where(e => e.Faction == _creatureCat);
-            if (!string.IsNullOrEmpty(_creatureSearch))
+            if (!string.IsNullOrEmpty(q))
                 src = src.Where(e =>
-                    e.Display.IndexOf(_creatureSearch, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    e.Name.IndexOf(_creatureSearch, StringComparison.OrdinalIgnoreCase) >= 0);
+                    e.Display.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    e.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+
+            // Same relevance-then-chosen-sort ordering as the Items tab; see FilteredItems for the rationale.
+            var ord = string.IsNullOrEmpty(q)
+                ? src.OrderBy(_ => 0)
+                : src.OrderBy(e => MatchRank(e.Display, e.Name, q)).ThenBy(e => e.Display.Length);
 
             switch (_creatureSort)
             {
-                case 1: src = src.OrderByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
-                case 2: src = src.OrderBy(e => e.Faction).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
-                default: src = src.OrderBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                case 1: ord = ord.ThenByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                case 2: ord = ord.ThenBy(e => e.Faction).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                default: ord = ord.ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
             }
+            src = ord;
 
             _filteredCreaturesCache = src.ToList();
             _creatureFilterKey = key;
             return _filteredCreaturesCache;
         }
 
+        // Only the three fixed chips are ours to translate; everything after them is a faction name straight
+        // from the game data (and, for modded creatures, from other mods), so it passes through untouched.
+        private static string CreatureCatLabel(string cat)
+        {
+            switch (cat)
+            {
+                case "All": return Loc.T("common.all");
+                case "Bosses": return Loc.T("cre.bosses");
+                case "Tamable": return Loc.T("cre.tamable");
+                default: return cat;
+            }
+        }
+
         private void DrawCreaturesTab()
         {
-            if (_creatureIndex == null) { GUILayout.Label("Scene DB not loaded.", _labelStyle); return; }
+            EnsureLocalizedLabels();
+            if (_creatureIndex == null) { GUILayout.Label(Loc.T("cre.db_not_loaded"), _labelStyle); return; }
 
             // Use the cached faction-category chips (built in RefreshCaches) rather than a Select/Distinct/OrderBy
             // over the whole creature index on every OnGUI pass. Lazily build once if the cache was missed.
@@ -1950,7 +2269,7 @@ namespace AdminPanel
                 var half = (cats.Count + 1) / 2;
                 for (var i = row * half; i < Mathf.Min(cats.Count, (row + 1) * half); i++)
                 {
-                    var pressed = GUILayout.Toggle(_creatureCat == cats[i], cats[i], _catStyle);
+                    var pressed = GUILayout.Toggle(_creatureCat == cats[i], CreatureCatLabel(cats[i]), _catStyle);
                     if (pressed && _creatureCat != cats[i]) { _creatureCat = cats[i]; _creatureScroll = Vector2.zero; }
                 }
                 GUILayout.EndHorizontal();
@@ -1958,39 +2277,41 @@ namespace AdminPanel
             GUILayout.Space(8);
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Search:", _labelStyle, GUILayout.Width(50));
+            GUILayout.Label(Loc.T("common.search"), _labelStyle, GUILayout.Width(50));
             _creatureSearch = GUILayout.TextField(_creatureSearch, _textFieldStyle);
-            GUILayout.Label("Count:", _labelStyle, GUILayout.Width(45));
+            GUILayout.Label(Loc.T("cre.count"), _labelStyle, GUILayout.Width(45));
             var cStr = GUILayout.TextField(_creatureCount.ToString(), _textFieldStyle, GUILayout.Width(40));
             int.TryParse(cStr, out _creatureCount);
-            GUILayout.Label("Stars:", _labelStyle, GUILayout.Width(40));
+            GUILayout.Label(Loc.T("cre.stars"), _labelStyle, GUILayout.Width(40));
             var lStr = GUILayout.TextField((_creatureLevel - 1).ToString(), _textFieldStyle, GUILayout.Width(30));
             if (int.TryParse(lStr, out var stars)) _creatureLevel = Mathf.Clamp(stars, 0, 10) + 1;
-            _spawnAtCrosshair = GUILayout.Toggle(_spawnAtCrosshair, " At crosshair", _toggleStyle);
-            DropdownButton("creatureSort", "Sort", CreatureSortModes, _creatureSort, 150);
+            _spawnAtCrosshair = GUILayout.Toggle(_spawnAtCrosshair, " " + Loc.T("cre.at_crosshair"), _toggleStyle);
+            DropdownButton("creatureSort", Loc.T("common.sort"), _creatureSortLabels, _creatureSort, 150);
             GUILayout.EndHorizontal();
-            DropdownOptions("creatureSort", CreatureSortModes, ref _creatureSort, 150);
+            DropdownOptions("creatureSort", _creatureSortLabels, ref _creatureSort, 150);
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Pet name:", _labelStyle, GUILayout.Width(60));
+            GUILayout.Label(Loc.T("cre.pet_name"), _labelStyle, GUILayout.Width(60));
             _petName = GUILayout.TextField(_petName, _textFieldStyle, GUILayout.Width(120));
-            if (GUILayout.Button("Undo last spawn", _buttonStyle, GUILayout.MinWidth(120)))
-            { SrvRpc("AP_SrvUndo"); Message("Undo requested"); }
-            GUILayout.Label($"Arena: A={_arenaA ?? "?"} vs B={_arenaB ?? "?"}", _labelStyle);
-            if (GUILayout.Button("FIGHT!", _buttonStyle, GUILayout.MinWidth(60)) && _arenaA != null && _arenaB != null)
+            // Multi-step since 2.3.0: the server keeps a per-admin stack and replies with how many steps remain,
+            // so the local message only acknowledges the request.
+            if (GUILayout.Button(Loc.T("cre.undo"), _buttonStyle, GUILayout.MinWidth(120)))
+            { SrvRpc("AP_SrvUndo"); Message(Loc.T("cre.undo_requested")); }
+            GUILayout.Label(Loc.T("cre.arena", _arenaA ?? "?", _arenaB ?? "?"), _labelStyle);
+            if (GUILayout.Button(Loc.T("cre.fight"), _buttonStyle, GUILayout.MinWidth(60)) && _arenaA != null && _arenaB != null)
             {
                 var center = SpawnPos(8f);
                 SendServerSpawn(1, _arenaA, center + Vector3.left * 6f, _arenaCountA, 1, false);
                 SendServerSpawn(1, _arenaB, center + Vector3.right * 6f, _arenaCountB, 1, false);
-                Message($"Arena: {_arenaCountA}x {_arenaA} vs {_arenaCountB}x {_arenaB}");
+                Message(Loc.T("cre.arena_started", _arenaCountA, _arenaA, _arenaCountB, _arenaB));
             }
             GUILayout.EndHorizontal();
 
             // presets
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Preset:", _labelStyle, GUILayout.Width(45));
+            GUILayout.Label(Loc.T("cre.preset"), _labelStyle, GUILayout.Width(45));
             _presetName = GUILayout.TextField(_presetName, _textFieldStyle, GUILayout.Width(110));
-            foreach (var kv in ParseKv(_spawnPresetsCfg.Value))
+            foreach (var kv in PresetRows())
             {
                 if (GUILayout.Button(kv.Key, _buttonStyle))
                 {
@@ -2000,7 +2321,7 @@ namespace AdminPanel
                         if (s.Length >= 3 && int.TryParse(s[1], out var n) && int.TryParse(s[2], out var lvl))
                             SendServerSpawn(1, s[0], SpawnPos(4f), n, lvl, false);
                     }
-                    Message($"Preset '{kv.Key}' spawned");
+                    Message(Loc.T("cre.preset_spawned", kv.Key));
                 }
             }
             GUILayout.EndHorizontal();
@@ -2031,11 +2352,11 @@ namespace AdminPanel
                 var e = filtered[i];
                 GUILayout.BeginHorizontal(i % 2 == 0 ? _rowEven : _rowOdd, GUILayout.Height(rowH - 2));
                 GUILayout.Label(e.Display, _labelStyle, GUILayout.Width(180));
-                GUILayout.Label(e.Name + (e.Boss ? "  [BOSS]" : "") + (e.Tamable ? "  [tamable]" : ""), _dimLabelStyle);
+                GUILayout.Label(e.Name + (e.Boss ? "  " + Loc.T("cre.tag_boss") : "") + (e.Tamable ? "  " + Loc.T("cre.tag_tamable") : ""), _dimLabelStyle);
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("A", _buttonStyle, GUILayout.MinWidth(26))) { _arenaA = e.Name; _arenaCountA = Math.Max(1, _creatureCount); }
                 if (GUILayout.Button("B", _buttonStyle, GUILayout.MinWidth(26))) { _arenaB = e.Name; _arenaCountB = Math.Max(1, _creatureCount); }
-                if (GUILayout.Button("Save", _buttonStyle, GUILayout.MinWidth(50)) && !string.IsNullOrEmpty(_presetName))
+                if (GUILayout.Button(Loc.T("cre.save"), _buttonStyle, GUILayout.MinWidth(50)) && !string.IsNullOrEmpty(_presetName))
                 {
                     var spawn = $"{e.Name}:{Math.Max(1, _creatureCount)}:{_creatureLevel}";
                     var presets = ParseKv(_spawnPresetsCfg.Value);
@@ -2046,25 +2367,25 @@ namespace AdminPanel
                         : spawn;
                     _spawnPresetsCfg.Value = JoinKv(presets);
                     Config.Save();
-                    Message($"Preset '{_presetName}' saved");
+                    Message(Loc.T("cre.preset_saved", _presetName));
                 }
-                if (GUILayout.Button("Spawn", _buttonStyle, GUILayout.MinWidth(60)))
-                { SendServerSpawn(1, e.Name, SpawnPos(), Math.Max(1, _creatureCount), _creatureLevel, false); Message($"Requested {e.Display}"); }
-                if (e.Tamable && GUILayout.Button("Tame", _buttonStyle, GUILayout.MinWidth(55)))
-                { SendServerSpawn(1, e.Name, SpawnPos(), Math.Max(1, _creatureCount), _creatureLevel, true, _petName); Message($"Requested tamed {e.Display}"); }
+                if (GUILayout.Button(Loc.T("cre.spawn"), _buttonStyle, GUILayout.MinWidth(60)))
+                { SendServerSpawn(1, e.Name, SpawnPos(), Math.Max(1, _creatureCount), _creatureLevel, false); Message(Loc.T("cre.msg_requested", e.Display)); }
+                if (e.Tamable && GUILayout.Button(Loc.T("cre.tame"), _buttonStyle, GUILayout.MinWidth(55)))
+                { SendServerSpawn(1, e.Name, SpawnPos(), Math.Max(1, _creatureCount), _creatureLevel, true, _petName); Message(Loc.T("cre.msg_requested_tamed", e.Display)); }
                 GUILayout.EndHorizontal();
             }
             var below = total - (first + visible);
             if (below > 0) GUILayout.Space(below * rowH);
             GUILayout.EndScrollView();
-            GUILayout.Label($"{total} creatures", _dimLabelStyle);
+            GUILayout.Label(Loc.T("cre.count_total", total), _dimLabelStyle);
         }
 
         // ==================== Bosses tab ====================
         private void DrawBossesTab()
         {
-            DrawSection("Bosses");
-            GUILayout.Label("Spawn directly, or grab the altar offering items:", _dimLabelStyle);
+            DrawSection(Loc.T("boss.section"));
+            GUILayout.Label(Loc.T("boss.hint"), _dimLabelStyle);
             // short fixed list — size to content so it doesn't balloon to fill a tall window (leaving a dead gap)
             _bossScroll = GUILayout.BeginScrollView(_bossScroll, GUILayout.Height(Mathf.Min(ListView(140f), BossList.Length * 28f + 8f)));
             foreach (var (prefabName, label, offerPrefab, offerCount) in BossList)
@@ -2073,16 +2394,16 @@ namespace AdminPanel
                 GUILayout.Label(label, _labelStyle, GUILayout.Width(130));
                 GUILayout.Label(prefabName, _labelStyle, GUILayout.Width(120));
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button($"Offering ({offerCount}x {offerPrefab})", _buttonStyle, GUILayout.MinWidth(230)))
-                { SendServerGive(SelfUid(), offerPrefab, offerCount, 1); Message($"Requested {offerCount}x {offerPrefab}"); }
-                if (GUILayout.Button("Spawn", _buttonStyle, GUILayout.MinWidth(70)))
-                { SendServerSpawn(1, prefabName, SpawnPos(6f), 1, 1, false); Message($"Requested boss {label}"); }
+                if (GUILayout.Button(Loc.T("boss.offering", offerCount, offerPrefab), _buttonStyle, GUILayout.MinWidth(230)))
+                { SendServerGive(SelfUid(), offerPrefab, offerCount, 1); Message(Loc.T("items.msg_requested", offerCount, offerPrefab)); }
+                if (GUILayout.Button(Loc.T("cre.spawn"), _buttonStyle, GUILayout.MinWidth(70)))
+                { SendServerSpawn(1, prefabName, SpawnPos(6f), 1, 1, false); Message(Loc.T("boss.msg_requested", label)); }
                 GUILayout.EndHorizontal();
             }
             GUILayout.EndScrollView();
 
-            DrawSection("Raid events");
-            GUILayout.Label("Started server-side at your position:", _dimLabelStyle);
+            DrawSection(Loc.T("boss.raids"));
+            GUILayout.Label(Loc.T("boss.raids_hint"), _dimLabelStyle);
             GUILayout.BeginHorizontal();
             var col = 0;
             foreach (var ev in RaidEvents)
@@ -2090,7 +2411,7 @@ namespace AdminPanel
                 if (GUILayout.Button(ev, _buttonStyle))
                 {
                     SrvRpc("AP_SrvEvent", ev, LocalPlayer.transform.position);
-                    Message($"Event '{ev}' requested");
+                    Message(Loc.T("boss.msg_event", ev));
                 }
                 if (++col % 5 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
             }
@@ -2109,48 +2430,52 @@ namespace AdminPanel
             _basePickup = LocalPlayer.m_autoPickupRange;
         }
 
+        // Toggle acknowledgements share one ON/OFF pair rather than baking the words into each message, so a
+        // translator writes them once.
+        private static string OnOff(bool on) => on ? Loc.T("common.on") : Loc.T("common.off");
+
         private void DrawPlayerTab()
         {
             var player = LocalPlayer;
             EnsureBaseStats();
             _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(ListView(100f)));
 
-            DrawSection("Toggles");
-            var god = GUILayout.Toggle(_god, " God mode (no damage)", _toggleStyle);
-            if (god != _god) { _god = god; player.SetGodMode(_god); Message($"God mode {(_god ? "ON" : "OFF")}"); }
+            DrawSection(Loc.T("player.toggles"));
+            var god = GUILayout.Toggle(_god, " " + Loc.T("player.god"), _toggleStyle);
+            if (god != _god) { _god = god; player.SetGodMode(_god); Message(Loc.T("player.msg_god", OnOff(_god))); }
 
-            var ghost = GUILayout.Toggle(_ghost, " Ghost mode (enemies ignore you)", _toggleStyle);
-            if (ghost != _ghost) { _ghost = ghost; player.SetGhostMode(_ghost); Message($"Ghost mode {(_ghost ? "ON" : "OFF")}"); }
+            var ghost = GUILayout.Toggle(_ghost, " " + Loc.T("player.ghost"), _toggleStyle);
+            if (ghost != _ghost) { _ghost = ghost; player.SetGhostMode(_ghost); Message(Loc.T("player.msg_ghost", OnOff(_ghost))); }
 
-            var fly = GUILayout.Toggle(_fly, " Fly (debug fly)", _toggleStyle);
+            var fly = GUILayout.Toggle(_fly, " " + Loc.T("player.fly"), _toggleStyle);
             if (fly != _fly)
             {
                 _fly = fly;
                 Player.m_debugMode = true;
                 player.ToggleDebugFly();
-                Message($"Fly {(_fly ? "ON — jump to fly, sneak to descend" : "OFF")}");
+                Message(_fly ? Loc.T("player.msg_fly_on") : Loc.T("player.msg_fly_off"));
             }
 
-            var noCost = GUILayout.Toggle(_noCost, " Free build (no resource cost)", _toggleStyle);
-            if (noCost != _noCost) { _noCost = noCost; player.SetNoPlacementCost(_noCost); Message($"Free build {(_noCost ? "ON" : "OFF")}"); }
+            var noCost = GUILayout.Toggle(_noCost, " " + Loc.T("player.free_build"), _toggleStyle);
+            if (noCost != _noCost) { _noCost = noCost; player.SetNoPlacementCost(_noCost); Message(Loc.T("player.msg_free_build", OnOff(_noCost))); }
 
-            var noStam = GUILayout.Toggle(_noStamina, " No stamina drain", _toggleStyle);
-            if (noStam != _noStamina) { _noStamina = noStam; NoStaminaFlag = noStam; Message($"No stamina drain {(noStam ? "ON" : "OFF")}"); }
+            var noStam = GUILayout.Toggle(_noStamina, " " + Loc.T("player.no_stamina"), _toggleStyle);
+            if (noStam != _noStamina) { _noStamina = noStam; NoStaminaFlag = noStam; Message(Loc.T("player.msg_no_stamina", OnOff(noStam))); }
 
-            var ohk = GUILayout.Toggle(_oneHitKill, " One-hit kill (your attacks deal massive damage)", _toggleStyle);
-            if (ohk != _oneHitKill) { _oneHitKill = ohk; OneHitKillFlag = ohk; Message($"One-hit kill {(ohk ? "ON" : "OFF")}"); }
+            var ohk = GUILayout.Toggle(_oneHitKill, " " + Loc.T("player.one_hit"), _toggleStyle);
+            if (ohk != _oneHitKill) { _oneHitKill = ohk; OneHitKillFlag = ohk; Message(Loc.T("player.msg_one_hit", OnOff(ohk))); }
 
-            var weight = GUILayout.Toggle(_infiniteWeight, " Infinite carry weight", _toggleStyle);
+            var weight = GUILayout.Toggle(_infiniteWeight, " " + Loc.T("player.inf_weight"), _toggleStyle);
             if (weight != _infiniteWeight)
             {
                 _infiniteWeight = weight;
                 player.m_maxCarryWeight = weight ? 100000f : _baseWeight;
-                Message($"Infinite carry weight {(weight ? "ON" : "OFF")}");
+                Message(Loc.T("player.msg_inf_weight", OnOff(weight)));
             }
 
-            DrawSection("Multipliers");
+            DrawSection(Loc.T("player.multipliers"));
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Speed x{_speedMult:0.0}", _labelStyle, GUILayout.Width(90));
+            GUILayout.Label(Loc.T("player.speed", _speedMult.ToString("0.0")), _labelStyle, GUILayout.Width(90));
             var newSpeed = GUILayout.HorizontalSlider(_speedMult, 1f, 10f, GUILayout.Width(250));
             if (Math.Abs(newSpeed - _speedMult) > 0.05f)
             {
@@ -2162,7 +2487,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Jump x{_jumpMult:0.0}", _labelStyle, GUILayout.Width(90));
+            GUILayout.Label(Loc.T("player.jump", _jumpMult.ToString("0.0")), _labelStyle, GUILayout.Width(90));
             var newJump = GUILayout.HorizontalSlider(_jumpMult, 1f, 5f, GUILayout.Width(250));
             if (Math.Abs(newJump - _jumpMult) > 0.05f)
             {
@@ -2172,7 +2497,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Pickup {_pickupRange:0}m", _labelStyle, GUILayout.Width(90));
+            GUILayout.Label(Loc.T("player.pickup", _pickupRange.ToString("0")), _labelStyle, GUILayout.Width(90));
             var newPickup = GUILayout.HorizontalSlider(_pickupRange, 2f, 30f, GUILayout.Width(250));
             if (Math.Abs(newPickup - _pickupRange) > 0.3f)
             {
@@ -2181,38 +2506,38 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            DrawSection("Quick actions");
+            DrawSection(Loc.T("player.quick_actions"));
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Full heal", _buttonStyle)) { player.Heal(player.GetMaxHealth()); Message("Healed"); }
-            if (GUILayout.Button("Full stamina", _buttonStyle)) { player.AddStamina(player.GetMaxStamina()); Message("Stamina restored"); }
-            if (GUILayout.Button("Full eitr", _buttonStyle)) { player.AddEitr(player.GetMaxEitr()); Message("Eitr restored"); }
+            if (GUILayout.Button(Loc.T("player.full_heal"), _buttonStyle)) { player.Heal(player.GetMaxHealth()); Message(Loc.T("player.msg_healed")); }
+            if (GUILayout.Button(Loc.T("player.full_stamina"), _buttonStyle)) { player.AddStamina(player.GetMaxStamina()); Message(Loc.T("player.msg_stamina")); }
+            if (GUILayout.Button(Loc.T("player.full_eitr"), _buttonStyle)) { player.AddEitr(player.GetMaxEitr()); Message(Loc.T("player.msg_eitr")); }
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Repair all items", _buttonStyle))
+            if (GUILayout.Button(Loc.T("player.repair_all"), _buttonStyle))
             {
                 foreach (var item in player.GetInventory().GetAllItems())
                     item.m_durability = item.GetMaxDurability();
-                Message("All items repaired");
+                Message(Loc.T("player.msg_repaired"));
             }
-            if (GUILayout.Button("Clear status effects", _buttonStyle))
+            if (GUILayout.Button(Loc.T("player.clear_se"), _buttonStyle))
             {
                 player.GetSEMan().RemoveAllStatusEffects();
-                Message("Status effects cleared");
+                Message(Loc.T("player.msg_se_cleared"));
             }
-            if (GUILayout.Button("Fix broken inventory items", _buttonStyle))
+            if (GUILayout.Button(Loc.T("player.fix_broken"), _buttonStyle))
             {
                 var broken = player.GetInventory().GetAllItems()
                     .Where(i => i.m_shared.m_icons == null || i.m_shared.m_icons.Length == 0)
                     .ToList();
                 foreach (var item in broken)
                     player.GetInventory().RemoveItem(item);
-                Message($"Removed {broken.Count} broken (icon-less) items from inventory");
+                Message(Loc.T("player.msg_fixed_broken", broken.Count));
             }
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("TP to last death", _buttonStyle))
+            if (GUILayout.Button(Loc.T("player.tp_death"), _buttonStyle))
             {
                 var parts = _lastDeathCfg.Value.Split(',');
                 if (parts.Length == 3 &&
@@ -2221,39 +2546,38 @@ namespace AdminPanel
                     float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var dz))
                 {
                     player.TeleportTo(new Vector3(dx, dy + 0.5f, dz), player.transform.rotation, true);
-                    Message("Teleporting to your last death point");
+                    Message(Loc.T("player.msg_tp_death"));
                 }
-                else Message("No death recorded yet");
+                else Message(Loc.T("player.msg_no_death"));
             }
             GUILayout.Label(string.IsNullOrEmpty(_lastDeathCfg.Value)
-                ? "(no death recorded yet)"
-                : $"last death: {_lastDeathCfg.Value}", _dimLabelStyle);
+                ? Loc.T("player.no_death_yet")
+                : Loc.T("player.last_death", _lastDeathCfg.Value), _dimLabelStyle);
             GUILayout.EndHorizontal();
 
-            DrawSection("Skills");
+            DrawSection(Loc.T("player.skills"));
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("All skills +10", _buttonStyle)) ChangeSkills(10);
-            if (GUILayout.Button("All skills 100", _buttonStyle)) SetSkills(100);
-            if (GUILayout.Button("Reset skills", _buttonStyle)) SetSkills(0);
+            if (GUILayout.Button(Loc.T("player.skills_plus10"), _buttonStyle)) ChangeSkills(10);
+            if (GUILayout.Button(Loc.T("player.skills_100"), _buttonStyle)) SetSkills(100);
+            if (GUILayout.Button(Loc.T("player.skills_reset"), _buttonStyle)) SetSkills(0);
             GUILayout.EndHorizontal();
 
-            _showSkills = GUILayout.Toggle(_showSkills, " Show skill browser", _toggleStyle);
+            _showSkills = GUILayout.Toggle(_showSkills, " " + Loc.T("player.show_skills"), _toggleStyle);
             if (_showSkills)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Apply to:", _labelStyle, GUILayout.Width(105));
+                GUILayout.Label(Loc.T("player.apply_to"), _labelStyle, GUILayout.Width(105));
                 if (GUILayout.Button(SkillTargetLabel(), _buttonStyle, GUILayout.MinWidth(160))) CycleSkillTarget();
-                GUILayout.Label("Custom:", _labelStyle, GUILayout.Width(55));
+                GUILayout.Label(Loc.T("player.custom"), _labelStyle, GUILayout.Width(55));
                 _skillCustom = GUILayout.TextField(_skillCustom, _textFieldStyle, GUILayout.Width(60));
                 GUILayout.EndHorizontal();
                 if (_skillTargetId != 0)
                 {
                     GUILayout.BeginHorizontal();
-                    GUILayout.Label("Private note:", _labelStyle, GUILayout.Width(105));
+                    GUILayout.Label(Loc.T("player.private_note"), _labelStyle, GUILayout.Width(105));
                     _skillMsg = GUILayout.TextField(_skillMsg, _textFieldStyle, GUILayout.Width(280));
                     GUILayout.EndHorizontal();
-                    GUILayout.Label("Shown only to that player when you raise a skill — leave empty for a silent raise. " +
-                                    "(Levels shown are yours. Needs companion 2.2.0 on their side.)", _dimLabelStyle);
+                    GUILayout.Label(Loc.T("player.private_note_hint"), _dimLabelStyle);
                 }
                 var skills = player.GetSkills();
                 _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(220));
@@ -2261,31 +2585,31 @@ namespace AdminPanel
                 {
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(type.ToString(), _labelStyle, GUILayout.Width(130));
-                    GUILayout.Label($"Lv {skills.GetSkillLevel(type):0.#}", _headerStyle, GUILayout.Width(60));
+                    GUILayout.Label(Loc.T("player.level_short", skills.GetSkillLevel(type).ToString("0.#")), _headerStyle, GUILayout.Width(60));
                     GUILayout.FlexibleSpace();
                     if (GUILayout.Button("−10", _buttonStyle, GUILayout.MinWidth(44))) RaiseSkill(type, -10);
                     if (GUILayout.Button("−1", _buttonStyle, GUILayout.MinWidth(36))) RaiseSkill(type, -1);
                     if (GUILayout.Button("+1", _buttonStyle, GUILayout.MinWidth(36))) RaiseSkill(type, 1);
                     if (GUILayout.Button("+10", _buttonStyle, GUILayout.MinWidth(44))) RaiseSkill(type, 10);
                     if (GUILayout.Button("+100", _buttonStyle, GUILayout.MinWidth(52))) RaiseSkill(type, 100);
-                    if (GUILayout.Button("±Custom", _buttonStyle, GUILayout.MinWidth(70)))
+                    if (GUILayout.Button(Loc.T("player.custom_pm"), _buttonStyle, GUILayout.MinWidth(70)))
                     {
                         // negative custom values lower the skill
                         if (float.TryParse(_skillCustom, NumberStyles.Float, CultureInfo.InvariantCulture, out var amt) && amt != 0)
                             RaiseSkill(type, amt);
-                        else Message("Type a non-zero number into the custom field first (negative lowers)");
+                        else Message(Loc.T("player.msg_custom_hint"));
                     }
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.EndScrollView();
             }
 
-            DrawSection("Status effects");
-            _showStatusEffects = GUILayout.Toggle(_showStatusEffects, " Show status effect browser", _toggleStyle);
+            DrawSection(Loc.T("player.status_effects"));
+            _showStatusEffects = GUILayout.Toggle(_showStatusEffects, " " + Loc.T("player.show_se"), _toggleStyle);
             if (_showStatusEffects && ObjectDB.instance != null)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Search:", _labelStyle, GUILayout.Width(50));
+                GUILayout.Label(Loc.T("common.search"), _labelStyle, GUILayout.Width(50));
                 _seSearch = GUILayout.TextField(_seSearch, _textFieldStyle, GUILayout.Width(200));
                 GUILayout.EndHorizontal();
 
@@ -2296,7 +2620,7 @@ namespace AdminPanel
                 _seScroll = GUILayout.BeginScrollView(_seScroll, GUILayout.Height(200));
                 if (seList.Count == 0)
                 {
-                    GUILayout.Label("No matching status effects.", _dimLabelStyle);
+                    GUILayout.Label(Loc.T("player.no_se_match"), _dimLabelStyle);
                 }
                 else
                 {
@@ -2307,16 +2631,16 @@ namespace AdminPanel
                         if (entry.Bucket != lastBucket)
                         {
                             lastBucket = entry.Bucket;
-                            GUILayout.Label(SeBucketNames[entry.Bucket], _headerStyle);
+                            GUILayout.Label(Loc.T(SeBucketKeys[entry.Bucket]), _headerStyle);
                         }
                         GUILayout.BeginHorizontal();
                         GUILayout.Label(entry.Display, _labelStyle, GUILayout.Width(180));
                         GUILayout.Label(entry.Tooltip, _dimLabelStyle);
                         GUILayout.FlexibleSpace();
-                        if (GUILayout.Button("Apply", _buttonStyle, GUILayout.MinWidth(60)))
+                        if (GUILayout.Button(Loc.T("player.apply"), _buttonStyle, GUILayout.MinWidth(60)))
                         {
                             player.GetSEMan().AddStatusEffect(entry.Hash, true);
-                            Message($"Applied {entry.Display}");
+                            Message(Loc.T("player.msg_applied", entry.Display));
                         }
                         GUILayout.EndHorizontal();
                     }
@@ -2331,7 +2655,7 @@ namespace AdminPanel
             if (_skillTargetId == 0)
             {
                 LocalPlayer.GetSkills().CheatRaiseSkill(type.ToString(), amount, false);
-                Message($"{type} +{amount:0.#}");
+                Message(Loc.T("player.msg_skill_self", type, amount.ToString("0.#")));
             }
             else
             {
@@ -2341,17 +2665,17 @@ namespace AdminPanel
                 pkg.Write(amount);
                 pkg.Write(_skillMsg ?? "");
                 SrvRpc("AP_SrvSkillRaise", pkg);
-                Message($"{type} +{amount:0.#} → {SkillTargetLabel()}");
+                Message(Loc.T("player.msg_skill_target", type, amount.ToString("0.#"), SkillTargetLabel()));
             }
         }
 
         private string SkillTargetLabel()
         {
-            if (_skillTargetId == 0) return "Me";
+            if (_skillTargetId == 0) return Loc.T("common.me");
             foreach (var p in OtherPlayers())
                 if (PeerIdOf(p) == _skillTargetId) return p.m_name;
             _skillTargetId = 0;   // target left the game — snap back to self
-            return "Me";
+            return Loc.T("common.me");
         }
 
         // Cycle Me → player 1 → player 2 → … → Me. A cycle button sidesteps the dropdown's
@@ -2374,7 +2698,7 @@ namespace AdminPanel
                 if (type == Skills.SkillType.None || type == Skills.SkillType.All) continue;
                 LocalPlayer.GetSkills().CheatRaiseSkill(type.ToString(), delta);
             }
-            Message($"Skills changed by {delta}");
+            Message(Loc.T("player.msg_skills_changed", delta));
         }
 
         private void SetSkills(float value)
@@ -2386,7 +2710,7 @@ namespace AdminPanel
                 skills.CheatResetSkill(type.ToString());
                 if (value > 0) skills.CheatRaiseSkill(type.ToString(), value);
             }
-            Message($"All skills set to {value}");
+            Message(Loc.T("player.msg_skills_set", value));
         }
 
         // ==================== World tab ====================
@@ -2406,65 +2730,65 @@ namespace AdminPanel
             // the OnGUI callback. The controls always render (stable IMGUI control count); only the click acts.
             var env = EnvMan.instance;
 
-            DrawSection("Time & weather");
+            DrawSection(Loc.T("world.time_weather"));
             GUILayout.BeginHorizontal();
             _timeSlider = GUILayout.HorizontalSlider(_timeSlider, 0f, 1f, GUILayout.Width(280));
             GUILayout.Label(TimeLabel(_timeSlider), _labelStyle, GUILayout.Width(50));
-            if (GUILayout.Button("Set", _buttonStyle, GUILayout.MinWidth(50)) && env != null)
+            if (GUILayout.Button(Loc.T("world.set"), _buttonStyle, GUILayout.MinWidth(50)) && env != null)
             {
                 env.m_debugTimeOfDay = true;
                 env.m_debugTime = _timeSlider;
                 _timeLocked = true;
             }
-            if (_timeLocked && GUILayout.Button("Release", _buttonStyle, GUILayout.MinWidth(70)) && env != null)
+            if (_timeLocked && GUILayout.Button(Loc.T("world.release"), _buttonStyle, GUILayout.MinWidth(70)) && env != null)
             {
                 env.m_debugTimeOfDay = false;
                 _timeLocked = false;
             }
-            if (GUILayout.Button("Skip night", _buttonStyle, GUILayout.MinWidth(80)))
+            if (GUILayout.Button(Loc.T("world.skip_night"), _buttonStyle, GUILayout.MinWidth(80)))
             {
                 // World time is SERVER-owned — the old local debug-flag flip changed nothing. The companion
                 // runs the game's own sleep-skip (EnvMan.SkipToMorning) server-side. Needs companion 2.2.9.
                 SrvRpc("AP_SrvSkipNight");
-                Message("Skipping to morning (needs companion 2.2.9 on the server)");
+                Message(Loc.T("world.msg_skip_night"));
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label("Weather (empty = reset). Clear, Rain, ThunderStorm, Snow, Mist, Twilight_Clear:", _labelStyle);
+            GUILayout.Label(Loc.T("world.weather_hint"), _labelStyle);
             GUILayout.BeginHorizontal();
             _weather = GUILayout.TextField(_weather, _textFieldStyle, GUILayout.Width(200));
-            if (GUILayout.Button("Apply", _buttonStyle, GUILayout.MinWidth(70)) && env != null)
+            if (GUILayout.Button(Loc.T("player.apply"), _buttonStyle, GUILayout.MinWidth(70)) && env != null)
             {
                 env.m_debugEnv = _weather;
-                Message(string.IsNullOrEmpty(_weather) ? "Weather reset" : $"Weather forced: {_weather}");
+                Message(string.IsNullOrEmpty(_weather) ? Loc.T("world.msg_weather_reset") : Loc.T("world.msg_weather_forced", _weather));
             }
             GUILayout.EndHorizontal();
 
-            DrawSection("Wind");
+            DrawSection(Loc.T("world.wind"));
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Dir {_windAngle:0}°", _labelStyle, GUILayout.Width(70));
+            GUILayout.Label(Loc.T("world.wind_dir", _windAngle.ToString("0")), _labelStyle, GUILayout.Width(70));
             _windAngle = GUILayout.HorizontalSlider(_windAngle, 0f, 360f, GUILayout.Width(160));
-            GUILayout.Label($"Str {_windIntensity:0.0}", _labelStyle, GUILayout.Width(60));
+            GUILayout.Label(Loc.T("world.wind_str", _windIntensity.ToString("0.0")), _labelStyle, GUILayout.Width(60));
             _windIntensity = GUILayout.HorizontalSlider(_windIntensity, 0f, 1f, GUILayout.Width(120));
-            if (GUILayout.Button("Set", _buttonStyle, GUILayout.MinWidth(45)) && env != null)
-            { env.SetDebugWind(_windAngle, _windIntensity); _windLocked = true; Message("Wind set"); }
-            if (_windLocked && GUILayout.Button("Reset", _buttonStyle, GUILayout.MinWidth(55)) && env != null)
-            { env.ResetDebugWind(); _windLocked = false; Message("Wind reset"); }
+            if (GUILayout.Button(Loc.T("world.set"), _buttonStyle, GUILayout.MinWidth(45)) && env != null)
+            { env.SetDebugWind(_windAngle, _windIntensity); _windLocked = true; Message(Loc.T("world.msg_wind_set")); }
+            if (_windLocked && GUILayout.Button(Loc.T("world.reset"), _buttonStyle, GUILayout.MinWidth(55)) && env != null)
+            { env.ResetDebugWind(); _windLocked = false; Message(Loc.T("world.msg_wind_reset")); }
             GUILayout.EndHorizontal();
 
-            DrawSection("Teleport");
-            GUILayout.Label($"🗺  Map: open the full map (M), hover a spot, press [{_mapTpKey.Value}] to teleport there.", _dimLabelStyle);
+            DrawSection(Loc.T("world.teleport"));
+            GUILayout.Label(Loc.T("world.map_hint", _mapTpKey.Value), _dimLabelStyle);
 
             // teleport straight to an online player
             GUILayout.BeginHorizontal();
-            GUILayout.Label("To player:", _labelStyle, GUILayout.Width(80));
-            var tpOthers = OtherPlayers();
-            if (tpOthers.Count == 0) GUILayout.Label("(no other players online)", _dimLabelStyle);
+            GUILayout.Label(Loc.T("world.to_player"), _labelStyle, GUILayout.Width(80));
+            var tpOthers = _othersSnapshot ?? (_othersSnapshot = OtherPlayers());
+            if (tpOthers.Count == 0) GUILayout.Label(Loc.T("world.no_others"), _dimLabelStyle);
             else foreach (var p in tpOthers)
                 if (GUILayout.Button(p.m_name, _buttonStyle))
                 {
                     LocalPlayer.TeleportTo(p.m_position + Vector3.up, LocalPlayer.transform.rotation, true);
-                    Message($"Teleporting to {p.m_name}");
+                    Message(Loc.T("world.msg_tp_to", p.m_name));
                 }
             GUILayout.EndHorizontal();
 
@@ -2472,7 +2796,7 @@ namespace AdminPanel
             if (ZoneSystem.instance != null)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Bosses:", _labelStyle, GUILayout.Width(80));
+                GUILayout.Label(Loc.T("world.bosses"), _labelStyle, GUILayout.Width(80));
                 var any = false;
                 foreach (var (label, loc) in QuickJumps)
                 {
@@ -2480,32 +2804,32 @@ namespace AdminPanel
                     any = true;
                     if (GUILayout.Button(label, _buttonStyle)) TeleportToWorld(lp, label);
                 }
-                if (!any) GUILayout.Label("(no known altars yet — explore / defeat bosses)", _dimLabelStyle);
+                if (!any) GUILayout.Label(Loc.T("world.no_altars"), _dimLabelStyle);
                 GUILayout.EndHorizontal();
             }
 
             var pos = LocalPlayer.transform.position;
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Position:", _labelStyle, GUILayout.Width(80));
-            GUILayout.Label($"now: {pos.x:0}, {pos.y:0}, {pos.z:0}", _dimLabelStyle, GUILayout.Width(140));
+            GUILayout.Label(Loc.T("world.position"), _labelStyle, GUILayout.Width(80));
+            GUILayout.Label(Loc.T("world.now_at", pos.x.ToString("0"), pos.y.ToString("0"), pos.z.ToString("0")), _dimLabelStyle, GUILayout.Width(140));
             GUILayout.Label("X:", _labelStyle, GUILayout.Width(18));
             _tpX = GUILayout.TextField(_tpX, _textFieldStyle, GUILayout.Width(60));
             GUILayout.Label("Y:", _labelStyle, GUILayout.Width(18));
             _tpY = GUILayout.TextField(_tpY, _textFieldStyle, GUILayout.Width(50));
             GUILayout.Label("Z:", _labelStyle, GUILayout.Width(18));
             _tpZ = GUILayout.TextField(_tpZ, _textFieldStyle, GUILayout.Width(60));
-            if (GUILayout.Button("Go", _buttonStyle, GUILayout.MinWidth(40)) &&
+            if (GUILayout.Button(Loc.T("world.go"), _buttonStyle, GUILayout.MinWidth(40)) &&
                 float.TryParse(_tpX, out var x) && float.TryParse(_tpY, out var y) && float.TryParse(_tpZ, out var z))
             {
                 LocalPlayer.TeleportTo(new Vector3(x, y <= 0 ? 200 : y, z), LocalPlayer.transform.rotation, true);
-                Message("Teleporting");
+                Message(Loc.T("world.msg_teleporting"));
             }
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Bookmark:", _labelStyle, GUILayout.Width(80));
+            GUILayout.Label(Loc.T("world.bookmark"), _labelStyle, GUILayout.Width(80));
             _bookmarkName = GUILayout.TextField(_bookmarkName, _textFieldStyle, GUILayout.Width(110));
-            if (GUILayout.Button("Save here", _buttonStyle, GUILayout.MinWidth(80)) && !string.IsNullOrEmpty(_bookmarkName))
+            if (GUILayout.Button(Loc.T("world.save_here"), _buttonStyle, GUILayout.MinWidth(80)) && !string.IsNullOrEmpty(_bookmarkName))
             {
                 var marks = ParseKv(_bookmarksCfg.Value);
                 // Format coordinates with InvariantCulture so the decimal point is always '.', never a ','
@@ -2513,16 +2837,15 @@ namespace AdminPanel
                 marks[_bookmarkName] = string.Format(CultureInfo.InvariantCulture, "{0:0.#},{1:0.#},{2:0.#}", pos.x, pos.y, pos.z);
                 _bookmarksCfg.Value = JoinKv(marks);
                 Config.Save();
-                Message($"Bookmark '{_bookmarkName}' saved");
+                Message(Loc.T("world.msg_bookmark_saved", _bookmarkName));
             }
             GUILayout.EndHorizontal();
-            var bookmarks = ParseKv(_bookmarksCfg.Value);
-            foreach (var kv in bookmarks.ToList())
+            foreach (var kv in BookmarkRows())
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(kv.Key, _labelStyle, GUILayout.Width(120));
                 GUILayout.Label(kv.Value, _labelStyle, GUILayout.Width(160));
-                if (GUILayout.Button("Go", _buttonStyle, GUILayout.MinWidth(40)))
+                if (GUILayout.Button(Loc.T("world.go"), _buttonStyle, GUILayout.MinWidth(40)))
                 {
                     var parts = kv.Value.Split(',');
                     if (parts.Length == 3 &&
@@ -2531,60 +2854,65 @@ namespace AdminPanel
                         float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var bz))
                     {
                         LocalPlayer.TeleportTo(new Vector3(bx, by, bz), LocalPlayer.transform.rotation, true);
-                        Message($"Teleporting to {kv.Key}");
+                        Message(Loc.T("world.msg_tp_to", kv.Key));
                     }
                 }
-                if (GUILayout.Button("Del", _buttonStyle, GUILayout.MinWidth(40)))
+                if (GUILayout.Button(Loc.T("world.del"), _buttonStyle, GUILayout.MinWidth(40)))
                 {
-                    bookmarks.Remove(kv.Key);
-                    _bookmarksCfg.Value = JoinKv(bookmarks);
+                    // Re-parse from config rather than mutating the cached dictionary: the row list for this
+                    // frame is already snapshotted, so the deletion simply lands on the next Layout pass.
+                    var marks = ParseKv(_bookmarksCfg.Value);
+                    marks.Remove(kv.Key);
+                    _bookmarksCfg.Value = JoinKv(marks);
                     Config.Save();
                 }
                 GUILayout.EndHorizontal();
             }
 
-            DrawSection("Area actions");
+            DrawSection(Loc.T("world.area_actions"));
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Combat:", _labelStyle, GUILayout.Width(80));
-            if (GUILayout.Button("Kill enemies 50m", _buttonStyle)) KillNearby(50f, false);
-            if (GUILayout.Button("Kill ALL loaded", _buttonStyle)) KillNearby(100000f, false);
-            if (GUILayout.Button("Tame animals 30m", _buttonStyle)) TameNearby(30f);
+            GUILayout.Label(Loc.T("world.combat"), _labelStyle, GUILayout.Width(80));
+            if (GUILayout.Button(Loc.T("world.kill_50"), _buttonStyle)) KillNearby(50f, false);
+            // World-wide and unrecoverable — the only one here that can wipe creatures the admin can't even see.
+            if (ConfirmButton("killAll", Loc.T("world.kill_all"))) KillNearby(100000f, false);
+            if (GUILayout.Button(Loc.T("world.tame_30"), _buttonStyle)) TameNearby(30f);
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Cleanup:", _labelStyle, GUILayout.Width(80));
-            if (GUILayout.Button("Ground items 50m", _buttonStyle)) CleanupDrops(50f);
-            if (GUILayout.Button("Repair builds 50m", _buttonStyle)) RepairBuilds(50f);
-            if (GUILayout.Button("Clear trees 20m", _buttonStyle)) ClearTrees(20f);
+            GUILayout.Label(Loc.T("world.cleanup"), _labelStyle, GUILayout.Width(80));
+            // Both destroy player property (dropped loot, planted/grown trees) with no undo.
+            if (ConfirmButton("cleanupDrops", Loc.T("world.ground_items"))) CleanupDrops(50f);
+            if (GUILayout.Button(Loc.T("world.repair_builds"), _buttonStyle)) RepairBuilds(50f);
+            if (ConfirmButton("clearTrees", Loc.T("world.clear_trees"))) ClearTrees(20f);
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            GUILayout.Label("World:", _labelStyle, GUILayout.Width(80));
-            if (GUILayout.Button("Explore full map", _buttonStyle)) { Minimap.instance?.ExploreAll(); Message("Map explored"); }
-            if (GUILayout.Button("Ping my position", _buttonStyle)) { Chat.instance?.SendPing(LocalPlayer.transform.position); Message("Pinged"); }
-            var peaceful = GUILayout.Toggle(_peaceful, " Peaceful mode (no raids)", _toggleStyle);
+            GUILayout.Label(Loc.T("world.world"), _labelStyle, GUILayout.Width(80));
+            if (GUILayout.Button(Loc.T("world.explore_map"), _buttonStyle)) { Minimap.instance?.ExploreAll(); Message(Loc.T("world.msg_map_explored")); }
+            if (GUILayout.Button(Loc.T("world.ping_pos"), _buttonStyle)) { Chat.instance?.SendPing(LocalPlayer.transform.position); Message(Loc.T("world.msg_pinged")); }
+            var peaceful = GUILayout.Toggle(_peaceful, " " + Loc.T("world.peaceful"), _toggleStyle);
             if (peaceful != _peaceful)
             {
                 _peaceful = peaceful;
                 SrvRpc("AP_SrvPeaceful", _peaceful);
-                Message($"Peaceful mode {(_peaceful ? "ON" : "OFF")} requested");
+                Message(Loc.T("world.msg_peaceful", OnOff(_peaceful)));
             }
             GUILayout.EndHorizontal();
 
-            DrawSection("Global keys");
-            GUILayout.Label("World progression flags — control raids and boss state:", _dimLabelStyle);
+            DrawSection(Loc.T("world.global_keys"));
+            GUILayout.Label(Loc.T("world.global_keys_hint"), _dimLabelStyle);
             if (ZoneSystem.instance != null)
             {
-                foreach (var key in ZoneSystem.instance.GetGlobalKeys().ToList())
+                foreach (var key in _globalKeysLayout ?? (IEnumerable<string>)ZoneSystem.instance.GetGlobalKeys())
                 {
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(key, _labelStyle, GUILayout.Width(300));
-                    if (GUILayout.Button("Remove", _buttonStyle, GUILayout.MinWidth(70)))
-                    { ZoneSystem.instance.RemoveGlobalKey(key); Message($"Removed key {key}"); }
+                    if (GUILayout.Button(Loc.T("world.remove"), _buttonStyle, GUILayout.MinWidth(70)))
+                    { ZoneSystem.instance.RemoveGlobalKey(key); Message(Loc.T("world.msg_key_removed", key)); }
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.BeginHorizontal();
                 _newGlobalKey = GUILayout.TextField(_newGlobalKey, _textFieldStyle, GUILayout.Width(220));
-                if (GUILayout.Button("Add key", _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_newGlobalKey))
-                { ZoneSystem.instance.SetGlobalKey(_newGlobalKey); Message($"Added key {_newGlobalKey}"); _newGlobalKey = ""; }
+                if (GUILayout.Button(Loc.T("world.add_key"), _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_newGlobalKey))
+                { ZoneSystem.instance.SetGlobalKey(_newGlobalKey); Message(Loc.T("world.msg_key_added", _newGlobalKey)); _newGlobalKey = ""; }
                 GUILayout.EndHorizontal();
             }
 
@@ -2605,7 +2933,7 @@ namespace AdminPanel
                 ch.Damage(hit);
                 killed++;
             }
-            Message($"Killed {killed} creatures");
+            Message(Loc.T("world.msg_killed", killed));
         }
 
         private void TameNearby(float radius)
@@ -2620,7 +2948,7 @@ namespace AdminPanel
                 ch.SetTamed(true);
                 tamed++;
             }
-            Message($"Tamed {tamed} animals");
+            Message(Loc.T("world.msg_tamed", tamed));
         }
 
         private void CleanupDrops(float radius)
@@ -2637,7 +2965,7 @@ namespace AdminPanel
                 nview.Destroy();
                 removed++;
             }
-            Message($"Removed {removed} ground items");
+            Message(Loc.T("world.msg_drops_removed", removed));
         }
 
         private void RepairBuilds(float radius)
@@ -2650,7 +2978,7 @@ namespace AdminPanel
                 if (Vector3.Distance(wnt.transform.position, pos) > radius) continue;
                 if (wnt.Repair()) repaired++;
             }
-            Message($"Repaired {repaired} build pieces");
+            Message(Loc.T("world.msg_repaired", repaired));
         }
 
         private void ClearTrees(float radius)
@@ -2675,58 +3003,58 @@ namespace AdminPanel
                 nview.Destroy();
                 removed++;
             }
-            Message($"Removed {removed} trees/logs");
+            Message(Loc.T("world.msg_trees_removed", removed));
         }
 
         // ==================== Players tab ====================
         private void DrawPlayersTab()
         {
-            if (ZNet.instance == null) { GUILayout.Label("Not connected.", _labelStyle); return; }
+            if (ZNet.instance == null) { GUILayout.Label(Loc.T("players.not_connected"), _labelStyle); return; }
 
-            DrawSection("Broadcast");
+            DrawSection(Loc.T("players.broadcast_section"));
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Broadcast:", _labelStyle, GUILayout.Width(70));
+            GUILayout.Label(Loc.T("players.broadcast"), _labelStyle, GUILayout.Width(70));
             _broadcastText = GUILayout.TextField(_broadcastText, _textFieldStyle);
-            if (GUILayout.Button("Send to all", _buttonStyle, GUILayout.MinWidth(90)) && !string.IsNullOrEmpty(_broadcastText))
+            if (GUILayout.Button(Loc.T("players.send_all"), _buttonStyle, GUILayout.MinWidth(90)) && !string.IsNullOrEmpty(_broadcastText))
             {
                 SrvRpc("AP_SrvBroadcast", _broadcastText);
-                Message("Broadcast sent");
+                Message(Loc.T("players.msg_broadcast_sent"));
                 _broadcastText = "";
             }
-            if (GUILayout.Button("Summon ALL", _buttonStyle, GUILayout.MinWidth(95)))
+            if (GUILayout.Button(Loc.T("players.summon_all"), _buttonStyle, GUILayout.MinWidth(95)))
             {
                 foreach (var p in OtherPlayers()) SummonPlayer(p);
-                Message("Summoning everyone");
+                Message(Loc.T("players.msg_summon_all"));
             }
             GUILayout.EndHorizontal();
 
-            DrawSection("Connected players");
+            DrawSection(Loc.T("players.connected"));
             _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUILayout.Height(Mathf.Min(250f, ListView(330f))));
             foreach (var info in ZNet.instance.GetPlayerList())
             {
                 var isSelf = LocalPlayer != null && info.m_name == LocalPlayer.GetPlayerName();
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(info.m_name + (isSelf ? " (you)" : ""), _labelStyle, GUILayout.Width(140));
+                GUILayout.Label(info.m_name + (isSelf ? " " + Loc.T("players.you_suffix") : ""), _labelStyle, GUILayout.Width(140));
                 GUILayout.Label($"({info.m_position.x:0}, {info.m_position.z:0})", _labelStyle, GUILayout.Width(100));
                 if (!isSelf)
                 {
-                    if (GUILayout.Button("TP to", _buttonStyle, GUILayout.MinWidth(50)))
-                    { LocalPlayer.TeleportTo(info.m_position + Vector3.up, LocalPlayer.transform.rotation, true); Message($"Teleporting to {info.m_name}"); }
-                    if (GUILayout.Button("Summon", _buttonStyle, GUILayout.MinWidth(65))) SummonPlayer(info);
-                    if (GUILayout.Button("Watch", _buttonStyle, GUILayout.MinWidth(55)))
+                    if (GUILayout.Button(Loc.T("players.tp_to"), _buttonStyle, GUILayout.MinWidth(50)))
+                    { LocalPlayer.TeleportTo(info.m_position + Vector3.up, LocalPlayer.transform.rotation, true); Message(Loc.T("world.msg_tp_to", info.m_name)); }
+                    if (GUILayout.Button(Loc.T("players.summon"), _buttonStyle, GUILayout.MinWidth(65))) SummonPlayer(info);
+                    if (GUILayout.Button(Loc.T("players.watch"), _buttonStyle, GUILayout.MinWidth(55)))
                     {
                         if (!_ghost) { _ghost = true; LocalPlayer.SetGhostMode(true); }
                         if (!_fly) { _fly = true; Player.m_debugMode = true; LocalPlayer.ToggleDebugFly(); }
                         LocalPlayer.TeleportTo(info.m_position + Vector3.up * 8f, LocalPlayer.transform.rotation, true);
-                        Message($"Watching {info.m_name} (ghost+fly enabled)");
+                        Message(Loc.T("players.msg_watching", info.m_name));
                     }
-                    if (GUILayout.Button("Heal", _buttonStyle, GUILayout.MinWidth(45)))
-                    { SrvRpc("AP_SrvHeal", PeerIdOf(info)); Message($"Healing {info.m_name}"); }
-                    if (GUILayout.Button("Map", _buttonStyle, GUILayout.MinWidth(45)))
-                    { Chat.instance?.SendPing(info.m_position); Message($"Pinged {info.m_name}'s position"); }
+                    if (GUILayout.Button(Loc.T("players.heal"), _buttonStyle, GUILayout.MinWidth(45)))
+                    { SrvRpc("AP_SrvHeal", PeerIdOf(info)); Message(Loc.T("players.msg_healing", info.m_name)); }
+                    if (GUILayout.Button(Loc.T("players.map"), _buttonStyle, GUILayout.MinWidth(45)))
+                    { Chat.instance?.SendPing(info.m_position); Message(Loc.T("players.msg_pinged", info.m_name)); }
                     if (GUILayout.Button("⚡", _buttonStyle, GUILayout.MinWidth(30)))
-                    { SendServerSpawn(1, "lightning", info.m_position, 1, 1, false); Message($"Lightning on {info.m_name}!"); }
-                    if (GUILayout.Button("Inventory", _buttonStyle, GUILayout.MinWidth(75)))
+                    { SendServerSpawn(1, "lightning", info.m_position, 1, 1, false); Message(Loc.T("players.msg_lightning", info.m_name)); }
+                    if (GUILayout.Button(Loc.T("players.inventory"), _buttonStyle, GUILayout.MinWidth(75)))
                     {
                         _inspectPlayerName = info.m_name;
                         _inspectTargetId = PeerIdOf(info);
@@ -2735,12 +3063,13 @@ namespace AdminPanel
                         _inspectRequestTime = Time.time;
                         SrvRpc("AP_SrvReqInv", PeerIdOf(info));
                     }
-                    if (GUILayout.Button("Kick", _buttonStyle, GUILayout.MinWidth(45)))
-                    { SrvRpc("AP_SrvKick", PeerIdOf(info)); Message($"Kicked {info.m_name}"); }
-                    if (GUILayout.Button("Ban", _buttonStyle, GUILayout.MinWidth(42)))
-                    { SrvRpc("AP_SrvBan", PeerIdOf(info)); Message($"Banned {info.m_name}"); }
+                    if (GUILayout.Button(Loc.T("players.kick"), _buttonStyle, GUILayout.MinWidth(45)))
+                    { SrvRpc("AP_SrvKick", PeerIdOf(info)); Message(Loc.T("players.msg_kicked", info.m_name)); }
+                    // Per-player id: arming Ban on one row must not arm it on another.
+                    if (ConfirmButton("ban:" + PeerIdOf(info), Loc.T("players.ban"), GUILayout.MinWidth(42)))
+                    { SrvRpc("AP_SrvBan", PeerIdOf(info)); Message(Loc.T("players.msg_banned", info.m_name)); }
                 }
-                else if (GUILayout.Button("Inventory", _buttonStyle, GUILayout.MinWidth(75)))
+                else if (GUILayout.Button(Loc.T("players.inventory"), _buttonStyle, GUILayout.MinWidth(75)))
                 {
                     _inspectPlayerName = info.m_name;
                     _inspectTargetId = PeerIdOf(info);
@@ -2754,7 +3083,7 @@ namespace AdminPanel
                 // note line
                 GUILayout.BeginHorizontal();
                 GUILayout.Space(20);
-                GUILayout.Label("Note:", _labelStyle, GUILayout.Width(40));
+                GUILayout.Label(Loc.T("players.note"), _labelStyle, GUILayout.Width(40));
                 _playerNotes.TryGetValue(info.m_name, out var note);
                 var newNote = GUILayout.TextField(note ?? "", _textFieldStyle, GUILayout.Width(300));
                 if (newNote != (note ?? ""))
@@ -2766,13 +3095,13 @@ namespace AdminPanel
             }
             GUILayout.EndScrollView();
 
-            DrawSection("Inventory viewer");
-            GUILayout.Label(_inspectPlayerName ?? "(pick a player above)", _labelStyle);
+            DrawSection(Loc.T("players.inv_viewer"));
+            GUILayout.Label(_inspectPlayerName ?? Loc.T("players.pick_player"), _labelStyle);
             if (_inspectPending)
             {
                 GUILayout.Label(Time.time - _inspectRequestTime > 5f
-                    ? "No response — that player probably doesn't have the companion mod installed."
-                    : "Waiting for response...", _labelStyle);
+                    ? Loc.T("players.no_response")
+                    : Loc.T("players.waiting"), _labelStyle);
             }
             else if (_inspectInventory != null)
             {
@@ -2786,12 +3115,12 @@ namespace AdminPanel
                     GUILayout.FlexibleSpace();
                     // Removal is executed on the target's client via the server (admin-validated); the
                     // target pushes its refreshed inventory back, so the list updates itself.
-                    if (GUILayout.Button("Remove 1", _buttonStyle, GUILayout.MinWidth(75))) RemoveFromInspected(name, 1);
-                    if (GUILayout.Button("Remove all", _buttonStyle, GUILayout.MinWidth(85))) RemoveFromInspected(name, stack);
+                    if (GUILayout.Button(Loc.T("players.remove_1"), _buttonStyle, GUILayout.MinWidth(75))) RemoveFromInspected(name, 1);
+                    if (GUILayout.Button(Loc.T("players.remove_all"), _buttonStyle, GUILayout.MinWidth(85))) RemoveFromInspected(name, stack);
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.EndScrollView();
-                GUILayout.Label("Remove needs companion 2.2.0 on the target player (and the server).", _dimLabelStyle);
+                GUILayout.Label(Loc.T("players.remove_hint"), _dimLabelStyle);
             }
         }
 
@@ -2803,7 +3132,7 @@ namespace AdminPanel
             pkg.Write(itemName);
             pkg.Write(amount);
             SrvRpc("AP_SrvInvRemove", pkg);
-            Message($"Removing {amount}x {itemName} from {_inspectPlayerName}");
+            Message(Loc.T("players.msg_removing", amount, itemName, _inspectPlayerName));
         }
 
         private void SummonPlayer(ZNet.PlayerInfo info)
@@ -2812,42 +3141,97 @@ namespace AdminPanel
             pkg.Write(PeerIdOf(info));
             pkg.Write(LocalPlayer.transform.position + LocalPlayer.transform.forward * 2f);
             SrvRpc("AP_SrvTeleport", pkg);
-            Message($"Summoning {info.m_name}");
+            Message(Loc.T("players.msg_summoning", info.m_name));
         }
 
         // ==================== Server tab ====================
-        private void DrawServerTab()
-        {
-            _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(ListView(100f)));
+        // OnGUI runs at least twice per frame (Layout + Repaint), so anything built inline in a draw method is
+        // built twice a frame forever. These stat lines involve reflection and string formatting, so they are
+        // rebuilt on a timer and merely rendered from cache in between.
+        private float _nextStatsRefresh;
+        private string _statsMain = "";
+        private string _statsLoad = "";
+        private string _statsHost = "";
 
-            DrawSection("Live stats");
+        /// <summary>
+        /// Count a private Valheim collection by reflection, trying each candidate field name in order.
+        /// Valheim renames internals between patches and this tab is cosmetic, so a miss degrades to null
+        /// (rendered as "n/a") instead of breaking the tab — or the build — on the next game update.
+        /// </summary>
+        private static int? ReflectCount(object instance, params string[] fieldNames)
+        {
+            if (instance == null) return null;
+            foreach (var name in fieldNames)
+            {
+                try
+                {
+                    var f = AccessTools.Field(instance.GetType(), name);
+                    // Non-generic ICollection covers both Dictionary<,> and List<> without knowing the type args.
+                    if (f?.GetValue(instance) is System.Collections.ICollection c) return c.Count;
+                }
+                catch { /* try the next candidate */ }
+            }
+            return null;
+        }
+
+        private static string OrNa(int? v) => v.HasValue ? v.Value.ToString() : "n/a";
+
+        private void RefreshServerStats()
+        {
             var day = EnvMan.instance != null && ZNet.instance != null
                 ? EnvMan.instance.GetDay(ZNet.instance.GetTimeSeconds()) : 0;
             var players = ZNet.instance != null ? ZNet.instance.GetPlayerList().Count : 0;
             var chars = Character.GetAllCharacters().Count;
             var fps = Mathf.RoundToInt(1f / Mathf.Max(0.0001f, Time.smoothDeltaTime));
-            GUILayout.Label($"World day: {day}     Players online: {players}     Loaded creatures: {chars}     Your FPS: {fps}", _labelStyle);
-            var serverPeer = ZNet.instance != null ? ZNet.instance.GetServerPeer() : null;
-            if (serverPeer != null && serverPeer.m_socket != null)
-                GUILayout.Label($"Server: {serverPeer.m_socket.GetHostName()}", _labelStyle);
-            GUILayout.Label($"Panel v{PluginVersion}   ·   server companion: " +
-                            (_srvCompVersion ?? "(no reply — older than 2.2.9 or missing)"), _labelStyle);
+            _statsMain = Loc.T("srv.stats_line", day, players, chars, fps);
 
-            DrawSection("Unban a player (Steam ID)");
+            // World-load indicators. On a dedicated server these are the *client's* loaded set, not the whole
+            // world — labelled accordingly so nobody reads them as server-wide totals.
+            var zdos = ReflectCount(ZDOMan.instance, "m_objectsByID", "m_objectsByID_", "m_objects");
+            var zones = ReflectCount(ZoneSystem.instance, "m_zones", "m_loadedZones");
+            var session = TimeSpan.FromSeconds(Time.realtimeSinceStartup);
+            _statsLoad = Loc.T("srv.load_line", OrNa(zdos), OrNa(zones),
+                               $"{(int)session.TotalHours:00}:{session.Minutes:00}");
+
+            var serverPeer = ZNet.instance != null ? ZNet.instance.GetServerPeer() : null;
+            _statsHost = serverPeer?.m_socket != null ? Loc.T("srv.host", serverPeer.m_socket.GetHostName()) : "";
+        }
+
+        private void DrawServerTab()
+        {
+            _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(ListView(100f)));
+
+            // 4x/sec is well under the ~60 rebuilds/sec the old inline version did, and still reads as "live".
+            if (Time.realtimeSinceStartup >= _nextStatsRefresh)
+            {
+                _nextStatsRefresh = Time.realtimeSinceStartup + 0.25f;
+                RefreshServerStats();
+            }
+
+            DrawSection(Loc.T("srv.live_stats"));
+            GUILayout.Label(_statsMain, _labelStyle);
+            GUILayout.Label(_statsLoad, _labelStyle);
+            if (_statsHost.Length > 0) GUILayout.Label(_statsHost, _labelStyle);
+            GUILayout.Label(Loc.T("srv.versions", PluginVersion, _srvCompVersion ?? Loc.T("srv.no_reply")), _labelStyle);
+
+            DrawSection(Loc.T("srv.unban_title"));
             GUILayout.BeginHorizontal();
             _unbanId = GUILayout.TextField(_unbanId, _textFieldStyle, GUILayout.Width(220));
-            if (GUILayout.Button("Unban", _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_unbanId))
+            if (GUILayout.Button(Loc.T("srv.unban"), _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_unbanId))
             {
                 SrvRpc("AP_SrvUnban", _unbanId);
-                Message($"Unban requested for {_unbanId}");
+                Message(Loc.T("srv.unban_requested", _unbanId));
                 _unbanId = "";
             }
             GUILayout.EndHorizontal();
 
-            DrawSection("Join/leave history (this session)");
-            if (_joinLog.Count == 0) GUILayout.Label("Nothing yet.", _labelStyle);
-            foreach (var line in _joinLog.Take(40))
-                GUILayout.Label(line, _labelStyle);
+            DrawSection(Loc.T("srv.joinlog_title"));
+            if (_joinLog.Count == 0) GUILayout.Label(Loc.T("common.nothing_yet"), _labelStyle);
+            // Indexed loop rather than .Take(40): LINQ allocates an iterator on every one of the two OnGUI
+            // passes per frame, for a list that is usually short anyway.
+            var shown = Math.Min(_joinLog.Count, 40);
+            for (var i = 0; i < shown; i++)
+                GUILayout.Label(_joinLog[i], _labelStyle);
 
             GUILayout.EndScrollView();
         }
@@ -2874,51 +3258,53 @@ namespace AdminPanel
             // that made "What's New" unclickable from Bug Report.
             var wnOn = mode == SideMode.WhatsNew;
             var brOn = mode == SideMode.BugReport;
-            if (GUILayout.Toggle(wnOn, "What's New", _catStyle) && !wnOn) _sideMode = SideMode.WhatsNew;
-            if (GUILayout.Toggle(brOn, "Bug Report", _catStyle) && !brOn) _sideMode = SideMode.BugReport;
+            if (GUILayout.Toggle(wnOn, Loc.T("side.whats_new"), _catStyle) && !wnOn) _sideMode = SideMode.WhatsNew;
+            if (GUILayout.Toggle(brOn, Loc.T("side.bug_report"), _catStyle) && !brOn) _sideMode = SideMode.BugReport;
             GUILayout.FlexibleSpace();
             if (GUILayout.Button("✕", _buttonStyle, GUILayout.MinWidth(30))) _sideMode = SideMode.None;
             GUILayout.EndHorizontal();
 
             if (mode == SideMode.WhatsNew)
             {
-                DrawSection($"Version {PluginVersion}");
+                DrawSection(Loc.T("side.version", PluginVersion));
                 _sideScroll = GUILayout.BeginScrollView(_sideScroll);
                 GUILayout.Label(WhatsNewText, _labelStyle);
                 GUILayout.EndScrollView();
-                GUILayout.Label("Opens once per update — toggle in Settings → Panel.", _dimLabelStyle);
+                GUILayout.Label(Loc.T("side.whats_new_hint"), _dimLabelStyle);
             }
             else if (mode == SideMode.BugReport)
             {
-                DrawSection("Describe the bug");
+                DrawSection(Loc.T("side.describe"));
                 _bugText = GUILayout.TextArea(_bugText, _textAreaStyle,
                     GUILayout.MinHeight(120f), GUILayout.MaxHeight(170f), GUILayout.ExpandHeight(false));
-                _bugAttachShot = GUILayout.Toggle(_bugAttachShot,
-                    " Attach screenshot (panel included)", _toggleStyle);
+                _bugAttachShot = GUILayout.Toggle(_bugAttachShot, " " + Loc.T("side.attach"), _toggleStyle);
                 GUILayout.Space(4);
 
                 var webhookSet = !string.IsNullOrEmpty(_bugWebhookCfg.Value);
                 var coolingDown = _bugCoolLayout;
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button(_bugSending ? "Sending…" : "Send report", _buttonStyle)
+                if (GUILayout.Button(_bugSending ? Loc.T("side.sending") : Loc.T("side.send"), _buttonStyle)
                     && !_bugSending && webhookSet && !coolingDown)
                 {
                     if (_bugText.Trim().Length < 10)
-                        _bugStatus = "Please describe the bug first (a sentence or two).";
+                        _bugStatus = Loc.T("side.describe_first");
                     else
                         StartCoroutine(SendBugReport());
                 }
-                if (GUILayout.Button("Join our Discord", _buttonStyle)) Application.OpenURL(DiscordInvite);
+                if (GUILayout.Button(Loc.T("side.discord"), _buttonStyle)) Application.OpenURL(DiscordInvite);
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                DrawCoffeeButton(200f);
                 GUILayout.EndHorizontal();
 
                 if (!webhookSet)
-                    GUILayout.Label("Sending is disabled — no webhook configured (BugReport.WebhookUrl).", _dimLabelStyle);
+                    GUILayout.Label(Loc.T("side.no_webhook"), _dimLabelStyle);
                 else if (coolingDown)
-                    GUILayout.Label($"Report sent — you can send another in {Mathf.Max(1, Mathf.CeilToInt(_nextBugSend - Time.time))}s.", _dimLabelStyle);
+                    GUILayout.Label(Loc.T("side.cooldown", Mathf.Max(1, Mathf.CeilToInt(_nextBugSend - Time.time))), _dimLabelStyle);
                 if (_bugStatusLayout != null) GUILayout.Label(_bugStatusLayout, _dimLabelStyle);
 
                 GUILayout.FlexibleSpace();
-                GUILayout.Label("The report contains your text, mod/game versions and (optionally) the screenshot — nothing else.", _dimLabelStyle);
+                GUILayout.Label(Loc.T("side.privacy"), _dimLabelStyle);
             }
         }
 
@@ -2994,11 +3380,11 @@ namespace AdminPanel
                     }
                     var resp = http.PostAsync(url, form).GetAwaiter().GetResult();
                     return resp.IsSuccessStatusCode
-                        ? "Sent — thank you!"
-                        : $"Discord rejected the report (HTTP {(int)resp.StatusCode}).";
+                        ? Loc.T("side.sent_thanks")
+                        : Loc.T("side.rejected", (int)resp.StatusCode);
                 }
             }
-            catch (Exception e) { return $"Send failed: {e.Message}"; }
+            catch (Exception e) { return Loc.T("side.send_failed", e.Message); }
         }
 
         private static string JsonString(string s)
@@ -3105,21 +3491,24 @@ namespace AdminPanel
         {
             _settingsScroll = GUILayout.BeginScrollView(_settingsScroll, GUILayout.Height(ListView(100f)));
 
-            DrawSection("Appearance");
+            DrawSection(Loc.T("set.appearance"));
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Font:", _labelStyle, GUILayout.Width(90));
+            GUILayout.Label(Loc.T("set.font"), _labelStyle, GUILayout.Width(90));
             foreach (var choice in FontChoices)
             {
                 var on = _fontChoiceCfg.Value == choice;
                 if (GUILayout.Toggle(on, choice, _catStyle) && !on) SelectFont(choice);
             }
             GUILayout.EndHorizontal();
-            GUILayout.Label("'Norse (auto)' picks the best available game font. A font the game hasn't loaded falls back to Default.", _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.font_hint"), _dimLabelStyle);
+            // Explain the override rather than letting the panel silently ignore the chosen font.
+            if (Loc.NeedsFallbackFont && _fontChoiceCfg.Value != "Default")
+                GUILayout.Label(Loc.T("set.font_fallback_note"), _dimLabelStyle);
 
             GUILayout.Space(6);
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Font size: {_fontSizeLive}", _labelStyle, GUILayout.Width(120));
+            GUILayout.Label(Loc.T("set.font_size", _fontSizeLive), _labelStyle, GUILayout.Width(120));
             var newSize = Mathf.RoundToInt(GUILayout.HorizontalSlider(_fontSizeLive, 10f, 20f, GUILayout.Width(220)));
             if (GUILayout.Button("−", _buttonStyle, GUILayout.MinWidth(30))) newSize = Mathf.Max(10, _fontSizeLive - 1);
             if (GUILayout.Button("+", _buttonStyle, GUILayout.MinWidth(30))) newSize = Mathf.Min(20, _fontSizeLive + 1);
@@ -3131,7 +3520,7 @@ namespace AdminPanel
             }
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Opacity: {_panelAlphaLive}%", _labelStyle, GUILayout.Width(120));
+            GUILayout.Label(Loc.T("set.opacity", _panelAlphaLive), _labelStyle, GUILayout.Width(120));
             var newAlpha = Mathf.RoundToInt(GUILayout.HorizontalSlider(_panelAlphaLive, 55f, 100f, GUILayout.Width(220)));
             GUILayout.EndHorizontal();
             if (newAlpha != _panelAlphaLive)
@@ -3141,28 +3530,53 @@ namespace AdminPanel
             }
 
             GUILayout.Space(6);
-            var logo = GUILayout.Toggle(_showLogoCfg.Value, " Show logo header", _toggleStyle);
+            var logo = GUILayout.Toggle(_showLogoCfg.Value, " " + Loc.T("set.show_logo"), _toggleStyle);
             if (logo != _showLogoCfg.Value) { _showLogoCfg.Value = logo; Config.Save(); }
 
-            DrawSection("Behavior");
-            var cam = GUILayout.Toggle(_cameraLockCfg.Value, " Lock camera while the panel is open (like the inventory)", _toggleStyle);
+            GUILayout.Space(6);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Loc.T("set.language"), _labelStyle, GUILayout.Width(90));
+            var langIdx = Mathf.Max(0, Array.IndexOf(Loc.MenuNames, _languageCfg.Value));
+            DropdownButton("language", Loc.T("set.language"), Loc.MenuNames, langIdx, 200);
+            GUILayout.EndHorizontal();
+            if (DropdownOptions("language", Loc.MenuNames, ref langIdx, 200))
+            {
+                _languageCfg.Value = Loc.MenuNames[langIdx];
+                Config.Save();
+                Loc.Refresh(_languageCfg.Value);
+                // Widths are measured from the previous language's text, so a switch mid-session leaves stale
+                // metrics until the styles are rebuilt. Re-arm the font/style pass rather than making the user
+                // reopen the panel.
+                _fontApplied = false;
+            }
+            GUILayout.Label(Loc.T("set.language_hint"), _dimLabelStyle);
+
+            DrawSection(Loc.T("set.behavior"));
+            var cam = GUILayout.Toggle(_cameraLockCfg.Value, " " + Loc.T("set.camera_lock"), _toggleStyle);
             if (cam != _cameraLockCfg.Value) { _cameraLockCfg.Value = cam; Config.Save(); }
 
-            DrawSection("Panel");
-            var wnAuto = GUILayout.Toggle(_autoWhatsNewCfg.Value, " Show What's New once after each update", _toggleStyle);
+            DrawSection(Loc.T("set.panel"));
+            var wnAuto = GUILayout.Toggle(_autoWhatsNewCfg.Value, " " + Loc.T("set.auto_whats_new"), _toggleStyle);
             if (wnAuto != _autoWhatsNewCfg.Value) { _autoWhatsNewCfg.Value = wnAuto; Config.Save(); }
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("What's New?", _buttonStyle, GUILayout.MinWidth(150))) _sideMode = SideMode.WhatsNew;
-            if (GUILayout.Button("Report a bug", _buttonStyle, GUILayout.MinWidth(130))) _sideMode = SideMode.BugReport;
+            if (GUILayout.Button(Loc.T("set.whats_new"), _buttonStyle, GUILayout.MinWidth(150))) _sideMode = SideMode.WhatsNew;
+            if (GUILayout.Button(Loc.T("set.report_bug"), _buttonStyle, GUILayout.MinWidth(130))) _sideMode = SideMode.BugReport;
             GUILayout.EndHorizontal();
 
-            DrawSection("Hotkeys");
-            DrawRebindRow("Open / close panel", _toggleKey, 1);
-            DrawRebindRow("Map teleport", _mapTpKey, 2);
+            DrawSection(Loc.T("set.support"));
+            GUILayout.BeginHorizontal();
+            DrawCoffeeButton(240f);
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Label(Loc.T("set.support_hint"), _dimLabelStyle);
+
+            DrawSection(Loc.T("set.hotkeys"));
+            DrawRebindRow(Loc.T("set.key_toggle"), _toggleKey, 1);
+            DrawRebindRow(Loc.T("set.key_map_tp"), _mapTpKey, 2);
             // Emit the "listening" hint only when the Layout pass saw the rebind active (same control-count
             // rule as _openDropdownLayout: _rebindTarget flips mid-frame on the click pass).
             if (_rebindTargetLayout != 0)
-                GUILayout.Label("Press the new key…   (middle/side mouse buttons work too · Esc cancels)", _headerStyle);
+                GUILayout.Label(Loc.T("set.rebind_hint"), _headerStyle);
             if (_rebindTarget != 0)
             {
                 var ev = Event.current;
@@ -3189,14 +3603,14 @@ namespace AdminPanel
                 }
             }
 
-            DrawSection("Reset");
+            DrawSection(Loc.T("set.reset"));
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Reset window size & position", _buttonStyle, GUILayout.MinWidth(230)))
+            if (GUILayout.Button(Loc.T("set.reset_window"), _buttonStyle, GUILayout.MinWidth(230)))
             {
                 _windowRect = new Rect(60, 60, 740, 680);
                 SaveWindowRect();
             }
-            if (GUILayout.Button("Reset appearance", _buttonStyle, GUILayout.MinWidth(160)))
+            if (GUILayout.Button(Loc.T("set.reset_appearance"), _buttonStyle, GUILayout.MinWidth(160)))
             {
                 _fontSizeLive = 13;
                 _panelAlphaLive = 96;
@@ -3206,7 +3620,7 @@ namespace AdminPanel
                 SelectFont(FontChoices[0]);
             }
             GUILayout.EndHorizontal();
-            GUILayout.Label("Settings are saved to the BepInEx config file and survive restarts.", _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.saved_hint"), _dimLabelStyle);
 
             GUILayout.EndScrollView();
         }
@@ -3217,7 +3631,7 @@ namespace AdminPanel
             GUILayout.Label($"{label}:", _labelStyle, GUILayout.Width(170));
             GUILayout.Label($"[{entry.Value}]", _headerStyle, GUILayout.Width(100));
             var listening = _rebindTarget == target;
-            if (GUILayout.Button(listening ? "Listening…" : "Rebind", _buttonStyle, GUILayout.MinWidth(110)))
+            if (GUILayout.Button(listening ? Loc.T("set.listening") : Loc.T("set.rebind"), _buttonStyle, GUILayout.MinWidth(110)))
                 _rebindTarget = listening ? 0 : target;
             GUILayout.EndHorizontal();
         }

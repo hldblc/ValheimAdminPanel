@@ -1,0 +1,350 @@
+# Advanced Admin Panel - English (source language)
+#
+# Format: key=value, one per line. '#' starts a comment. The FIRST '=' splits the pair,
+# so values may contain '='. Use \n for a line break inside a value.
+#
+# {0}, {1} ... are substituted at runtime. Keep every placeholder that appears in the English
+# line - you may REORDER them to suit your language, but dropping one loses information and
+# adding an unknown one makes that line fall back to English.
+#
+# Leading/trailing spaces are trimmed, so you never need to preserve invisible padding.
+#
+# To translate: copy this file to <language code>.txt, translate the right-hand sides only,
+# and leave the keys untouched. Drop it in BepInEx/plugins/AdminPanel_Localization/ to test
+# without rebuilding the mod, then run tools\check-locales.ps1 to verify nothing drifted.
+#
+# NOTE: item, creature and status-effect NAMES are not here - they come from Valheim itself
+# and always follow the game's own language setting.
+
+# ---- Tabs ----
+tab.items=Items
+tab.creatures=Creatures
+tab.bosses=Bosses
+tab.player=Player
+tab.world=World
+tab.players=Players
+tab.server=Server
+tab.settings=Settings
+
+# ---- Shared ----
+common.all=All
+common.search=Search:
+common.sort=Sort
+common.me=Me
+common.nobody=(nobody)
+common.on=ON
+common.off=OFF
+common.nothing_yet=Nothing yet.
+common.confirm_prompt=Click again to confirm
+common.not_connected_srv=Not connected to a server
+
+# ---- Panel chrome ----
+chrome.title_full=⚔ Advanced Admin Panel ⚔   [{0} to close]
+chrome.title_hint=[{0} to close]
+chrome.not_in_game=Not in game (no local player).
+chrome.update_available=⬆ Update available: v{0} — you have v{1}
+chrome.get_update=Get update
+chrome.version_mismatch=⚠ Version mismatch: panel v{0} but the server companion is v{1}. Update so BOTH files match — some features will not work until then.
+chrome.companion_silent=⚠ The server's companion did not answer (older than 2.2.9 or missing). Server-side actions may silently fail — ask the owner to update both mod files.
+
+# ---- Item categories (chips) ----
+cat.all=All
+cat.fav=★ Fav
+cat.recent=Recent
+cat.kits=Kits
+cat.weapons=Weapons
+cat.shields=Shields
+cat.armor=Armor
+cat.accessories=Accessories
+cat.ammo=Ammo
+cat.tools=Tools
+cat.food=Food & Potions
+cat.materials=Materials
+cat.trophies=Trophies
+cat.misc=Misc
+
+# ---- Sort modes ----
+sort.az=A → Z
+sort.za=Z → A
+sort.category=Category
+sort.faction=Faction
+
+# ---- Items tab ----
+items.kits_title=Gear kits (delivered to inventory via server):
+items.give_target=Give target:
+items.to_me=To me
+items.give=Give
+items.bulk_title=Bulk pack (edit in config file):
+items.bulk_grab=Grab bulk pack
+items.bulk_requested=Bulk pack requested
+items.amount=Amount:
+items.quality=Quality:
+items.legend=Drop = ground | Bag = your bag | Give = target's bag
+items.db_not_loaded=Item DB not loaded.
+items.drop=Drop
+items.bag=Bag
+items.count={0} items
+items.kit_sent=Kit '{0}' sent
+items.msg_requested=Requested {0}x {1}
+items.msg_requested_bag=Requested {0}x {1} to bag
+items.msg_no_icon_drop={0} has no icon — it would corrupt your inventory (drop only)
+items.msg_no_icon_give={0} has no icon — cannot be given
+items.msg_sent=Sent {0}x {1} to {2}
+items.msg_no_target=No give target selected
+
+# ---- Creatures tab ----
+cre.db_not_loaded=Scene DB not loaded.
+cre.bosses=Bosses
+cre.tamable=Tamable
+cre.count=Count:
+cre.stars=Stars:
+cre.at_crosshair=At crosshair
+cre.pet_name=Pet name:
+cre.undo=Undo spawn
+cre.undo_requested=Undo requested
+cre.arena=Arena: A={0} vs B={1}
+cre.fight=FIGHT!
+cre.arena_started=Arena: {0}x {1} vs {2}x {3}
+cre.preset=Preset:
+cre.preset_spawned=Preset '{0}' spawned
+cre.preset_saved=Preset '{0}' saved
+cre.save=Save
+cre.spawn=Spawn
+cre.tame=Tame
+cre.tag_boss=[BOSS]
+cre.tag_tamable=[tamable]
+cre.msg_requested=Requested {0}
+cre.msg_requested_tamed=Requested tamed {0}
+cre.count_total={0} creatures
+
+# ---- Bosses tab ----
+boss.section=Bosses
+boss.hint=Spawn directly, or grab the altar offering items:
+boss.offering=Offering ({0}x {1})
+boss.msg_requested=Requested boss {0}
+boss.raids=Raid events
+boss.raids_hint=Started server-side at your position:
+boss.msg_event=Event '{0}' requested
+
+# ---- Player tab ----
+player.toggles=Toggles
+player.god=God mode (no damage)
+player.ghost=Ghost mode (enemies ignore you)
+player.fly=Fly (debug fly)
+player.free_build=Free build (no resource cost)
+player.no_stamina=No stamina drain
+player.one_hit=One-hit kill (your attacks deal massive damage)
+player.inf_weight=Infinite carry weight
+player.msg_god=God mode {0}
+player.msg_ghost=Ghost mode {0}
+player.msg_fly_on=Fly ON — jump to fly, sneak to descend
+player.msg_fly_off=Fly OFF
+player.msg_free_build=Free build {0}
+player.msg_no_stamina=No stamina drain {0}
+player.msg_one_hit=One-hit kill {0}
+player.msg_inf_weight=Infinite carry weight {0}
+player.multipliers=Multipliers
+player.speed=Speed x{0}
+player.jump=Jump x{0}
+player.pickup=Pickup {0}m
+player.quick_actions=Quick actions
+player.full_heal=Full heal
+player.full_stamina=Full stamina
+player.full_eitr=Full eitr
+player.msg_healed=Healed
+player.msg_stamina=Stamina restored
+player.msg_eitr=Eitr restored
+player.repair_all=Repair all items
+player.clear_se=Clear status effects
+player.fix_broken=Fix broken inventory items
+player.msg_repaired=All items repaired
+player.msg_se_cleared=Status effects cleared
+player.msg_fixed_broken=Removed {0} broken (icon-less) items from inventory
+player.tp_death=TP to last death
+player.msg_tp_death=Teleporting to your last death point
+player.msg_no_death=No death recorded yet
+player.no_death_yet=(no death recorded yet)
+player.last_death=last death: {0}
+player.skills=Skills
+player.skills_plus10=All skills +10
+player.skills_100=All skills 100
+player.skills_reset=Reset skills
+player.show_skills=Show skill browser
+player.apply_to=Apply to:
+player.custom=Custom:
+player.custom_pm=±Custom
+player.private_note=Private note:
+player.private_note_hint=Shown only to that player when you raise a skill — leave empty for a silent raise. (Levels shown are yours. Needs companion 2.2.0 on their side.)
+player.level_short=Lv {0}
+player.msg_custom_hint=Type a non-zero number into the custom field first (negative lowers)
+player.msg_skill_self={0} +{1}
+player.msg_skill_target={0} +{1} → {2}
+player.msg_skills_changed=Skills changed by {0}
+player.msg_skills_set=All skills set to {0}
+player.status_effects=Status effects
+player.show_se=Show status effect browser
+player.no_se_match=No matching status effects.
+player.apply=Apply
+player.msg_applied=Applied {0}
+
+# ---- Status-effect buckets ----
+se.boss_powers=Boss Powers
+se.set_bonuses=Armor Set Bonuses
+se.potions=Potions & Mead
+se.debuffs=Debuffs & Environment
+se.comfort=Comfort & Rest
+se.other=Other
+
+# ---- World tab ----
+world.time_weather=Time & weather
+world.set=Set
+world.release=Release
+world.skip_night=Skip night
+world.msg_skip_night=Skipping to morning (needs companion 2.2.9 on the server)
+world.weather_hint=Weather (empty = reset). Clear, Rain, ThunderStorm, Snow, Mist, Twilight_Clear:
+world.msg_weather_reset=Weather reset
+world.msg_weather_forced=Weather forced: {0}
+world.wind=Wind
+world.wind_dir=Dir {0}°
+world.wind_str=Str {0}
+world.reset=Reset
+world.msg_wind_set=Wind set
+world.msg_wind_reset=Wind reset
+world.teleport=Teleport
+world.map_hint=🗺  Map: open the full map (M), hover a spot, press [{0}] to teleport there.
+world.to_player=To player:
+world.no_others=(no other players online)
+world.msg_tp_to=Teleporting to {0}
+world.bosses=Bosses:
+world.no_altars=(no known altars yet — explore / defeat bosses)
+world.position=Position:
+world.now_at=now: {0}, {1}, {2}
+world.go=Go
+world.msg_teleporting=Teleporting
+world.msg_map_tp_unavailable=Map teleport unavailable (game API changed)
+world.bookmark=Bookmark:
+world.save_here=Save here
+world.del=Del
+world.msg_bookmark_saved=Bookmark '{0}' saved
+world.area_actions=Area actions
+world.combat=Combat:
+world.kill_50=Kill enemies 50m
+world.kill_all=Kill ALL loaded
+world.tame_30=Tame animals 30m
+world.cleanup=Cleanup:
+world.ground_items=Ground items 50m
+world.repair_builds=Repair builds 50m
+world.clear_trees=Clear trees 20m
+world.world=World:
+world.explore_map=Explore full map
+world.ping_pos=Ping my position
+world.peaceful=Peaceful mode (no raids)
+world.msg_map_explored=Map explored
+world.msg_pinged=Pinged
+world.msg_peaceful=Peaceful mode {0} requested
+world.msg_killed=Killed {0} creatures
+world.msg_tamed=Tamed {0} animals
+world.msg_drops_removed=Removed {0} ground items
+world.msg_repaired=Repaired {0} build pieces
+world.msg_trees_removed=Removed {0} trees/logs
+world.global_keys=Global keys
+world.global_keys_hint=World progression flags — control raids and boss state:
+world.remove=Remove
+world.add_key=Add key
+world.msg_key_removed=Removed key {0}
+world.msg_key_added=Added key {0}
+
+# ---- Players tab ----
+players.not_connected=Not connected.
+players.broadcast_section=Broadcast
+players.broadcast=Broadcast:
+players.send_all=Send to all
+players.msg_broadcast_sent=Broadcast sent
+players.summon_all=Summon ALL
+players.msg_summon_all=Summoning everyone
+players.connected=Connected players
+players.you_suffix=(you)
+players.tp_to=TP to
+players.summon=Summon
+players.watch=Watch
+players.heal=Heal
+players.map=Map
+players.inventory=Inventory
+players.kick=Kick
+players.ban=Ban
+players.note=Note:
+players.msg_watching=Watching {0} (ghost+fly enabled)
+players.msg_healing=Healing {0}
+players.msg_pinged=Pinged {0}'s position
+players.msg_lightning=Lightning on {0}!
+players.msg_kicked=Kicked {0}
+players.msg_banned=Banned {0}
+players.msg_summoning=Summoning {0}
+players.inv_viewer=Inventory viewer
+players.pick_player=(pick a player above)
+players.no_response=No response — that player probably doesn't have the companion mod installed.
+players.waiting=Waiting for response...
+players.remove_1=Remove 1
+players.remove_all=Remove all
+players.remove_hint=Remove needs companion 2.2.0 on the target player (and the server).
+players.msg_removing=Removing {0}x {1} from {2}
+
+# ---- Server tab ----
+srv.live_stats=Live stats
+srv.stats_line=World day: {0}     Players online: {1}     Loaded creatures: {2}     Your FPS: {3}
+srv.load_line=ZDOs loaded: {0}     Zones loaded: {1}     Session: {2}
+srv.host=Server: {0}
+srv.versions=Panel v{0}   ·   server companion: {1}
+srv.no_reply=(no reply - older than 2.2.9 or missing)
+srv.unban_title=Unban a player (Steam ID)
+srv.unban=Unban
+srv.unban_requested=Unban requested for {0}
+srv.joinlog_title=Join/leave history (this session)
+
+# ---- Settings tab ----
+set.appearance=Appearance
+set.font=Font:
+set.font_hint='Norse (auto)' picks the best available game font. A font the game hasn't loaded falls back to Default.
+set.font_fallback_note=Valheim's Norse font can't draw this language, so the panel is using the default font instead.
+set.font_size=Font size: {0}
+set.opacity=Opacity: {0}%
+set.show_logo=Show logo header
+set.language=Language:
+set.language_hint='Auto' follows Valheim's own language setting. Item and creature names always follow the game.
+set.behavior=Behavior
+set.camera_lock=Lock camera while the panel is open (like the inventory)
+set.panel=Panel
+set.auto_whats_new=Show What's New once after each update
+set.whats_new=What's New?
+set.report_bug=Report a bug
+set.hotkeys=Hotkeys
+set.key_toggle=Open / close panel
+set.key_map_tp=Map teleport
+set.rebind=Rebind
+set.listening=Listening…
+set.rebind_hint=Press the new key…   (middle/side mouse buttons work too · Esc cancels)
+set.reset=Reset
+set.reset_window=Reset window size & position
+set.reset_appearance=Reset appearance
+set.saved_hint=Settings are saved to the BepInEx config file and survive restarts.
+set.support=Support
+set.buy_coffee=Buy the developer a coffee
+set.support_hint=Opens PayPal in your browser. Entirely optional — the mod is free and always will be.
+
+# ---- Side window (What's New / Bug Report) ----
+side.whats_new=What's New
+side.bug_report=Bug Report
+side.version=Version {0}
+side.whats_new_hint=Opens once per update — toggle in Settings → Panel.
+side.describe=Describe the bug
+side.attach=Attach screenshot (panel included)
+side.send=Send report
+side.sending=Sending…
+side.describe_first=Please describe the bug first (a sentence or two).
+side.discord=Join our Discord
+side.no_webhook=Sending is disabled — no webhook configured (BugReport.WebhookUrl).
+side.cooldown=Report sent — you can send another in {0}s.
+side.privacy=The report contains your text, mod/game versions and (optionally) the screenshot — nothing else.
+side.sent_thanks=Sent — thank you!
+side.rejected=Discord rejected the report (HTTP {0}).
+side.send_failed=Send failed: {0}
