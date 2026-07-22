@@ -323,7 +323,9 @@ namespace AdminPanel
             "target picker as the skill browser (needs companion 2.3.0 on the target).\n\n" +
             "• Undo actually works on dedicated servers now — the destroy silently did nothing " +
             "server-side unless the server owned the object.\n\n" +
-            "• Scrolling panel lists no longer zooms the camera (for real this time).\n\n" +
+            "• Scrolling panel lists no longer zooms the vanilla camera (muted at the IL level, with " +
+            "startup verification in the log). ValheimPlus's separate FirstPerson zoom gets a " +
+            "best-effort mute too.\n\n" +
             "• Layout survives big font sizes: labels never wrap mid-word and buttons no longer " +
             "stretch across the row.\n\n" +
             "• Server tab: added ZDOs loaded, zones loaded and session uptime.\n\n" +
