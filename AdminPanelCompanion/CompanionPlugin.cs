@@ -14,7 +14,7 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.3.0";
+        public const string PluginVersion = "2.4.0";
 
         internal static CompanionPlugin Instance;
 
@@ -35,6 +35,12 @@ namespace AdminPanelCompanion
             Harmony.CreateAndPatchAll(typeof(RpcRegistration));
             try { Harmony.CreateAndPatchAll(typeof(RouteRpcSanitizer)); SenderSanitizerActive = true; }
             catch (Exception e) { Logger.LogWarning($"RoutedRPC sender-sanitizer patch failed (server security reduced): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(PeerJoinLogPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Peer join-log patch failed (join/leave history unavailable): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(PeerLeaveLogPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Peer leave-log patch failed (join/leave history unavailable): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(SaveTimestampPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Save-timestamp patch failed (last-save time unavailable): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
 
@@ -67,6 +73,13 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register<long, int>("AP_SrvApplySE", OnServerApplyStatusEffect);
                 ZRoutedRpc.instance.Register("AP_SrvVersion", new Action<long>(OnServerVersionReq));
                 ZRoutedRpc.instance.Register("AP_SrvSkipNight", new Action<long>(OnServerSkipNight));
+                // 2.4.0 — server-truth suite (all admin-gated, reply only to the requesting admin)
+                ZRoutedRpc.instance.Register("AP_SrvInfoReq", new Action<long>(OnServerInfoReq));
+                ZRoutedRpc.instance.Register("AP_SrvListsReq", new Action<long>(OnServerListsReq));
+                ZRoutedRpc.instance.Register("AP_SrvJoinLogReq", new Action<long>(OnServerJoinLogReq));
+                ZRoutedRpc.instance.Register("AP_SrvSaveWorld", new Action<long>(OnServerSaveWorld));
+                ZRoutedRpc.instance.Register<string>("AP_SrvBanId", OnServerBanId);
+
                 // client-side executors (only accepted when sent by the server)
                 ZRoutedRpc.instance.Register<string, int, int, string>("AP_GiveItem", OnGiveItem);
                 ZRoutedRpc.instance.Register<ZPackage>("AP_RemoveItem", OnRemoveItem);
@@ -346,6 +359,205 @@ namespace AdminPanelCompanion
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_InvRequest", sender);
+        }
+
+        // ==================== 2.4.0: server-truth suite ====================
+        // Everything below reports what the SERVER knows — the panel's local numbers are only that
+        // client's view of the world (its loaded ZDOs, its FPS), which on a dedicated server is a
+        // fraction of the truth.
+
+        private static long _lastSaveTicksUtc;   // last completed save, UTC ticks (0 = none yet)
+
+        // Reliable "last save" signal. NOT ZNet.WorldSaveFinished: that fires from PrintWorldSaveMessage,
+        // which calls MessageHud.instance.MessageAll FIRST — and MessageHud.instance is null on a headless
+        // dedicated server, so on the exact machine this feature targets the finished event may never fire.
+        // SaveWorldThread IS the worker that writes the file; its postfix runs when the write completes, on
+        // the worker thread (an aligned long store is atomic, no lock needed), for manual AND autosaves.
+        [HarmonyPatch(typeof(ZNet), "SaveWorldThread")]
+        private static class SaveTimestampPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix() => _lastSaveTicksUtc = DateTime.UtcNow.Ticks;
+        }
+
+        // Join/leave history, server-side so it survives any admin's relog. Ring-buffered: a long-running
+        // server must not grow it without bound.
+        private const int JoinLogCap = 200;
+        private static readonly List<(long unix, string name, string host, bool joined)> JoinLog =
+            new List<(long, string, string, bool)>();
+        // Peers we've logged a JOIN for, by uid. Pairs join↔leave so (a) the double ZNet.Disconnect a kick
+        // produces can't log two "left" lines, and (b) a leave is only recorded for a peer that actually
+        // joined — rejected connections (bad password / banned) that trip RPC_PeerInfo without ever entering
+        // this set produce no phantom pair.
+        private static readonly HashSet<long> _loggedPeers = new HashSet<long>();
+
+        private static void RecordPeerEvent(ZNetPeer peer, bool joined)
+        {
+            if (peer == null || string.IsNullOrEmpty(peer.m_playerName)) return;
+            if (joined) { if (!_loggedPeers.Add(peer.m_uid)) return; }   // already logged this join
+            else { if (!_loggedPeers.Remove(peer.m_uid)) return; }       // no matching join → skip
+            var host = peer.m_socket != null ? BareId(peer.m_socket.GetHostName()) : "";
+            JoinLog.Add((DateTimeOffset.UtcNow.ToUnixTimeSeconds(), peer.m_playerName, host ?? "", joined));
+            if (JoinLog.Count > JoinLogCap) JoinLog.RemoveAt(0);
+        }
+
+        // RPC_PeerInfo is where a connecting peer's name becomes known (the handshake fills
+        // peer.m_playerName just before this postfix runs). It fires on clients too — the IsServer gate
+        // keeps the log server-authoritative. A connection rejected inside RPC_PeerInfo is torn down
+        // immediately; if it never got a name it is filtered by RecordPeerEvent.
+        [HarmonyPatch(typeof(ZNet), "RPC_PeerInfo")]
+        private static class PeerJoinLogPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ZNet __instance, ZRpc rpc)
+            {
+                if (!__instance.IsServer()) return;
+                foreach (var peer in __instance.GetPeers())
+                    if (peer != null && peer.m_rpc == rpc) { RecordPeerEvent(peer, true); return; }
+            }
+        }
+
+        // Prefix, because Disconnect tears the peer down — the name is still readable here. A kick makes the
+        // game call Disconnect twice on the same peer; the pairing set in RecordPeerEvent absorbs the second.
+        [HarmonyPatch(typeof(ZNet), "Disconnect", typeof(ZNetPeer))]
+        private static class PeerLeaveLogPatch
+        {
+            [HarmonyPrefix]
+            private static void Prefix(ZNet __instance, ZNetPeer peer)
+            {
+                if (__instance.IsServer()) RecordPeerEvent(peer, false);
+            }
+        }
+
+        private static int ServerZdoCount()
+        {
+            try
+            {
+                var f = AccessTools.Field(typeof(ZDOMan), "m_objectsByID");
+                return f?.GetValue(ZDOMan.instance) is System.Collections.ICollection c ? c.Count : -1;
+            }
+            catch { return -1; }
+        }
+
+        private static void OnServerInfoReq(long sender)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var pkg = new ZPackage();
+            pkg.Write(1);                                   // payload version, for future shape changes
+            pkg.Write(Time.realtimeSinceStartup);           // server process uptime (s)
+            pkg.Write(ServerZdoCount());                    // authoritative world object count
+            var lastSave = System.Threading.Interlocked.Read(ref _lastSaveTicksUtc);
+            pkg.Write(lastSave == 0 ? -1f : (float)(DateTime.UtcNow - new DateTime(lastSave, DateTimeKind.Utc)).TotalSeconds);
+            var next = -1f;                                  // seconds until autosave; Game owns the timer
+            if (Game.instance != null) next = Mathf.Max(0f, Game.m_saveInterval - Game.instance.m_saveTimer);
+            pkg.Write(next);
+
+            // Per-peer: name, bare id, ping. GetConnectionQuality is socket-level truth; a backend that
+            // doesn't implement it just reports -1 for that peer instead of failing the whole reply.
+            // Capped like every other list here (total + shipped): an uncapped count could exceed the
+            // client's bound and make it discard the WHOLE reply — uptime, save timers and all.
+            var peers = ZNet.instance.GetPeers();
+            const int peerCap = 64;
+            pkg.Write(peers.Count);
+            pkg.Write(Math.Min(peers.Count, peerCap));
+            for (var i = 0; i < peers.Count && i < peerCap; i++)
+            {
+                var p = peers[i];
+                pkg.Write(p?.m_playerName ?? "?");
+                pkg.Write(p?.m_socket != null ? BareId(p.m_socket.GetHostName()) : "");
+                var ping = -1;
+                try
+                {
+                    if (p?.m_socket != null)
+                    { p.m_socket.GetConnectionQuality(out _, out _, out ping, out _, out _); }
+                }
+                catch { ping = -1; }
+                pkg.Write(ping);
+            }
+
+            // Server plugin roster — the "what is ACTUALLY running here" answer that would have caught
+            // every stale-companion incident instantly. Capped: a heavily modded server can carry 100+.
+            var plugins = BepInEx.Bootstrap.Chainloader.PluginInfos;
+            var names = new List<string>();
+            foreach (var kv in plugins)
+                if (kv.Value?.Metadata != null)
+                    names.Add(kv.Value.Metadata.Name + "|" + kv.Value.Metadata.Version);
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            const int cap = 60;
+            pkg.Write(names.Count);
+            pkg.Write(Math.Min(names.Count, cap));
+            for (var i = 0; i < names.Count && i < cap; i++) pkg.Write(names[i]);
+
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_ServerInfo", pkg);
+        }
+
+        private static void WriteSyncedList(ZPackage pkg, string field, int cap)
+        {
+            var list = GetList(field)?.GetList();
+            if (list == null) { pkg.Write(0); pkg.Write(0); return; }
+            pkg.Write(list.Count);
+            pkg.Write(Math.Min(list.Count, cap));
+            for (var i = 0; i < list.Count && i < cap; i++) pkg.Write(list[i] ?? "");
+        }
+
+        private static void OnServerListsReq(long sender)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var pkg = new ZPackage();
+            pkg.Write(1);
+            WriteSyncedList(pkg, "m_adminList", 200);
+            WriteSyncedList(pkg, "m_bannedList", 200);
+            WriteSyncedList(pkg, "m_permittedList", 200);
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_AccessLists", pkg);
+        }
+
+        private static void OnServerJoinLogReq(long sender)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var pkg = new ZPackage();
+            pkg.Write(1);
+            var start = Math.Max(0, JoinLog.Count - 100);   // newest 100 is plenty for the panel
+            pkg.Write(JoinLog.Count - start);
+            for (var i = start; i < JoinLog.Count; i++)
+            {
+                var e = JoinLog[i];
+                pkg.Write(e.unix); pkg.Write(e.name); pkg.Write(e.host); pkg.Write(e.joined);
+            }
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_JoinLog", pkg);
+        }
+
+        private static void OnServerSaveWorld(long sender)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            // Refuse to stack a save. SaveWorld does a blocking Join on any live save thread, and routed-RPC
+            // handlers run on the main thread — so kicking a second save while the autosave worker is still
+            // writing would freeze the whole server until the first finishes. IsSaving() gates that.
+            if (ZNet.instance.IsSaving())
+            {
+                ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_Msg", "A save is already in progress");
+                return;
+            }
+            Log($"Admin {sender} requested world save");
+            // waitForNextFrame:true → the game defers the actual write to a coroutine on the next frame
+            // rather than running it inline in this RPC handler, matching every vanilla non-dedicated call site.
+            ZNet.instance.Save(false, false, true);
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_Msg", "World save started");
+        }
+
+        // Ban by raw ID — the existing AP_SrvBan needs a CONNECTED peer; this one covers offline players.
+        // Stores the id AS ENTERED (trimmed): the game's ban check compares the full networkUserId, so
+        // stripping the platform prefix would silently no-op crossplay (Xbox/PlayStation) bans. Admins paste
+        // whatever their ban source gives them — a bare SteamID64 or a full "Platform_id".
+        private static void OnServerBanId(long sender, string id)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var clean = id?.Trim();
+            if (string.IsNullOrEmpty(clean) || clean.Contains(" ")) return;
+            var banned = GetList("m_bannedList");
+            if (banned == null) return;
+            if (!banned.Contains(clean)) banned.Add(clean);
+            Log($"Admin {sender} banned id {clean} (offline ban)");
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_Msg", $"Banned {clean}");
         }
 
         // ---------- server: player admin ----------

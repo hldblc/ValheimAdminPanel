@@ -17,7 +17,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.3.0";
+        public const string PluginVersion = "2.4.0";
 
         internal static AdminPanelPlugin Instance;
 
@@ -832,6 +832,12 @@ namespace AdminPanel
                 if (ZRoutedRpc.instance == null) return;
                 ZRoutedRpc.instance.Register<ZPackage>("AP_InvData", OnInventoryData);
                 ZRoutedRpc.instance.Register<string>("AP_VersionData", OnVersionData);
+                // 2.4.0 server-truth replies (companion → requesting admin). Parsed defensively like
+                // AP_InvData: bounded counts + try/catch, so a malformed packet can at worst blank a
+                // section, never crash the panel.
+                ZRoutedRpc.instance.Register<ZPackage>("AP_ServerInfo", OnServerInfoData);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_AccessLists", OnAccessListsData);
+                ZRoutedRpc.instance.Register<ZPackage>("AP_JoinLog", OnJoinLogData);
             }
         }
 
@@ -839,6 +845,126 @@ namespace AdminPanel
         private static void OnVersionData(long sender, string version)
         {
             if (Instance != null) Instance._srvCompVersion = version;
+        }
+
+        // ==================== 2.4.0: server-truth state (companion replies) ====================
+        // Replies arrive via the game's routed-RPC dispatch, which runs during ZNet.Update — a DIFFERENT
+        // Unity phase than OnGUI. No RPC handler runs between a frame's Layout and Repaint passes, so these
+        // fields are frame-stable for the draw code without an explicit snapshot.
+        //
+        // These payloads claim to be authoritative server data, so they must actually come from the server:
+        // Valheim relays any routed RPC to its target uid without permission filtering, so a hostile client
+        // could InvokeRoutedRPC(adminUid, "AP_AccessLists", forgedPkg) and — with no sender check — the panel
+        // would show attacker-chosen "truth" (a hidden plugin, a doctored ban list, framed join entries).
+        // SenderIsServerReply drops anything not from the connected server peer. Mirrors the companion's own
+        // SenderIsServer gate on its client-executor RPCs.
+        private static bool SenderIsServerReply(long sender)
+        {
+            var s = ServerUid();
+            return s != 0L && sender == s;   // a host has no server peer and needs no relayed replies anyway
+        }
+
+        private sealed class ServerInfo
+        {
+            public float Uptime;
+            public int ZdoCount;
+            public float LastSaveAgo;      // -1 = no save recorded yet
+            public float NextAutosave;     // -1 = unknown
+            public List<(string name, string host, int ping)> Peers = new List<(string, string, int)>();
+            public int PeerTotal;          // may exceed Peers.Count on a very full server (peer list capped)
+            public int PluginTotal;
+            public List<string> Plugins = new List<string>();   // "Name|Version"
+            public float ReceivedAt;       // local clock, for the "as of Ns ago" line
+        }
+
+        private ServerInfo _srvInfo;
+        private List<string>[] _accessLists;        // [admin, banned, permitted]
+        private int[] _accessListTotals;
+        private List<(long unix, string name, string host, bool joined)> _srvJoinLog;
+        private float _nextInfoReq, _nextListsReq, _nextJoinLogReq;   // request throttles
+
+        private static void OnServerInfoData(long sender, ZPackage pkg)
+        {
+            var self = Instance;
+            if (self == null || !SenderIsServerReply(sender)) return;
+            try
+            {
+                if (pkg.ReadInt() != 1) return;   // payload version gate
+                var info = new ServerInfo
+                {
+                    Uptime = pkg.ReadSingle(),
+                    ZdoCount = pkg.ReadInt(),
+                    LastSaveAgo = pkg.ReadSingle(),
+                    NextAutosave = pkg.ReadSingle(),
+                    ReceivedAt = Time.realtimeSinceStartup,
+                };
+                var peerTotal = pkg.ReadInt();          // real connected count (may exceed the shipped cap)
+                var peerShipped = pkg.ReadInt();
+                if (peerShipped < 0 || peerShipped > 128) return;
+                for (var i = 0; i < peerShipped; i++)
+                    info.Peers.Add((pkg.ReadString(), pkg.ReadString(), pkg.ReadInt()));
+                info.PeerTotal = peerTotal;
+                info.PluginTotal = pkg.ReadInt();
+                var shipped = pkg.ReadInt();
+                if (shipped < 0 || shipped > 200) return;
+                for (var i = 0; i < shipped; i++) info.Plugins.Add(pkg.ReadString());
+                self._srvInfo = info;
+            }
+            catch { /* malformed reply — keep whatever we had */ }
+        }
+
+        private static void OnAccessListsData(long sender, ZPackage pkg)
+        {
+            var self = Instance;
+            if (self == null || !SenderIsServerReply(sender)) return;
+            try
+            {
+                if (pkg.ReadInt() != 1) return;
+                var lists = new List<string>[3];
+                var totals = new int[3];
+                for (var l = 0; l < 3; l++)
+                {
+                    totals[l] = pkg.ReadInt();
+                    var shipped = pkg.ReadInt();
+                    if (shipped < 0 || shipped > 300) return;
+                    lists[l] = new List<string>();
+                    for (var i = 0; i < shipped; i++) lists[l].Add(pkg.ReadString());
+                }
+                self._accessLists = lists;
+                self._accessListTotals = totals;
+            }
+            catch { }
+        }
+
+        private static void OnJoinLogData(long sender, ZPackage pkg)
+        {
+            var self = Instance;
+            if (self == null || !SenderIsServerReply(sender)) return;
+            try
+            {
+                if (pkg.ReadInt() != 1) return;
+                var count = pkg.ReadInt();
+                if (count < 0 || count > 200) return;
+                var log = new List<(long, string, string, bool)>();
+                for (var i = 0; i < count; i++)
+                    log.Add((pkg.ReadLong(), pkg.ReadString(), pkg.ReadString(), pkg.ReadBool()));
+                self._srvJoinLog = log;
+            }
+            catch { }
+        }
+
+        // Fire the periodic server-truth requests while the Server tab is the visible one. Time-gated so at
+        // most one request of each kind per interval, and only on a REMOTE server (a host's own numbers are
+        // already authoritative). Gated to the Layout pass: it both sends RPCs and mutates the throttle
+        // fields, and must do so once per frame, not once per OnGUI pass.
+        private void RequestServerTruth()
+        {
+            if (Event.current == null || Event.current.type != EventType.Layout) return;
+            if (ZNet.instance == null || ZNet.instance.IsServer()) return;
+            var now = Time.realtimeSinceStartup;
+            if (now >= _nextInfoReq) { _nextInfoReq = now + 10f; SrvRpc("AP_SrvInfoReq"); }
+            if (now >= _nextListsReq) { _nextListsReq = now + 30f; SrvRpc("AP_SrvListsReq"); }
+            if (now >= _nextJoinLogReq) { _nextJoinLogReq = now + 15f; SrvRpc("AP_SrvJoinLogReq"); }
         }
 
         private static void OnInventoryData(long sender, ZPackage pkg)
@@ -1023,6 +1149,10 @@ namespace AdminPanel
             _joinLog.Clear(); _lastSeenPlayers.Clear(); _seenPlayersInit = false;
             _skillTargetId = 0; _skillMsg = "";
             _srvCompVersion = null; _versionReqFirst = 0f; _nextVersionReq = 0f;
+            // Server-truth is per-server: without this, logging out of server A and hosting (or joining B)
+            // would render A's stale admin/ban lists — with live Unban buttons — as if current.
+            _srvInfo = null; _accessLists = null; _accessListTotals = null; _srvJoinLog = null;
+            _nextInfoReq = 0f; _nextListsReq = 0f; _nextJoinLogReq = 0f;
             _appliedTo = null;
             _baseWalk = -1f;                        // force a fresh base-stat capture on the next player
         }
@@ -3438,11 +3568,15 @@ namespace AdminPanel
             _serverScroll = GUILayout.BeginScrollView(_serverScroll, GUILayout.Height(ListView(100f)));
 
             // 4x/sec is well under the ~60 rebuilds/sec the old inline version did, and still reads as "live".
-            if (Time.realtimeSinceStartup >= _nextStatsRefresh)
+            // Gated to Layout so the cached stat strings can't change between a frame's Layout and Repaint.
+            if (Event.current.type == EventType.Layout && Time.realtimeSinceStartup >= _nextStatsRefresh)
             {
                 _nextStatsRefresh = Time.realtimeSinceStartup + 0.25f;
                 RefreshServerStats();
             }
+
+            // Kick the periodic server-truth requests (time-gated; remote servers only).
+            RequestServerTruth();
 
             DrawSection(Loc.T("srv.live_stats"));
             GUILayout.Label(_statsMain, _labelStyle);
@@ -3450,29 +3584,208 @@ namespace AdminPanel
             if (_statsHost.Length > 0) GUILayout.Label(_statsHost, _labelStyle);
             GUILayout.Label(Loc.T("srv.versions", PluginVersion, _srvCompVersion ?? Loc.T("srv.no_reply")), _labelStyle);
 
-            DrawSection(Loc.T("srv.unban_title"));
-            GUILayout.BeginHorizontal();
-            _unbanId = GUILayout.TextField(_unbanId, _textFieldStyle, GUILayout.Width(220));
-            if (GUILayout.Button(Loc.T("srv.unban"), _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_unbanId))
+            // ---- Authoritative server block (companion 2.4.0 replies; a host IS the server already) ----
+            var isHost = ZNet.instance != null && ZNet.instance.IsServer();
+            DrawSection(Loc.T("srv.truth_section"));
+            if (isHost)
             {
-                SrvRpc("AP_SrvUnban", _unbanId);
-                Message(Loc.T("srv.unban_requested", _unbanId));
-                _unbanId = "";
+                GUILayout.Label(Loc.T("srv.host_local_hint"), _hintStyle);
+            }
+            else if (_srvInfo == null)
+            {
+                GUILayout.Label(Loc.T("srv.truth_pending"), _hintStyle);
+            }
+            else
+            {
+                var info = _srvInfo;
+                GUILayout.Label(Loc.T("srv.truth_line", FormatAgo(info.Uptime),
+                    info.ZdoCount < 0 ? "n/a" : info.ZdoCount.ToString("N0"),
+                    FormatAgo(Time.realtimeSinceStartup - info.ReceivedAt)), _labelStyle);
+                foreach (var (name, host, ping) in info.Peers)
+                    GUILayout.Label("  " + Loc.T("srv.peer_line", name, host,
+                        ping < 0 ? "?" : ping.ToString()), _cellStyle);
+                if (info.PeerTotal > info.Peers.Count)
+                    GUILayout.Label("  " + Loc.T("srv.list_truncated", info.PeerTotal - info.Peers.Count), _dimLabelStyle);
+            }
+
+            // ---- World save ----
+            DrawSection(Loc.T("srv.save_section"));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(Loc.T("srv.save_now"), _buttonStyle, GUILayout.MinWidth(140)))
+            {
+                // waitForNextFrame:true → the game defers the write to a next-frame coroutine instead of
+                // running it inline in this OnGUI event (which would Join a live autosave thread and freeze
+                // the client). A client asks the companion, which applies the same guard server-side.
+                if (isHost && ZNet.instance != null)
+                {
+                    if (ZNet.instance.IsSaving()) Message(Loc.T("srv.msg_already_saving"));
+                    else { ZNet.instance.Save(false, false, true); Message(Loc.T("srv.msg_save_requested")); }
+                }
+                else { SrvRpc("AP_SrvSaveWorld"); Message(Loc.T("srv.msg_save_requested")); }
+                _nextInfoReq = 0f;   // refresh the save clock on the next pass instead of waiting out the 10s throttle
+            }
+            if (!isHost && _srvInfo != null)
+            {
+                GUILayout.Label(_srvInfo.LastSaveAgo < 0
+                    ? Loc.T("srv.last_save_never")
+                    : Loc.T("srv.last_save", FormatAgo(_srvInfo.LastSaveAgo)), _labelStyle);
+                if (_srvInfo.NextAutosave >= 0)
+                    GUILayout.Label(Loc.T("srv.next_autosave", FormatAgo(_srvInfo.NextAutosave)), _dimLabelStyle);
             }
             GUILayout.EndHorizontal();
 
-            DrawSection(Loc.T("srv.joinlog_title"));
-            if (_joinLog.Count == 0) GUILayout.Label(Loc.T("common.nothing_yet"), _labelStyle);
-            // Indexed loop rather than .Take(40): LINQ allocates an iterator on every one of the two OnGUI
-            // passes per frame, for a list that is usually short anyway.
-            var shown = Math.Min(_joinLog.Count, 40);
-            for (var i = 0; i < shown; i++)
-                GUILayout.Label(_joinLog[i], _labelStyle);
+            // ---- Access lists (server truth; remote only — a host can read its own files) ----
+            DrawSection(Loc.T("srv.lists_section"));
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Loc.T("srv.ban_id_label"), _labelStyle, GUILayout.MinWidth(90));
+            _banId = GUILayout.TextField(_banId, _textFieldStyle, GUILayout.Width(200));
+            // Offline ban is destructive-adjacent: same two-click arm as the roster Ban button.
+            // On a host, edit ZNet's ban list directly (the host owns it); on a client, ask the companion.
+            if (ConfirmButton("banById", Loc.T("srv.ban_id_btn"), GUILayout.MinWidth(80)) && !string.IsNullOrEmpty(_banId))
+            {
+                if (isHost) { if (HostEditBan(_banId, true)) Message(Loc.T("srv.msg_banned", _banId.Trim())); }
+                else SrvRpc("AP_SrvBanId", _banId.Trim());
+                _banId = "";
+                _nextListsReq = 0f;   // refresh the lists on the next pass
+            }
+            GUILayout.Space(10);
+            GUILayout.Label(Loc.T("srv.unban_title"), _labelStyle, GUILayout.MinWidth(70));
+            _unbanId = GUILayout.TextField(_unbanId, _textFieldStyle, GUILayout.Width(200));
+            if (GUILayout.Button(Loc.T("srv.unban"), _buttonStyle, GUILayout.MinWidth(70)) && !string.IsNullOrEmpty(_unbanId))
+            {
+                if (isHost) { if (HostEditBan(_unbanId, false)) Message(Loc.T("srv.unban_requested", _unbanId)); }
+                else { SrvRpc("AP_SrvUnban", _unbanId); Message(Loc.T("srv.unban_requested", _unbanId)); }
+                _unbanId = "";
+                _nextListsReq = 0f;
+            }
+            GUILayout.EndHorizontal();
+
+            _showAccessLists = GUILayout.Toggle(_showAccessLists, " " + Loc.T("srv.show_lists"), _toggleStyle);
+            if (_showAccessLists)
+            {
+                if (_accessLists == null)
+                {
+                    GUILayout.Label(isHost ? Loc.T("srv.host_lists_hint") : Loc.T("srv.truth_pending"), _hintStyle);
+                }
+                else
+                {
+                    _listsScroll = GUILayout.BeginScrollView(_listsScroll, GUILayout.Height(170));
+                    var titles = new[] { Loc.T("srv.list_admins", _accessListTotals[0]),
+                                         Loc.T("srv.list_banned", _accessListTotals[1]),
+                                         Loc.T("srv.list_permitted", _accessListTotals[2]) };
+                    for (var l = 0; l < 3; l++)
+                    {
+                        GUILayout.Label(titles[l], _headerStyle);
+                        if (_accessLists[l].Count == 0) GUILayout.Label("  " + Loc.T("srv.list_empty"), _dimLabelStyle);
+                        foreach (var id in _accessLists[l])
+                        {
+                            GUILayout.BeginHorizontal();
+                            GUILayout.Label("  " + id, _cellStyle, GUILayout.Width(300));
+                            if (l == 1 && GUILayout.Button(Loc.T("srv.unban"), _buttonStyle, GUILayout.MinWidth(70)))
+                            {
+                                if (isHost) { if (HostEditBan(id, false)) Message(Loc.T("srv.unban_requested", id)); }
+                                else { SrvRpc("AP_SrvUnban", id); Message(Loc.T("srv.unban_requested", id)); }
+                                _nextListsReq = 0f;
+                            }
+                            GUILayout.EndHorizontal();
+                        }
+                        if (_accessListTotals[l] > _accessLists[l].Count)
+                            GUILayout.Label("  " + Loc.T("srv.list_truncated", _accessListTotals[l] - _accessLists[l].Count), _dimLabelStyle);
+                    }
+                    GUILayout.EndScrollView();
+                }
+            }
+
+            // ---- Server plugins ----
+            DrawSection(Loc.T("srv.plugins_section"));
+            _showServerPlugins = GUILayout.Toggle(_showServerPlugins,
+                " " + Loc.T("srv.show_plugins", _srvInfo != null ? _srvInfo.PluginTotal.ToString() : "?"), _toggleStyle);
+            if (_showServerPlugins)
+            {
+                if (_srvInfo == null)
+                {
+                    GUILayout.Label(isHost ? Loc.T("srv.host_plugins_hint") : Loc.T("srv.truth_pending"), _hintStyle);
+                }
+                else
+                {
+                    _pluginsScroll = GUILayout.BeginScrollView(_pluginsScroll, GUILayout.Height(150));
+                    foreach (var p in _srvInfo.Plugins)
+                    {
+                        var bar = p.IndexOf('|');
+                        var nm = bar > 0 ? p.Substring(0, bar) : p;
+                        var ver = bar > 0 ? p.Substring(bar + 1) : "";
+                        GUILayout.BeginHorizontal();
+                        GUILayout.Label(nm, _cellStyle, GUILayout.Width(320));
+                        GUILayout.Label(ver, _dimCellStyle);
+                        GUILayout.EndHorizontal();
+                    }
+                    if (_srvInfo.PluginTotal > _srvInfo.Plugins.Count)
+                        GUILayout.Label(Loc.T("srv.list_truncated", _srvInfo.PluginTotal - _srvInfo.Plugins.Count), _dimLabelStyle);
+                    GUILayout.EndScrollView();
+                }
+            }
+
+            // ---- Join/leave: prefer the server-side history (survives this admin's relogs) ----
+            var srvLog = _srvJoinLog;
+            DrawSection(srvLog != null ? Loc.T("srv.joinlog_server") : Loc.T("srv.joinlog_title"));
+            if (srvLog != null)
+            {
+                if (srvLog.Count == 0) GUILayout.Label(Loc.T("common.nothing_yet"), _labelStyle);
+                var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                for (var i = srvLog.Count - 1; i >= 0 && i >= srvLog.Count - 40; i--)
+                {
+                    var e = srvLog[i];
+                    GUILayout.Label(Loc.T(e.joined ? "srv.joined_line" : "srv.left_line",
+                        e.name, FormatAgo(nowUnix - e.unix)), _cellStyle);
+                }
+            }
+            else
+            {
+                if (_joinLog.Count == 0) GUILayout.Label(Loc.T("common.nothing_yet"), _labelStyle);
+                // Indexed loop rather than .Take(40): LINQ allocates an iterator on every one of the two OnGUI
+                // passes per frame, for a list that is usually short anyway.
+                var shown = Math.Min(_joinLog.Count, 40);
+                for (var i = 0; i < shown; i++)
+                    GUILayout.Label(_joinLog[i], _labelStyle);
+            }
 
             GUILayout.EndScrollView();
         }
 
+        // Host-local access-list edit. A host IS the server: it owns ZNet's SyncedList fields directly, so
+        // ban/unban must act on them in-process rather than firing an RPC that only works if the host also
+        // runs the companion. Mirrors the companion's GetList reflection. Returns true if the list changed.
+        private static bool HostEditBan(string id, bool add)
+        {
+            try
+            {
+                var clean = id?.Trim();
+                if (string.IsNullOrEmpty(clean)) return false;
+                var f = AccessTools.Field(typeof(ZNet), "m_bannedList");
+                var list = f?.GetValue(ZNet.instance) as SyncedList;
+                if (list == null) return false;
+                // SyncedList.Add/Remove both return void; check membership to report whether it changed.
+                if (add) { if (!list.Contains(clean)) { list.Add(clean); return true; } }
+                else { if (list.Contains(clean)) { list.Remove(clean); return true; } }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // Compact human duration for the server tab: 42s → "42s", 130s → "2m 10s", 7500s → "2h 5m".
+        private static string FormatAgo(double seconds)
+        {
+            if (seconds < 0) seconds = 0;
+            var s = (long)seconds;
+            if (s < 60) return s + "s";
+            if (s < 3600) return (s / 60) + "m " + (s % 60) + "s";
+            return (s / 3600) + "h " + (s % 3600 / 60) + "m";
+        }
+
         private string _unbanId = "";
+        private string _banId = "";
+        private bool _showAccessLists, _showServerPlugins;
+        private Vector2 _listsScroll, _pluginsScroll;
 
         // ==================== Side window (What's New / Bug Report) ====================
         private void DrawSideWindow(int id)
