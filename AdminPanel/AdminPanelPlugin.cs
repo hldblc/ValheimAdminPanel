@@ -502,6 +502,39 @@ namespace AdminPanel
             internal static float SafeScrollWheel() =>
                 Instance != null && Instance._visible ? 0f : ZInput.GetMouseScrollWheel();
 
+            // Same idea for raw Unity input: ValheimPlus's FirstPerson camera postfix bypasses ZInput
+            // entirely and zooms from Input.GetAxis("Mouse ScrollWheel") — which is why muting ZInput
+            // could never stop it. Only the wheel axis is gated; any other axis passes through untouched.
+            internal static float SafeGetAxis(string name) =>
+                Instance != null && Instance._visible && name == "Mouse ScrollWheel" ? 0f : Input.GetAxis(name);
+
+            internal static IEnumerable<CodeInstruction> ReplaceAxisReads(
+                IEnumerable<CodeInstruction> instructions, string owner)
+            {
+                var original = AccessTools.Method(typeof(Input), "GetAxis", new[] { typeof(string) });
+                var safe = AccessTools.Method(typeof(ZoomWheelMute), nameof(SafeGetAxis));
+                var replaced = 0;
+                foreach (var ins in instructions)
+                {
+                    if (original != null && ins.Calls(original))
+                    {
+                        ins.opcode = OpCodes.Call;   // mutate in place — preserves branch labels (see above)
+                        ins.operand = safe;
+                        replaced++;
+                    }
+                    yield return ins;
+                }
+                if (replaced == 0)
+                    Instance?.Logger.LogWarning(
+                        $"Cross-mod zoom mute ({owner}): no Input.GetAxis calls found — mod code changed, mute inactive there.");
+                else
+                    Instance?.Logger.LogInfo($"Cross-mod zoom mute ({owner}): {replaced} axis read(s) muted while panel open.");
+            }
+
+            // Bridge with the exact signature Harmony expects for a manually-registered transpiler.
+            internal static IEnumerable<CodeInstruction> VPlusAxisTranspiler(IEnumerable<CodeInstruction> instructions) =>
+                ReplaceAxisReads(instructions, "ValheimPlus FirstPerson.Postfix");
+
             internal static IEnumerable<CodeInstruction> ReplaceWheelReads(
                 IEnumerable<CodeInstruction> instructions, string owner)
             {
@@ -637,11 +670,37 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Zoom-freeze camera transpiler failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeFreeFlyTranspiler)); }
             catch (Exception e) { Logger.LogWarning($"Zoom-freeze free-fly transpiler failed (panel still works): {e.Message}"); }
+            PatchValheimPlusZoomIfPresent();
             VerifyCameraPatches();
             try { Harmony.CreateAndPatchAll(typeof(MenuVersionPatch)); }
             catch (Exception e) { Logger.LogWarning($"Menu version-line patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
             StartUpdateCheck();
+        }
+
+        // ValheimPlus's FirstPerson feature zooms the camera from ITS OWN UpdateCamera postfix, reading the
+        // wheel via raw Input.GetAxis — invisible to every ZInput-level fix and active on this machine
+        // because the GTX server force-syncs its config onto clients (local [FirstPerson] enabled=false is
+        // overridden on join). Transpiling V+'s postfix mutes exactly its wheel read while the panel is
+        // open; the rest of the postfix (FOV, first-person transform pinning) keeps working, so FP users
+        // lose nothing. V+'s own unpatch/re-patch cycles (every join, disconnect and settings save) only
+        // touch its TARGETS, never its patch methods, so this detour survives them. If V+ isn't installed
+        // or the type moved, this quietly does nothing.
+        private void PatchValheimPlusZoomIfPresent()
+        {
+            try
+            {
+                var t = AccessTools.TypeByName("ValheimPlus.FirstPerson.VPlusFirstPerson+GameCamera_Update_Patch");
+                var m = t != null ? AccessTools.Method(t, "Postfix") : null;
+                if (m == null)
+                {
+                    Logger.LogInfo("ValheimPlus FirstPerson patch not found — cross-mod zoom mute not needed.");
+                    return;
+                }
+                new Harmony(PluginGuid + ".crossmod").Patch(m,
+                    transpiler: new HarmonyMethod(typeof(ZoomWheelMute), nameof(ZoomWheelMute.VPlusAxisTranspiler)));
+            }
+            catch (Exception e) { Logger.LogWarning($"Cross-mod zoom mute failed (panel still works): {e.Message}"); }
         }
 
         // Log what is REALLY attached to the camera methods, so a field test can distinguish "patch not
@@ -651,9 +710,15 @@ namespace AdminPanel
         {
             try
             {
-                foreach (var name in new[] { "UpdateCamera", "UpdateFreeFly" })
+                var targets = new List<(string name, System.Reflection.MethodBase m)>
                 {
-                    var m = AccessTools.Method(typeof(GameCamera), name);
+                    ("UpdateCamera", AccessTools.Method(typeof(GameCamera), "UpdateCamera")),
+                    ("UpdateFreeFly", AccessTools.Method(typeof(GameCamera), "UpdateFreeFly")),
+                };
+                var vplus = AccessTools.TypeByName("ValheimPlus.FirstPerson.VPlusFirstPerson+GameCamera_Update_Patch");
+                if (vplus != null) targets.Add(("V+ FP.Postfix", AccessTools.Method(vplus, "Postfix")));
+                foreach (var (name, m) in targets)
+                {
                     var info = m != null ? Harmony.GetPatchInfo(m) : null;
                     if (info == null) { Logger.LogWarning($"patch-verify {name}: NO patches bound"); continue; }
                     Logger.LogInfo($"patch-verify {name}: " +
