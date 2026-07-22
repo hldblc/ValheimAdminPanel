@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Reflection.Emit;
 using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
@@ -477,84 +478,71 @@ namespace AdminPanel
             }
         }
 
-        // Freeze camera zoom while the panel is open. Zeroing ZInput.GetMouseScrollWheel proved unreliable
-        // in the field — Mono's JIT inlines the wrapper AND Internal_GetMouseScrollWheel into
-        // GameCamera.UpdateCamera, bypassing any detour on them — so the zoom result is pinned instead.
+        // ==================== Zoom freeze (attempt 5 — transpiler, the structural fix) ====================
+        // History, so nobody retries a dead end: (1) detouring ZInput.GetMouseScrollWheel — patch applied,
+        // zoom persisted (the tiny wrapper is JIT-inlined into callers). (2) UpdateCamera postfix restoring
+        // m_distance — the camera transform is positioned FROM m_distance inside the same call, so every
+        // scrolled frame still rendered zoomed. (3/4) prefixing GetCameraPosition to restore between the
+        // wheel math and the positioning — never observably fired in the field.
         //
-        // Field-verified 2026-07-21: restoring m_distance in an UpdateCamera POSTFIX is NOT enough. The wheel
-        // is applied to m_distance and the camera transform is positioned from it INSIDE the same call
-        // (GetCameraPosition), so a postfix-only restore fixes the field after the camera already moved —
-        // scrolling a panel list still visibly zoomed every frame. The restore has to land BETWEEN the wheel
-        // math and the positioning: a prefix on GetCameraPosition, which UpdateCamera calls right after the
-        // zoom block. The dead/ragdoll and attached branches never reach GetCameraPosition, so the prefix
-        // can't disturb those.
+        // The transpiler sidesteps that entire class of problems: it rewrites UpdateCamera's own IL,
+        // replacing each `call ZInput.GetMouseScrollWheel` with a wrapper that returns 0 while the panel
+        // is open and defers to the real input otherwise. There is no separate detoured method left for
+        // the JIT to inline around — Harmony recompiles UpdateCamera from the modified IL. UpdateFreeFly
+        // reads the wheel independently for its fly-speed scaling (×1.2 twice per up-notch), so it gets
+        // the same treatment. Failure mode if the game ever renames the input call: zero replacements, a
+        // logged warning, vanilla behavior — nothing breaks.
         //
-        // Deliberately NOT gated on the camera-lock toggle (unlike mouse-LOOK): the wheel over an open panel
-        // is always list-scrolling, never an intentional zoom.
-        // Shared state for the two zoom-freeze patch classes below. Split into ONE CLASS PER TARGET on
-        // purpose: the earlier single class with per-method [HarmonyPatch(typeof, name)] targets produced
-        // no bind error yet the GetCameraPosition prefix demonstrably never fired in the field (zoom kept
-        // leaking) — attribute merging across a mixed-target class is exactly the pattern nothing else in
-        // this codebase relies on. One target per class is the shape every proven patch here uses.
-        private static class ZoomFreezeState
+        // Deliberately NOT gated on the camera-lock toggle (unlike mouse-LOOK): the wheel over an open
+        // panel is always list-scrolling, never an intentional zoom.
+        private static class ZoomWheelMute
         {
-            internal static readonly AccessTools.FieldRef<GameCamera, float> Distance =
-                AccessTools.FieldRefAccess<GameCamera, float>("m_distance");
-            // Free-fly consumes the wheel as a speed multiplier (×1.44 per up-notch) before the zoom code
-            // is ever reached, so it gets its own pin. Resolved defensively: renamed field = null = no pin.
-            internal static readonly AccessTools.FieldRef<GameCamera, float> FlySpeed = ResolveFlySpeed();
+            // Called from inside the recompiled UpdateCamera/UpdateFreeFly in place of the real read.
+            // Static, same signature/stack behavior as the original: safe as a drop-in call target.
+            internal static float SafeScrollWheel() =>
+                Instance != null && Instance._visible ? 0f : ZInput.GetMouseScrollWheel();
 
-            private static AccessTools.FieldRef<GameCamera, float> ResolveFlySpeed()
+            internal static IEnumerable<CodeInstruction> ReplaceWheelReads(
+                IEnumerable<CodeInstruction> instructions, string owner)
             {
-                try { return AccessTools.FieldRefAccess<GameCamera, float>("m_freeFlySpeed"); }
-                catch { return null; }
+                var original = AccessTools.Method(typeof(ZInput), "GetMouseScrollWheel", Type.EmptyTypes);
+                var safe = AccessTools.Method(typeof(ZoomWheelMute), nameof(SafeScrollWheel));
+                var replaced = 0;
+                foreach (var ins in instructions)
+                {
+                    if (original != null && ins.Calls(original))
+                    {
+                        // Mutate IN PLACE rather than emitting a fresh CodeInstruction: the original
+                        // instruction may carry branch labels / exception-block markers, and a new
+                        // instruction would silently drop them and corrupt the method.
+                        ins.opcode = OpCodes.Call;
+                        ins.operand = safe;
+                        replaced++;
+                    }
+                    yield return ins;
+                }
+                if (replaced == 0)
+                    Instance?.Logger.LogWarning(
+                        $"Zoom-freeze transpiler ({owner}): no GetMouseScrollWheel calls found — game code changed, zoom freeze inactive.");
+                else
+                    Instance?.Logger.LogInfo($"Zoom-freeze transpiler ({owner}): {replaced} wheel read(s) muted while panel open.");
             }
-
-            internal static float Pre;
-            internal static float PreFly;
-            internal static bool Armed;   // only restore within an UpdateCamera call that was snapshotted
-
-            internal static bool Active => Instance != null && Instance._visible;
         }
 
         [HarmonyPatch(typeof(GameCamera), "UpdateCamera")]
-        private static class ZoomFreezeCapturePatch
+        private static class ZoomFreezeCameraTranspiler
         {
-            [HarmonyPrefix]
-            private static void Prefix(GameCamera __instance)
-            {
-                ZoomFreezeState.Pre = ZoomFreezeState.Distance(__instance);
-                if (ZoomFreezeState.FlySpeed != null) ZoomFreezeState.PreFly = ZoomFreezeState.FlySpeed(__instance);
-                ZoomFreezeState.Armed = true;
-            }
-
-            // Belt-and-braces: also restore after the call so no wheel delta survives into the next frame
-            // on paths that skip GetCameraPosition (dead/ragdoll, attached, free-fly early return).
-            [HarmonyPostfix]
-            private static void Postfix(GameCamera __instance)
-            {
-                if (ZoomFreezeState.Armed && ZoomFreezeState.Active)
-                {
-                    ZoomFreezeState.Distance(__instance) = ZoomFreezeState.Pre;
-                    if (ZoomFreezeState.FlySpeed != null) ZoomFreezeState.FlySpeed(__instance) = ZoomFreezeState.PreFly;
-                }
-                ZoomFreezeState.Armed = false;
-            }
+            [HarmonyTranspiler]
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) =>
+                ZoomWheelMute.ReplaceWheelReads(instructions, "UpdateCamera");
         }
 
-        // The restore that actually stops visible zoom: UpdateCamera folds the wheel into m_distance and
-        // then positions the camera FROM that field inside the same call — restoring only afterwards (the
-        // 2.2.9 approach) left every scrolled frame rendered at the zoomed distance. This prefix runs
-        // between the wheel math and the positioning.
-        [HarmonyPatch(typeof(GameCamera), "GetCameraPosition")]
-        private static class ZoomFreezeApplyPatch
+        [HarmonyPatch(typeof(GameCamera), "UpdateFreeFly")]
+        private static class ZoomFreezeFreeFlyTranspiler
         {
-            [HarmonyPrefix]
-            private static void Prefix(GameCamera __instance)
-            {
-                if (ZoomFreezeState.Armed && ZoomFreezeState.Active)
-                    ZoomFreezeState.Distance(__instance) = ZoomFreezeState.Pre;
-            }
+            [HarmonyTranspiler]
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) =>
+                ZoomWheelMute.ReplaceWheelReads(instructions, "UpdateFreeFly");
         }
 
         // Show the mod on the main menu under the game's version line, ValheimPlus-style. SetupGui is
@@ -645,14 +633,35 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Camera-lock patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(DeathPointPatch)); }
             catch (Exception e) { Logger.LogWarning($"Death-point patch failed (panel still works): {e.Message}"); }
-            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeCapturePatch)); }
-            catch (Exception e) { Logger.LogWarning($"Zoom-freeze capture patch failed (panel still works): {e.Message}"); }
-            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeApplyPatch)); }
-            catch (Exception e) { Logger.LogWarning($"Zoom-freeze apply patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeCameraTranspiler)); }
+            catch (Exception e) { Logger.LogWarning($"Zoom-freeze camera transpiler failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeFreeFlyTranspiler)); }
+            catch (Exception e) { Logger.LogWarning($"Zoom-freeze free-fly transpiler failed (panel still works): {e.Message}"); }
+            VerifyCameraPatches();
             try { Harmony.CreateAndPatchAll(typeof(MenuVersionPatch)); }
             catch (Exception e) { Logger.LogWarning($"Menu version-line patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
             StartUpdateCheck();
+        }
+
+        // Log what is REALLY attached to the camera methods, so a field test can distinguish "patch not
+        // bound" from "bound but ineffective" — the ambiguity that stretched the zoom bug across four
+        // attempts. One line per method at startup; grep the log for "patch-verify".
+        private void VerifyCameraPatches()
+        {
+            try
+            {
+                foreach (var name in new[] { "UpdateCamera", "UpdateFreeFly" })
+                {
+                    var m = AccessTools.Method(typeof(GameCamera), name);
+                    var info = m != null ? Harmony.GetPatchInfo(m) : null;
+                    if (info == null) { Logger.LogWarning($"patch-verify {name}: NO patches bound"); continue; }
+                    Logger.LogInfo($"patch-verify {name}: " +
+                        $"{info.Prefixes.Count} prefix, {info.Postfixes.Count} postfix, {info.Transpilers.Count} transpiler " +
+                        $"[{string.Join(", ", info.Transpilers.Select(p => p.PatchMethod.DeclaringType?.Name))}]");
+                }
+            }
+            catch (Exception e) { Logger.LogWarning($"patch-verify failed: {e.Message}"); }
         }
 
         // One GitHub-releases lookup per game launch, on a worker thread — the game never waits on it.
