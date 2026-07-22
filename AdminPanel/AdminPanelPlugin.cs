@@ -348,6 +348,7 @@ namespace AdminPanel
         private GUIStyle _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle, _toggleStyle;
         private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle, _textAreaStyle;
         private GUIStyle _cellStyle, _dimCellStyle;   // fixed-width row columns: no wrap, clip overflow
+        private GUIStyle _hintStyle, _proseStyle;     // the only wrapping styles: dim hint paragraphs / prose blocks
         private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
         private Texture2D _texRule;   // thin gold rule used by DrawSection dividers
         private Texture2D _logoTex;   // embedded logo header (null = missing/failed, panel renders without it)
@@ -1315,6 +1316,13 @@ namespace AdminPanel
             // out as: content-sized labels/buttons, stretching text fields, FlexibleSpace where a gap is
             // wanted.
             _labelStyle.stretchWidth = false;
+            // ...and row labels must never WRAP either. A wrapping label reports a squeezable minimum to
+            // the layout, so inside a horizontal row a non-stretch wrapping label collapses to exactly its
+            // MinWidth and folds the rest ("Custo/m:", field-reported at FontSize 16). With wordWrap off,
+            // min = max = the text's real width, so a row label always renders whole. Paragraphs that DO
+            // wrap get their own styles below (_hintStyle/_proseStyle) — wrapping is opt-in per site, not
+            // a property of every label in a row.
+            _labelStyle.wordWrap = false;
 
             _headerStyle = new GUIStyle(_labelStyle) { fontStyle = FontStyle.Bold, fontSize = 14 };
             _headerStyle.normal.textColor = gold;
@@ -1375,6 +1383,12 @@ namespace AdminPanel
             // Cells clip instead — a truncated name reads better than a smeared row.
             _cellStyle = new GUIStyle(_labelStyle) { wordWrap = false, clipping = TextClipping.Clip };
             _dimCellStyle = new GUIStyle(_dimLabelStyle) { wordWrap = false, clipping = TextClipping.Clip };
+
+            // The two places wrapping IS wanted: multi-line hint paragraphs (dim) and prose blocks
+            // (What's New, the version-warning banners). Both live in the vertical flow (or deliberately
+            // take a row's remaining width), where stretch+wrap is the correct behavior.
+            _hintStyle = new GUIStyle(_dimLabelStyle) { wordWrap = true, stretchWidth = true };
+            _proseStyle = new GUIStyle(_labelStyle) { wordWrap = true, stretchWidth = true };
 
             ApplyFontSizes();   // override the hardcoded defaults above with the configured base size
 
@@ -1476,7 +1490,7 @@ namespace AdminPanel
             {
                 _windowStyle, _buttonStyle, _labelStyle, _headerStyle, _textFieldStyle,
                 _toggleStyle, _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle, _textAreaStyle,
-                _cellStyle, _dimCellStyle
+                _cellStyle, _dimCellStyle, _hintStyle, _proseStyle
             })
                 if (s != null) s.font = f;
             _appliedFont = f;
@@ -1766,14 +1780,14 @@ namespace AdminPanel
             if (_updateBannerLayout != null)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(Loc.T("chrome.update_available", _updateBannerLayout, PluginVersion), _headerStyle);
+                GUILayout.Label(Loc.T("chrome.update_available", _updateBannerLayout, PluginVersion), _proseStyle);
                 if (GUILayout.Button(Loc.T("chrome.get_update"), _buttonStyle, GUILayout.MinWidth(110)))
                     Application.OpenURL(ReleasesPage);
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
             }
             if (_versionWarnLayout != null)
-                GUILayout.Label(_versionWarnLayout, _headerStyle);
+                GUILayout.Label(_versionWarnLayout, _proseStyle);
 
             GUILayout.BeginHorizontal();
             for (var i = 0; i < TabKeys.Length; i++)
@@ -2699,7 +2713,7 @@ namespace AdminPanel
                     GUILayout.Label(Loc.T("player.private_note"), _labelStyle, GUILayout.MinWidth(105));
                     _skillMsg = GUILayout.TextField(_skillMsg, _textFieldStyle, GUILayout.Width(280));
                     GUILayout.EndHorizontal();
-                    GUILayout.Label(Loc.T("player.private_note_hint"), _dimLabelStyle);
+                    GUILayout.Label(Loc.T("player.private_note_hint"), _hintStyle);
                 }
                 var skills = player.GetSkills();
                 _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(220));
@@ -2743,7 +2757,7 @@ namespace AdminPanel
                 // The relay is fire-and-forget (same as skills): a target on companion <2.3.0 silently drops
                 // AP_ApplySE and the routed RPC gives no failure signal — so say it up front instead.
                 if (_seTargetId != 0)
-                    GUILayout.Label(Loc.T("player.se_target_hint"), _dimLabelStyle);
+                    GUILayout.Label(Loc.T("player.se_target_hint"), _hintStyle);
 
                 // Build the categorized, search-filtered list ONCE before the scroll view. It is cached and only
                 // rebuilt when the search text changes, so Layout and Repaint iterate the identical list and emit an
@@ -2900,7 +2914,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label(Loc.T("world.weather_hint"), _labelStyle);
+            GUILayout.Label(Loc.T("world.weather_hint"), _proseStyle);
             GUILayout.BeginHorizontal();
             _weather = GUILayout.TextField(_weather, _textFieldStyle, GUILayout.Width(200));
             if (GUILayout.Button(Loc.T("player.apply"), _buttonStyle, GUILayout.MinWidth(70)) && env != null)
@@ -2923,7 +2937,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
 
             DrawSection(Loc.T("world.teleport"));
-            GUILayout.Label(Loc.T("world.map_hint", _mapTpKey.Value), _dimLabelStyle);
+            GUILayout.Label(Loc.T("world.map_hint", _mapTpKey.Value), _hintStyle);
 
             // teleport straight to an online player
             GUILayout.BeginHorizontal();
@@ -3044,7 +3058,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
 
             DrawSection(Loc.T("world.global_keys"));
-            GUILayout.Label(Loc.T("world.global_keys_hint"), _dimLabelStyle);
+            GUILayout.Label(Loc.T("world.global_keys_hint"), _hintStyle);
             if (ZoneSystem.instance != null)
             {
                 foreach (var key in _globalKeysLayout ?? (IEnumerable<string>)ZoneSystem.instance.GetGlobalKeys())
@@ -3266,7 +3280,7 @@ namespace AdminPanel
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.EndScrollView();
-                GUILayout.Label(Loc.T("players.remove_hint"), _dimLabelStyle);
+                GUILayout.Label(Loc.T("players.remove_hint"), _hintStyle);
             }
         }
 
@@ -3414,9 +3428,9 @@ namespace AdminPanel
             {
                 DrawSection(Loc.T("side.version", PluginVersion));
                 _sideScroll = GUILayout.BeginScrollView(_sideScroll);
-                GUILayout.Label(WhatsNewText, _labelStyle);
+                GUILayout.Label(WhatsNewText, _proseStyle);
                 GUILayout.EndScrollView();
-                GUILayout.Label(Loc.T("side.whats_new_hint"), _dimLabelStyle);
+                GUILayout.Label(Loc.T("side.whats_new_hint"), _hintStyle);
             }
             else if (mode == SideMode.BugReport)
             {
@@ -3444,13 +3458,13 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 if (!webhookSet)
-                    GUILayout.Label(Loc.T("side.no_webhook"), _dimLabelStyle);
+                    GUILayout.Label(Loc.T("side.no_webhook"), _hintStyle);
                 else if (coolingDown)
                     GUILayout.Label(Loc.T("side.cooldown", Mathf.Max(1, Mathf.CeilToInt(_nextBugSend - Time.time))), _dimLabelStyle);
                 if (_bugStatusLayout != null) GUILayout.Label(_bugStatusLayout, _dimLabelStyle);
 
                 GUILayout.FlexibleSpace();
-                GUILayout.Label(Loc.T("side.privacy"), _dimLabelStyle);
+                GUILayout.Label(Loc.T("side.privacy"), _hintStyle);
             }
         }
 
@@ -3604,6 +3618,8 @@ namespace AdminPanel
             _dimLabelStyle.fontSize = Mathf.Max(s - 1, 10);
             if (_cellStyle != null) _cellStyle.fontSize = s;
             if (_dimCellStyle != null) _dimCellStyle.fontSize = Mathf.Max(s - 1, 10);
+            if (_hintStyle != null) _hintStyle.fontSize = Mathf.Max(s - 1, 10);
+            if (_proseStyle != null) _proseStyle.fontSize = s;
         }
 
         // Recolor the window-background texture in place — no new textures and no style rebuild, so the
@@ -3649,10 +3665,10 @@ namespace AdminPanel
                 if (GUILayout.Toggle(on, choice, _catStyle) && !on) SelectFont(choice);
             }
             GUILayout.EndHorizontal();
-            GUILayout.Label(Loc.T("set.font_hint"), _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.font_hint"), _hintStyle);
             // Explain the override rather than letting the panel silently ignore the chosen font.
             if (Loc.NeedsFallbackFont && _fontChoiceCfg.Value != "Default")
-                GUILayout.Label(Loc.T("set.font_fallback_note"), _dimLabelStyle);
+                GUILayout.Label(Loc.T("set.font_fallback_note"), _hintStyle);
 
             GUILayout.Space(6);
             GUILayout.BeginHorizontal();
@@ -3697,7 +3713,7 @@ namespace AdminPanel
                 // reopen the panel.
                 _fontApplied = false;
             }
-            GUILayout.Label(Loc.T("set.language_hint"), _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.language_hint"), _hintStyle);
 
             DrawSection(Loc.T("set.behavior"));
             var cam = GUILayout.Toggle(_cameraLockCfg.Value, " " + Loc.T("set.camera_lock"), _toggleStyle);
@@ -3716,7 +3732,7 @@ namespace AdminPanel
             DrawCoffeeButton(240f);
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
-            GUILayout.Label(Loc.T("set.support_hint"), _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.support_hint"), _hintStyle);
 
             DrawSection(Loc.T("set.hotkeys"));
             DrawRebindRow(Loc.T("set.key_toggle"), _toggleKey, 1);
@@ -3768,7 +3784,7 @@ namespace AdminPanel
                 SelectFont(FontChoices[0]);
             }
             GUILayout.EndHorizontal();
-            GUILayout.Label(Loc.T("set.saved_hint"), _dimLabelStyle);
+            GUILayout.Label(Loc.T("set.saved_hint"), _hintStyle);
 
             GUILayout.EndScrollView();
         }
