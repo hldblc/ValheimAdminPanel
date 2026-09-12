@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using BepInEx;
 using HarmonyLib;
@@ -30,7 +31,7 @@ namespace AdminPanelCompanion
 
         internal static string DataDir { get { lock (Gate) return ResolveDirLocked(); } }
 
-        // World identity comes from the loaded World's fileName (already filesystem-safe). ZNet.m_world is
+        // World identity comes from the loaded World's on-disk name (already filesystem-safe). ZNet.m_world is
         // static in current assemblies but accessed reflectively with a property fallback so a game update
         // renaming it degrades to "store unavailable" instead of a crash.
         private static string ResolveDirLocked()
@@ -80,15 +81,80 @@ namespace AdminPanelCompanion
 
         private static string CurrentWorldFileName()
         {
+            return WorldFileName(CurrentWorld());
+        }
+
+        // ---- World identity across game versions (silent reflection, cached) ----
+        // Valheim 1.0.12 (the 2026-09-11 update) removed World.m_fileName; the on-disk name is now
+        // World.m_worldName (m_name is the display name, normally identical). Plain Type.GetField is used ON
+        // PURPOSE: AccessTools.Field logs a HarmonyX warning on every miss, and this resolver runs on every
+        // store access - on the GTX server that was ~30 warning lines per second and a 213 MB log in a day.
+        private static readonly BindingFlags AnyInstance =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        private static PropertyInfo _znetWorldProp;
+        private static FieldInfo _znetWorldField;
+        private static bool _znetProbed;
+        private static Type _worldType;
+        private static FieldInfo _worldFileNameField;
+        private static FieldInfo _worldDisplayNameField;
+        private static MethodInfo _worldDbPathMethod;
+
+        internal static object CurrentWorld()
+        {
             try
             {
-                object w = AccessTools.Property(typeof(ZNet), "World")?.GetValue(null)
-                           ?? AccessTools.Field(typeof(ZNet), "m_world")?.GetValue(null);
-                if (w == null) return null;
-                var name = AccessTools.Field(w.GetType(), "m_fileName")?.GetValue(w) as string;
+                if (!_znetProbed)
+                {
+                    _znetProbed = true;
+                    _znetWorldProp = typeof(ZNet).GetProperty("World", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    _znetWorldField = typeof(ZNet).GetField("m_world", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                return _znetWorldProp?.GetValue(null, null) ?? _znetWorldField?.GetValue(null);
+            }
+            catch (Exception) { return null; }
+        }
+
+        private static void ProbeWorldType(Type t)
+        {
+            if (_worldType == t) return;
+            _worldType = t;
+            _worldFileNameField = t.GetField("m_worldName", AnyInstance) ?? t.GetField("m_fileName", AnyInstance);
+            _worldDisplayNameField = t.GetField("m_name", AnyInstance);
+            _worldDbPathMethod = t.GetMethod("GetDBPath", AnyInstance, null, Type.EmptyTypes, null);
+        }
+
+        /// <summary>The world's on-disk name (folder/db stem), or null when no world is loaded.</summary>
+        internal static string WorldFileName(object w)
+        {
+            if (w == null) return null;
+            try
+            {
+                ProbeWorldType(w.GetType());
+                var name = _worldFileNameField?.GetValue(w) as string;
+                if (string.IsNullOrEmpty(name))
+                {
+                    // Last resort for a future rename: the stem of the DB path the game itself saves to.
+                    // GetDBPath touches Application.persistentDataPath, so off the main thread it throws -
+                    // caught below, and the caller treats null as "store not ready" like before.
+                    var db = _worldDbPathMethod?.Invoke(w, null) as string;
+                    if (!string.IsNullOrEmpty(db)) name = Path.GetFileNameWithoutExtension(db);
+                }
                 return string.IsNullOrEmpty(name) ? null : name;
             }
             catch (Exception) { return null; }
+        }
+
+        /// <summary>The world's display name, falling back to the on-disk name; null when no world.</summary>
+        internal static string WorldDisplayName(object w)
+        {
+            if (w == null) return null;
+            try
+            {
+                ProbeWorldType(w.GetType());
+                var n = _worldDisplayNameField?.GetValue(w) as string;
+                return string.IsNullOrEmpty(n) ? WorldFileName(w) : n;
+            }
+            catch (Exception) { return WorldFileName(w); }
         }
 
         // ---- key=value tables (cached; explicit SaveTable persists) ----

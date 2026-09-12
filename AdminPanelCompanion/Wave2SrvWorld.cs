@@ -448,11 +448,12 @@ namespace AdminPanelCompanion
 
         private static void BucketZone(ScanJob job, ZDO zdo, int hash)
         {
-            Vector2i zone;
+            Vector2s zone;   // shorts since 1.0.12
             try { zone = ZoneSystem.GetZone(zdo.GetPosition()); }
             catch (Exception) { return; }   // engine math moved: hotspots degrade, the scan continues
 
-            var key = ((long)zone.x << 32) | (uint)zone.y;
+            int zx = zone.x, zy = zone.y;   // widen the 1.0.12 shorts first: same key layout as before, no CS0675
+            var key = ((long)zx << 32) | (uint)zy;
             ZoneBucket bucket;
             if (!job.Zones.TryGetValue(key, out bucket))
             {
@@ -806,7 +807,9 @@ namespace AdminPanelCompanion
             try
             {
                 _fSectors = AccessTools.Field(typeof(ZDOMan), "m_objectsBySector");
-                _fOutside = AccessTools.Field(typeof(ZDOMan), "m_objectsByOutsideSector");
+                // Gone in 1.0.12 (the grid covers everything now). Type.GetField stays silent where
+                // AccessTools.Field would log a HarmonyX warning; a null here simply means "no outside bucket".
+                _fOutside = typeof(ZDOMan).GetField("m_objectsByOutsideSector", AccessTools.all);
                 _fById = AccessTools.Field(typeof(ZDOMan), "m_objectsByID");
             }
             catch (Exception e)

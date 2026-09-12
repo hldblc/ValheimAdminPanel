@@ -17,7 +17,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.5.1";
 
         internal static AdminPanelPlugin Instance;
 
@@ -326,30 +326,34 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
-            "• The panel speaks your language: German, French, Spanish, Italian, Portuguese (BR), " +
-            "Polish, Dutch and Swedish. It follows Valheim's own language setting by default — " +
-            "change it under Settings → Language.\n\n" +
-            "• Smarter search: results are ranked by relevance, so typing \"iron\" puts Iron first " +
-            "instead of burying it alphabetically. Typing no longer re-sorts the whole list on " +
-            "every keystroke.\n\n" +
-            "• Multi-step undo: Undo spawn now steps back through your last 20 spawns instead of " +
-            "just one, and each admin has their own history — your undo can't delete someone else's " +
-            "work.\n\n" +
-            "• Destructive actions ask first: Kill ALL loaded, Ground items, Clear trees and Ban " +
-            "now need a second click to confirm.\n\n" +
-            "• Status effects for anyone: the status-effect browser now has the same Me/any-player " +
-            "target picker as the skill browser (needs companion 2.3.0 on the target).\n\n" +
-            "• Undo actually works on dedicated servers now — the destroy silently did nothing " +
-            "server-side unless the server owned the object.\n\n" +
-            "• Scrolling panel lists no longer zooms the vanilla camera (muted at the IL level, with " +
-            "startup verification in the log). ValheimPlus's separate FirstPerson zoom gets a " +
-            "best-effort mute too.\n\n" +
-            "• Layout survives big font sizes: labels never wrap mid-word and buttons no longer " +
-            "stretch across the row.\n\n" +
-            "• Server tab: added ZDOs loaded, zones loaded and session uptime.\n\n" +
-            "• Smoother: the panel does far less work per frame across every tab, and switches to a " +
-            "readable font automatically if the game's Norse font can't draw your language.\n\n" +
-            "• If the mod has been useful, there's now a \"Buy the developer a coffee\" button in " +
+            "• 2.5.1 hotfix for Valheim 1.0.12 (the 11 Sep game update): the companion's data store, " +
+            "rule broadcasts and death rules were dead on the current game version and the server " +
+            "log filled with warnings. BOTH DLLs are 2.5.1 - server owners: update " +
+            "AdminPanelCompanion.dll on the server and restart, or the panel shows a version-mismatch " +
+            "banner and the new server features stay silent.\n\n" +
+            "• New Extras tab (9th tab): 33 optional modules for dedicated-server admins, one chip " +
+            "each — moderation (warn / mute / freeze / jail / watchlist), audit trail, tiered admin " +
+            "roles, rap sheets, server tools (MOTD, restarts, backups), diagnostics, Discord " +
+            "webhooks, player data and offline queues, economy and shops, guard, protection zones, " +
+            "build tools, map pins and map reveal, location finder, spawner manager, chest " +
+            "inspector, tames, creature editor, recipe/build blacklist, skill, death and trader " +
+            "rules, raid composer, bounty board, staff chat, item forge, client perf census and " +
+            "companion self-update.\n\n" +
+            "• Everything that changes server behaviour is OFF by default. Hide the whole tab with " +
+            "[Features] EnableExtrasTab = false in the config file.\n\n" +
+            "• Server tab is now \"server truth\": real ZDO count, per-peer ping, last-save and " +
+            "next-autosave clocks, the server's plugin roster (spots a stale companion), admin/ban " +
+            "lists, a server-side join/leave log, force save, and offline ban/unban by ID.\n\n" +
+            "• Fixed: crossplay bans keep the full platform ID (they silently did nothing before), " +
+            "force save no longer stalls the server, Server-tab state resets between servers, and " +
+            "Kill nearby has an include-tamed toggle.\n\n" +
+            "• Actions that need the target player to run the mod (inventory, skills, status " +
+            "effects, map, trader, blacklist) say so in the UI and are ignored, not broken, when " +
+            "they don't.\n\n" +
+            "• The Extras modules are new and have had far less field time than the eight base tabs. " +
+            "If something misbehaves, the Bug Report button next to this window or the Discord is " +
+            "the fastest way to get it fixed.\n\n" +
+            "• If the mod has been useful, there's a \"Buy the developer a coffee\" button in " +
             "Settings. Entirely optional — the mod is free and always will be.";
 
         // ==================== Bosses ====================

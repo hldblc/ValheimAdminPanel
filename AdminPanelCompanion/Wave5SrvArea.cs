@@ -247,7 +247,7 @@ namespace AdminPanelCompanion
             var area = Mathf.Clamp(Mathf.CeilToInt(radius / zoneSize), 1, 4);
 
             Scratch.Clear();
-            try { man.FindSectorObjects(ZoneSystem.GetZone(center), area, 0, Scratch); }
+            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), area, 0, Scratch); }
             catch (Exception e)
             {
                 Scratch.Clear();

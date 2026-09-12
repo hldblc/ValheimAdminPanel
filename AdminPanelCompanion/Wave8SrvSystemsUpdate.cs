@@ -160,7 +160,7 @@ namespace AdminPanelCompanion
         private static string Current => CompanionPlugin.PluginVersion ?? "0.0";
 
         // "v2.5.0" / "2.5" -> Version. System.Version needs at least two components.
-        private static bool TryParseVersion(string s, out Version v)
+        private static bool TryParseVersion(string s, out System.Version v)
         {
             v = null;
             if (string.IsNullOrEmpty(s)) return false;
@@ -175,7 +175,7 @@ namespace AdminPanelCompanion
             var core = sb.ToString().Trim('.');
             if (core.Length == 0) return false;
             if (core.IndexOf('.') < 0) core += ".0";
-            try { v = new Version(core); return true; }
+            try { v = new System.Version(core); return true; }
             catch (Exception) { return false; }
         }
 
@@ -192,7 +192,7 @@ namespace AdminPanelCompanion
 
             var stagedVer = ReadInfoVersion(live + InfoSuffix);
             _stagedVersion = stagedVer;
-            Version sv, cv;
+            System.Version sv, cv;   // the game ships its own global Version class
             if (TryParseVersion(stagedVer, out sv) && TryParseVersion(Current, out cv) && sv <= cv)
             {
                 // The staged build is already running (or older): it was applied last time, or is stale.
@@ -312,7 +312,7 @@ namespace AdminPanelCompanion
             if (!Enabled) { _status = StDisabled; SetMessage("Self-update is disabled: set Features.EnableSelfUpdate = true in the companion config."); SendState(sender); return; }
             if (_busy) { CompanionPlugin.NotifySender(sender, "Self-update: a check or download is still running."); SendState(sender); return; }
             if (string.IsNullOrEmpty(_assetUrl) || string.IsNullOrEmpty(_latest)) { SetMessage("Run Check first: no release asset is known yet."); SendState(sender); return; }
-            Version lv, cv;
+            System.Version lv, cv;
             if (!TryParseVersion(_latest, out lv) || !TryParseVersion(Current, out cv) || lv <= cv)
             { _status = StUpToDate; SetMessage($"Nothing to stage: {Current} is already the latest ({_latest})."); SendState(sender); return; }
             var live = LivePath();
@@ -414,7 +414,7 @@ namespace AdminPanelCompanion
             _assetUrl = url ?? "";
             _assetSize = size;
             _assetDigest = digest ?? "";
-            Version lv, cv;
+            System.Version lv, cv;
             var newer = TryParseVersion(_latest, out lv) && TryParseVersion(Current, out cv) && lv > cv;
             _status = newer ? StAvailable : StUpToDate;
             SetMessage(newer

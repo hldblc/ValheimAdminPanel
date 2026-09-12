@@ -230,9 +230,8 @@ namespace AdminPanelCompanion
             // GetPortals() hands back the LIVE list (ZDOMan.cs:1198-1201). Copy it before doing anything else:
             // reading a tag cannot mutate it today, but a mod (or a future engine change) that creates a ZDO
             // mid-walk would invalidate the enumerator, and this list is small enough that a copy is free.
-            var portals = man.GetPortals();
-            if (portals == null) return 0;
-            var snapshot = new List<ZDO>(portals);
+            var snapshot = ZoneCompat.PortalsSnapshot(man);   // per-sector table since 1.0.12, flattened copy
+            if (snapshot.Count == 0) return 0;
 
             Vector3 origin;
             var haveOrigin = TryRequesterPos(sender, out origin);
@@ -408,8 +407,8 @@ namespace AdminPanelCompanion
         private static ZDO FindPortalNear(Vector3 pos)
         {
             var man = ZDOMan.instance;
-            var portals = man != null ? man.GetPortals() : null;
-            if (portals == null) return null;
+            var portals = ZoneCompat.PortalsSnapshot(man);
+            if (portals.Count == 0) return null;
 
             ZDO best = null;
             var bestDist2 = PortalMatchRadius * PortalMatchRadius;

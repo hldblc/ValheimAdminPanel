@@ -3,7 +3,7 @@
 **The all-in-one, server-secured admin toolkit for Valheim.**
 Press **F7** in-game to open the panel — spawn anything, teleport anywhere, moderate anyone, and make the panel yours.
 
-- **Version:** `2.5.0`
+- **Version:** `2.5.1`
 - **Author / Team:** Hephaestus Labs
 - **Dependencies:** BepInEx 5.4 only — no Jötunn, no wrappers
 - **Ships:** two DLLs — `AdminPanel.dll` (client) + `AdminPanelCompanion.dll` (server-side validator)

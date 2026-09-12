@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.5.1
+
+**Hotfix for Valheim 1.0.12 (the 11 September game update). BOTH DLLs are 2.5.1** — server owners: update
+`AdminPanelCompanion.dll` on the server and restart, or the panel shows a ⚠ version-mismatch banner.
+
+2.5.0 was compiled against a copy of the game assemblies that had not been updated since July. On the
+current game the runtime silently refused every call whose signature had changed (the failures were caught
+and logged as "did nothing"). All of it was found by reading the server's own log and rebuilding against the
+live game; the projects now compile against the live install, so a future game update fails the build
+instead of failing on your server.
+
+- **The companion's data store never resolved its folder** - `World.m_fileName` no longer exists (the on-disk
+  name is `World.m_worldName` now), so nothing server-side persisted (roles, warnings, temp-bans, ledgers,
+  audit trail) and the lookup **spammed a HarmonyX warning ~30x per second** (a 213 MB `LogOutput.log` in one
+  day). The store now resolves the world name silently and caches the lookup, with a fallback to the game's
+  own DB path if the field is renamed again.
+- **Rule broadcasts and the death-rules tick failed** with `Field not found: ZRoutedRpc.Everybody` - the game
+  turned that field into a constant.
+- **Every sector walk was dead**: tombstone search, area counts and cleanup, object block collection, the
+  world scan's zone hotspots, the location finder and the "highest nearby object" helper all used the old
+  `FindSectorObjects(zone, area, ...)` shape; the game now takes a `SimulationDistance` and zone coordinates
+  are `Vector2s`. One shim (`ZoneCompat`) reproduces the old square walk on the new API.
+- **Portal list and portal rescue** read `GetPortals()` as a flat list; it is now grouped per sector index.
+- **Self-update version compare** picked up the game's own global `Version` class instead of `System.Version`.
+- **Terrain reset (Build Tools)** called `Heightmap.Poke(bool)`; the signature changed.
+- The Discord "world name" and backup path helpers used the removed `m_fileName` field and now share the
+  fixed resolver; the world scan no longer warns about the removed `m_objectsByOutsideSector` bucket.
+
+Also in this release: the in-panel **What's New** window now shows the 2.5.x notes (2.5.0 still showed the
+2.3.0 text), and the Server tab's "waiting for server data" hint names the right companion version.
+
+
 ## 2.5.0
 
 **BOTH DLLs changed** — `AdminPanel.dll` AND `AdminPanelCompanion.dll` are **2.5.0**. Server owners: update

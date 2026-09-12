@@ -14,7 +14,7 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.0";
+        public const string PluginVersion = "2.5.1";
 
         internal static CompanionPlugin Instance;
 

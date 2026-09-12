@@ -162,7 +162,7 @@ namespace AdminPanelCompanion
                 if (!_avgPingProbed)
                 {
                     _avgPingProbed = true;
-                    _avgPingField = AccessTools.Field(typeof(ZRpc), "m_averagePing");
+                    _avgPingField = typeof(ZRpc).GetField("m_averagePing", AccessTools.all);   // gone in 1.0.12; GetNetStats above is the primary path
                 }
                 if (_avgPingField != null && sp.m_rpc != null)
                 {

@@ -515,7 +515,9 @@ namespace AdminPanelCompanion
             try
             {
                 _fSectors = AccessTools.Field(typeof(ZDOMan), "m_objectsBySector");
-                _fOutside = AccessTools.Field(typeof(ZDOMan), "m_objectsByOutsideSector");
+                // Gone in 1.0.12 (the grid covers everything now). Type.GetField stays silent where
+                // AccessTools.Field would log a HarmonyX warning; a null here simply means "no outside bucket".
+                _fOutside = typeof(ZDOMan).GetField("m_objectsByOutsideSector", AccessTools.all);
                 _fById = AccessTools.Field(typeof(ZDOMan), "m_objectsByID");
             }
             catch (Exception e)
@@ -581,7 +583,7 @@ namespace AdminPanelCompanion
             var man = ZDOMan.instance;
             if (man == null) return false;
             zones = Mathf.Clamp(zones, 1, MaxZoneBlock);
-            try { man.FindSectorObjects(ZoneSystem.GetZone(center), zones, 0, result); }
+            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), zones, 0, result); }
             catch (Exception e)
             {
                 result.Clear();

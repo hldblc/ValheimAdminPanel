@@ -697,12 +697,12 @@ namespace AdminPanelCompanion
             if (man == null || !EnsurePrefabMap()) return false;
             if (_tombstoneFamily == null || _tombstoneFamily.Count == 0) return false;
 
-            Vector2i zone;
+            Vector2s zone;   // shorts since 1.0.12
             try { zone = ZoneSystem.GetZone(pos); }
             catch (Exception) { return false; }
 
             SectorScratch.Clear();
-            try { man.FindSectorObjects(zone, 1, 0, SectorScratch, null); }   // 3x3 zones around the death
+            try { ZoneCompat.FindSectorObjects(man, zone, 1, 0, SectorScratch, null); }   // 3x3 zones around the death
             catch (Exception) { SectorScratch.Clear(); return false; }
 
             var wantName = string.IsNullOrEmpty(ownerName) || ownerName == "?" ? null : ownerName;

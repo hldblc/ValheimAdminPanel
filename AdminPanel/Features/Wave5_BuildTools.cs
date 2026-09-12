@@ -792,7 +792,7 @@ namespace AdminPanel
                 // Save() early-outs unless we own the ZDO, so claim it before writing the blob back.
                 nview.ClaimOwnership();
                 _bldTcSave.Invoke(comp, null);
-                hmap.Poke(false);
+                hmap.Poke();   // Poke(int delayed = 0, bool paintOnly = false) since 1.0.12; was Poke(bool delayed)
                 BldResetGrass(hmap, origin, radius);
                 touched++;
             }

@@ -177,7 +177,7 @@ namespace AdminPanelCompanion
         // The public field is read through one small method so a future rename fails HERE (a missing
         // member surfaces when this method is JIT-compiled, i.e. at the call site's try/catch) and the
         // reply degrades to "no locations" with one log line, instead of taking the handler down.
-        private static Dictionary<Vector2i, ZoneSystem.LocationInstance>.ValueCollection Instances()
+        private static Dictionary<Vector2s, ZoneSystem.LocationInstance>.ValueCollection Instances()
         {
             try
             {

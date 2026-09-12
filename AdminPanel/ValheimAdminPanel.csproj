@@ -9,7 +9,11 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <DebugType>none</DebugType>
-    <ValheimManaged>C:\Users\HEPHAESTUS\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
+    <!-- Compile against the LIVE game install: Steam keeps it current. The steamcmd dedicated-server copy
+         below is only a fallback - it froze at build 21981590 (2026-07-12) and 2.5.0 shipped compiled against
+         it while the game had moved to 1.0.12 (World.m_fileName gone, ZRoutedRpc.Everybody now const). -->
+    <ValheimManaged Condition="Exists('C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed\assembly_valheim.dll')">C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed</ValheimManaged>
+    <ValheimManaged Condition="'$(ValheimManaged)' == ''">C:\Users\HEPHAESTUS\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
     <BepInExCore>C:\Users\HEPHAESTUS\valheim-modding\bepinex-core</BepInExCore>
   </PropertyGroup>
 

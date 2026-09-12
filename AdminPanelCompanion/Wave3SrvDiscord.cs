@@ -1014,8 +1014,7 @@ namespace AdminPanelCompanion
                 object w = AccessTools.Property(typeof(ZNet), "World")?.GetValue(null)
                            ?? AccessTools.Field(typeof(ZNet), "m_world")?.GetValue(null);
                 if (w == null) return "?";
-                var n = AccessTools.Field(w.GetType(), "m_name")?.GetValue(w) as string;
-                if (string.IsNullOrEmpty(n)) n = AccessTools.Field(w.GetType(), "m_fileName")?.GetValue(w) as string;
+                var n = FeatureStore.WorldDisplayName(w);   // display name, else on-disk name (silent reflection)
                 return string.IsNullOrEmpty(n) ? "?" : n;
             }
             catch (Exception) { return "?"; }

@@ -543,7 +543,7 @@ namespace AdminPanelCompanion
             try
             {
                 var list = new List<ZDO>();
-                ZDOMan.instance.FindSectorObjects(ZoneSystem.GetZone(from), 0, 0, list);
+                ZoneCompat.FindSectorObjects(ZDOMan.instance, ZoneSystem.GetZone(from), 0, 0, list);
                 var found = false;
                 var n = Mathf.Min(list.Count, SectorZdoCap);
                 for (var i = 0; i < n; i++)

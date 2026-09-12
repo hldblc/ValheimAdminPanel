@@ -1090,7 +1090,8 @@ namespace AdminPanelCompanion
             _saveIntervalProbed = true;
             try
             {
-                var f = AccessTools.Field(typeof(ZNet), "m_saveInterval") ?? AccessTools.Field(typeof(Game), "m_saveInterval");
+                // Silent lookups: AccessTools.Field logs a HarmonyX warning per miss, and ZNet lost this field in 1.0.12.
+                var f = typeof(Game).GetField("m_saveInterval", AccessTools.all) ?? typeof(ZNet).GetField("m_saveInterval", AccessTools.all);
                 if (f != null && f.FieldType == typeof(float)) _saveIntervalField = f;
                 else CompanionPlugin.FeatureLog("Autosave interval field not found on this game build: autosave override disabled (saves keep the game's own cadence).");
             }
@@ -1231,7 +1232,7 @@ namespace AdminPanelCompanion
                 if (w == null) return null;
                 var db = AccessTools.Method(w.GetType(), "GetDBPath", Type.EmptyTypes)?.Invoke(w, null) as string;
                 var fwl = AccessTools.Method(w.GetType(), "GetMetaPath", Type.EmptyTypes)?.Invoke(w, null) as string;
-                var name = AccessTools.Field(w.GetType(), "m_fileName")?.GetValue(w) as string;
+                var name = FeatureStore.WorldFileName(w);   // m_worldName since 1.0.12, m_fileName before
                 if (string.IsNullOrEmpty(db) || string.IsNullOrEmpty(fwl) || string.IsNullOrEmpty(name)) return null;
                 var src = AccessTools.Field(w.GetType(), "m_fileSource")?.GetValue(w);
                 var srcName = src != null ? src.ToString() : "";
