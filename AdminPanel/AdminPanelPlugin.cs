@@ -13,11 +13,11 @@ using Object = UnityEngine.Object;
 namespace AdminPanel
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    public class AdminPanelPlugin : BaseUnityPlugin
+    public partial class AdminPanelPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.4.0";
+        public const string PluginVersion = "2.5.0";
 
         internal static AdminPanelPlugin Instance;
 
@@ -28,6 +28,8 @@ namespace AdminPanel
         private ConfigEntry<string> _fontChoiceCfg;
         private ConfigEntry<int> _fontSizeCfg;
         private ConfigEntry<string> _languageCfg;
+        private ConfigEntry<bool> _gameSkinCfg;   // use Valheim's own UI textures for the panel skin
+        private ConfigEntry<bool> _logSkinCfg;    // one-time dump of loaded UI sprite names for skin tuning
         private ConfigEntry<int> _panelAlphaCfg;
         private ConfigEntry<bool> _cameraLockCfg;
         private int _fontSizeLive;      // sliders preview live via these; committed to config on mouse-release
@@ -199,6 +201,7 @@ namespace AdminPanel
         private string _bookmarkName = "";
         private string _tpX = "0", _tpY = "0", _tpZ = "0";
         private string _newGlobalKey = "";
+        private bool _killTamed;   // World -> Area Actions: include tamed creatures in the kill buttons
         private bool _peaceful;
         private Vector2 _worldScroll;
 
@@ -228,6 +231,14 @@ namespace AdminPanel
         private Vector2 _seScroll;
         private bool _showStatusEffects;
         private Vector2 _playerScroll;
+        // Player-tab sub-categories, shown as chips like the Items tab so only one section renders at a time.
+        // Order must match the gated cards in DrawPlayerTab.
+        private int _playerSubCat;
+        private int _playerSubCatLayout;   // snapshot on the Layout pass — the cards gate on THIS so a chip
+                                           // click (which flips _playerSubCat mid-frame) can't hand Repaint a
+                                           // different control count than Layout reserved.
+        private static readonly string[] PlayerSubKeys =
+        { "player.toggles", "player.multipliers", "player.quick_actions", "player.skills", "player.status_effects" };
         private bool _showSkills;
         private Vector2 _skillScroll;
         private string _skillCustom = "25";
@@ -260,11 +271,18 @@ namespace AdminPanel
         private float _nextPlayerPoll;
         private float _nextInvClean;
         private Vector2 _serverScroll;
-        private static readonly string[] RaidEvents =
+        // Raid events, split into two labelled groups with friendly display names (the Id is the vanilla
+        // event key sent to AP_SrvEvent; the Label is cosmetic). Ordered by biome progression.
+        private static readonly (string Id, string Label)[] BossRaids =
         {
-            "army_eikthyr", "army_theelder", "army_bonemass", "army_moder", "army_goblin",
-            "army_seekers", "army_gjall", "foresttrolls", "skeletons", "blobs",
-            "surtlings", "wolves", "bats", "army_charred"
+            ("army_eikthyr", "Eikthyr"), ("army_theelder", "The Elder"), ("army_bonemass", "Bonemass"),
+            ("army_moder", "Moder"), ("army_goblin", "Fuling Horde"), ("army_seekers", "Seekers"),
+            ("army_gjall", "Gjall"), ("army_charred", "Charred Legion"),
+        };
+        private static readonly (string Id, string Label)[] CreatureRaids =
+        {
+            ("foresttrolls", "Trolls"), ("skeletons", "Skeletons"), ("blobs", "Blobs"),
+            ("wolves", "Wolves"), ("bats", "Bats"), ("surtlings", "Surtlings"),
         };
 
         // ==================== Side window (What's New / Bug Report) ====================
@@ -352,6 +370,12 @@ namespace AdminPanel
         private GUIStyle _tabStyle, _catStyle, _rowEven, _rowOdd, _dimLabelStyle, _textAreaStyle;
         private GUIStyle _cellStyle, _dimCellStyle;   // fixed-width row columns: no wrap, clip overflow
         private GUIStyle _hintStyle, _proseStyle;     // the only wrapping styles: dim hint paragraphs / prose blocks
+        private GUIStyle _cardStyle, _cardHeaderStyle; // grouped section "card" box + its header
+        // Multiply-tint applied to the window wood (via GUI.backgroundColor) to deepen it to a richer, darker
+        // brown — the borrowed game panel reads a bit light on its own. Reset to white inside the window
+        // callbacks so buttons/fields/text render at full colour. Cards are near-transparent, so darkening the
+        // wood behind them darkens the card interiors too.
+        private static readonly Color PanelBgTint = new Color(0.66f, 0.53f, 0.41f, 1f);
         private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
         private Texture2D _texRule;   // thin gold rule used by DrawSection dividers
         private Texture2D _logoTex;   // embedded logo header (null = missing/failed, panel renders without it)
@@ -632,6 +656,12 @@ namespace AdminPanel
                 "Lock mouse-look while the panel is open (like the inventory). Turn off to keep the camera live.");
             _showLogoCfg = Config.Bind("UI", "ShowLogoHeader", true,
                 "Show the Advanced Admin Panel logo at the top of the panel.");
+            _gameSkinCfg = Config.Bind("UI", "UseGameSkin", true,
+                "Skin the panel with Valheim's own UI textures (borrowed from the running game — nothing is " +
+                "shipped or ripped). Turn off for the flat wood/parchment fallback.");
+            _logSkinCfg = Config.Bind("UI", "LogSkinAssets", false,
+                "Diagnostics: log the names of the game's loaded UI sprites once, so panel-skin candidates can " +
+                "be matched to what this Valheim build actually has. Leave off unless asked.");
             _autoWhatsNewCfg = Config.Bind("UI", "ShowWhatsNewOnUpdate", true,
                 "Open the What's New side panel once after the mod updates.");
             _seenVersionCfg = Config.Bind("UI", "WhatsNewSeenVersion", "",
@@ -678,6 +708,7 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Menu version-line patch failed (panel still works): {e.Message}"); }
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
             StartUpdateCheck();
+            FeaturesInit();   // additive feature modules (Features\*.cs); safe no-op if none are compiled in
         }
 
         // ValheimPlus's FirstPerson feature zooms the camera from ITS OWN UpdateCamera postfix, reading the
@@ -1155,6 +1186,7 @@ namespace AdminPanel
             _nextInfoReq = 0f; _nextListsReq = 0f; _nextJoinLogReq = 0f;
             _appliedTo = null;
             _baseWalk = -1f;                        // force a fresh base-stat capture on the next player
+            FeaturesResetSession();                 // feature modules clear their per-world state here too
         }
 
         // Persist per-player notes once, when the panel closes — instead of rewriting the whole config file on
@@ -1470,6 +1502,50 @@ namespace AdminPanel
         }
 
         // ==================== Skin ====================
+        // ==================== Valheim UI skin (runtime asset reuse) ====================
+        // The panel borrows the textures Valheim already has loaded rather than shipping ripped art — same
+        // idea as FindValheimFont, keeping the "no dependencies, nothing copyrighted redistributed" promise
+        // while matching whatever the player's game build looks like. Names were confirmed from an AssetRipper
+        // export of the game's UI/textures folder; they are STANDALONE textures (not atlas sub-sprites), so a
+        // direct Texture2D lookup + a hand-set GUIStyle 9-slice border is all it takes. Any miss falls back to
+        // the flat SolidTex skin, so a renamed/absent texture never breaks the panel — it just looks less native.
+        private bool _skinDumped;
+
+        // One-time diagnostic (config-gated): dump the loaded UI texture names, in case a future Valheim build
+        // renames them and the candidate lists need updating.
+        private void MaybeDumpSkinAssets()
+        {
+            if (_skinDumped || _logSkinCfg == null || !_logSkinCfg.Value) return;
+            _skinDumped = true;
+            try
+            {
+                var names = Resources.FindObjectsOfTypeAll<Texture2D>()
+                    .Where(t => t != null && !string.IsNullOrEmpty(t.name))
+                    .Select(t => t.name)
+                    .Where(n => new[] { "panel", "button", "field", "wood", "bkg", "separator", "darken" }
+                        .Any(k => n.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0))
+                    .Distinct().OrderBy(n => n).ToArray();
+                Logger.LogInfo($"[skin-dump] {names.Length} UI textures: {string.Join(", ", names)}");
+            }
+            catch (Exception e) { Logger.LogWarning($"skin dump failed: {e.Message}"); }
+        }
+
+        // Find a loaded game Texture2D by exact name (then substring), honoring the UseGameSkin toggle. Called
+        // once per skin build (cached), not per frame — same cost profile as FindValheimFont.
+        private Texture2D FindGameTex(params string[] names)
+        {
+            if (_gameSkinCfg == null || !_gameSkinCfg.Value) return null;
+            var texes = Resources.FindObjectsOfTypeAll<Texture2D>();
+            foreach (var want in names)
+                foreach (var t in texes)
+                    if (t != null && string.Equals(t.name, want, StringComparison.OrdinalIgnoreCase)) return t;
+            foreach (var want in names)
+                foreach (var t in texes)
+                    if (t != null && !string.IsNullOrEmpty(t.name) &&
+                        t.name.IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0) return t;
+            return null;
+        }
+
         private static Texture2D SolidTex(Color c)
         {
             // Logout runs Resources.UnloadUnusedAssets(); textures referenced only from non-serialized
@@ -1481,11 +1557,32 @@ namespace AdminPanel
             return t;
         }
 
+        // A small texture: solid fill framed by a border. Used with a matching GUIStyle.border so the frame
+        // 9-slices and stays crisp at ANY button width — the fix for buttons ranging from 26px to 300px in
+        // this panel, which a single fixed-aspect game texture cannot 9-slice cleanly. Deterministic and
+        // self-contained, so hover/pressed feedback is guaranteed (distinct fills), unlike hunting the game's
+        // button textures at runtime (unreliable: many objects are named "button"; the state variants may not
+        // be loaded, silently collapsing hover/pressed back to normal).
+        private static Texture2D BorderedTex(Color fill, Color border, int size = 10, int bw = 2)
+        {
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            { hideFlags = HideFlags.HideAndDontSave, filterMode = FilterMode.Point };
+            for (var y = 0; y < size; y++)
+                for (var x = 0; x < size; x++)
+                {
+                    var edge = x < bw || x >= size - bw || y < bw || y >= size - bw;
+                    t.SetPixel(x, y, edge ? border : fill);
+                }
+            t.Apply();
+            return t;
+        }
+
         private void EnsureSkin()
         {
             // _texWood doubles as the canary: if the asset sweep destroyed the skin textures anyway
             // (fake-null), rebuild the whole skin instead of trusting the latch.
             if (_skinReady && _texWood != null) return;
+            MaybeDumpSkinAssets();
             _texWood = SolidTex(WoodColor(_panelAlphaLive));
             _texRule = SolidTex(new Color(0.62f, 0.46f, 0.22f, 0.45f));
             var woodLight = SolidTex(new Color(0.220f, 0.160f, 0.100f, 1f));
@@ -1495,23 +1592,38 @@ namespace AdminPanel
             var parchment = new Color(0.870f, 0.790f, 0.620f);
             var gold = new Color(0.980f, 0.780f, 0.350f);
 
+            // Borrow Valheim's own wood panel + divider textures for the window/cards/rule (these 9-slice
+            // cleanly and look native). Buttons are NOT taken from the game texture — its dark-centre/gold-
+            // frame art 9-sliced badly across this panel's wide button-width range and its hover/pressed
+            // variants didn't reliably resolve at runtime; procedural bordered buttons (below) replace them.
+            var texWindow = FindGameTex("woodpanel_trophys", "woodpanel_512x512", "panel_bkg", "woodpanel");
+            var texField = FindGameTex("text_field");
+            var texSep = FindGameTex("panel_separator");
+            if (texSep != null) _texRule = texSep;   // real Valheim divider instead of the flat rule
+
             _windowStyle = new GUIStyle(GUI.skin.window);
-            _windowStyle.normal.background = _texWood;
-            _windowStyle.onNormal.background = _texWood;
+            _windowStyle.normal.background = texWindow != null ? texWindow : _texWood;
+            _windowStyle.onNormal.background = _windowStyle.normal.background;
+            if (texWindow != null) _windowStyle.border = new RectOffset(30, 30, 34, 30);  // preserve the carved frame
             _windowStyle.normal.textColor = gold;
             _windowStyle.onNormal.textColor = gold;
             _windowStyle.fontStyle = FontStyle.Bold;
             _windowStyle.fontSize = 15;
 
+            // Buttons: clean procedural bordered fills — dark wood centre, bronze/gold frame — with visibly
+            // distinct hover (brighter fill + brighter frame) and pressed (darker, recessed) states. Text
+            // stays light because the fill is dark. onNormal is the selected tab/chip state.
             _buttonStyle = new GUIStyle(GUI.skin.button);
-            _buttonStyle.normal.background = woodLight;
-            _buttonStyle.hover.background = woodHover;
-            _buttonStyle.active.background = woodActive;
-            _buttonStyle.onNormal.background = woodHover;
-            _buttonStyle.normal.textColor = parchment;
-            _buttonStyle.hover.textColor = gold;
-            _buttonStyle.active.textColor = gold;
-            _buttonStyle.onNormal.textColor = gold;
+            _buttonStyle.normal.background   = BorderedTex(new Color(0.200f, 0.145f, 0.085f, 0.98f), new Color(0.50f, 0.38f, 0.19f, 1f));
+            _buttonStyle.hover.background     = BorderedTex(new Color(0.340f, 0.245f, 0.130f, 1f),    new Color(0.90f, 0.70f, 0.34f, 1f));
+            _buttonStyle.active.background    = BorderedTex(new Color(0.120f, 0.085f, 0.050f, 1f),    new Color(0.72f, 0.55f, 0.27f, 1f));
+            _buttonStyle.onNormal.background  = BorderedTex(new Color(0.440f, 0.315f, 0.130f, 1f),    new Color(0.98f, 0.78f, 0.38f, 1f));
+            _buttonStyle.onHover.background   = _buttonStyle.hover.background;
+            _buttonStyle.border = new RectOffset(2, 2, 2, 2);   // 9-slice the 2px frame → crisp at any width
+            _buttonStyle.normal.textColor   = parchment;
+            _buttonStyle.hover.textColor    = new Color(1f, 0.92f, 0.62f);   // near-white gold pops on hover
+            _buttonStyle.active.textColor   = gold;
+            _buttonStyle.onNormal.textColor = new Color(1f, 0.92f, 0.62f);
             _buttonStyle.fontStyle = FontStyle.Bold;
 
             _labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13 };
@@ -1534,9 +1646,11 @@ namespace AdminPanel
             _headerStyle.normal.textColor = gold;
 
             _textFieldStyle = new GUIStyle(GUI.skin.textField);
-            _textFieldStyle.normal.background = fieldBg;
-            _textFieldStyle.focused.background = fieldBg;
-            _textFieldStyle.hover.background = fieldBg;
+            var fbg = texField != null ? texField : fieldBg;
+            _textFieldStyle.normal.background = fbg;
+            _textFieldStyle.focused.background = fbg;
+            _textFieldStyle.hover.background = fbg;
+            if (texField != null) _textFieldStyle.border = new RectOffset(8, 8, 8, 8);
             _textFieldStyle.normal.textColor = parchment;
             _textFieldStyle.focused.textColor = gold;
             _textFieldStyle.hover.textColor = parchment;
@@ -1561,19 +1675,16 @@ namespace AdminPanel
             // main tab bar: bigger, bolder. Tabs and chips keep the stretch that plain buttons lost —
             // eight content-width tabs can overflow the 660px minimum window at large font sizes, and the
             // evenly-filled tab bar is the intended look.
+            // Tabs and chips inherit the button's bordered normal/hover/selected backgrounds — a selected tab
+            // shows the gold bordered fill (onNormal), so no separate flat override is needed.
             _tabStyle = new GUIStyle(_buttonStyle) { fontSize = 14, stretchWidth = true };
             _tabStyle.padding = new RectOffset(12, 12, 8, 8);
             _tabStyle.margin = new RectOffset(3, 3, 4, 4);
-            var goldBg = SolidTex(new Color(0.42f, 0.30f, 0.12f, 1f));
-            _tabStyle.onNormal.background = goldBg;
-            _tabStyle.onHover.background = goldBg;
 
             // category chips: slightly smaller, clearly selected
             _catStyle = new GUIStyle(_buttonStyle) { fontSize = 12, stretchWidth = true };
             _catStyle.padding = new RectOffset(10, 10, 6, 6);
             _catStyle.margin = new RectOffset(3, 3, 4, 4);
-            _catStyle.onNormal.background = goldBg;
-            _catStyle.onHover.background = goldBg;
 
             // alternating row backgrounds for readability
             _rowEven = new GUIStyle();
@@ -1582,7 +1693,9 @@ namespace AdminPanel
             _rowOdd.normal.background = SolidTex(new Color(1f, 1f, 1f, 0.035f));
 
             _dimLabelStyle = new GUIStyle(_labelStyle) { fontSize = 12 };
-            _dimLabelStyle.normal.textColor = new Color(0.62f, 0.55f, 0.44f);
+            // Brighter than before: the old dim tone (0.62,0.55,0.44) nearly vanished into the wood — hints
+            // like the map-teleport line and coordinate readouts were unreadable (field-reported).
+            _dimLabelStyle.normal.textColor = new Color(0.82f, 0.74f, 0.60f);
 
             // Fixed-width row columns (list name cells etc.). GUI.skin.label wraps by default, so a name that
             // outgrows its column at a larger font size folded onto a second line inside a fixed-height row.
@@ -1595,6 +1708,20 @@ namespace AdminPanel
             // take a row's remaining width), where stretch+wrap is the correct behavior.
             _hintStyle = new GUIStyle(_dimLabelStyle) { wordWrap = true, stretchWidth = true };
             _proseStyle = new GUIStyle(_labelStyle) { wordWrap = true, stretchWidth = true };
+
+            // ---- Card system (the fix for "everything looks mixed") ----
+            // A card is a bordered, padded box that visually GROUPS the controls of one section, so the panel
+            // reads as a handful of labelled panels instead of one flat run-on column of rows. Prefer Valheim's
+            // real inset panel texture; fall back to a translucent inset rectangle.
+            var texCard = FindGameTex("panel_bkg_128_transparent", "panel_bkg", "skill_bkg", "darken_blob");
+            _cardStyle = new GUIStyle();
+            _cardStyle.normal.background = texCard != null ? texCard : SolidTex(new Color(1f, 1f, 1f, 0.045f));
+            if (texCard != null) _cardStyle.border = new RectOffset(12, 12, 12, 12);
+            _cardStyle.padding = new RectOffset(12, 12, 10, 12);
+            _cardStyle.margin = new RectOffset(2, 2, 0, 0);
+            // Card header: gold, bold, with a rule drawn under it by DrawCardHeader. Sits flush at the card top.
+            _cardHeaderStyle = new GUIStyle(_headerStyle) { fontSize = 14 };
+            _cardHeaderStyle.margin = new RectOffset(0, 0, 0, 6);
 
             ApplyFontSizes();   // override the hardcoded defaults above with the configured base size
 
@@ -1868,30 +1995,54 @@ namespace AdminPanel
             return null;
         }
 
-        // ==================== Section divider ====================
-        // One visual language for section breaks across all tabs: a thin gold rule, then the section
-        // title. Replaces the bare header Labels that made long tabs read as one undifferentiated column.
-        // Emits the same controls on every IMGUI pass (GetRect + Label), so control counts stay stable.
+        // ==================== Section cards ====================
+        // A "card" is a bordered, padded box grouping one section's controls, so a tab reads as a few titled
+        // panels instead of one flat run-on column (the "everything looks mixed" complaint). Every DrawSection
+        // call site becomes BeginCard(title) … EndCard(). The pair is a single GUILayout vertical group, so the
+        // control count is identical across Layout/Repaint. Header = gold title + a thin gold rule beneath.
+        private void BeginCard(string title)
+        {
+            GUILayout.BeginVertical(_cardStyle);
+            if (!string.IsNullOrEmpty(title))
+            {
+                GUILayout.Label(title, _cardHeaderStyle);
+                var r = GUILayoutUtility.GetRect(1f, 2f, GUILayout.ExpandWidth(true));
+                if (Event.current.type == EventType.Repaint && _texRule != null)
+                    GUI.DrawTexture(new Rect(r.x, r.y, r.width, 2f), _texRule);
+                GUILayout.Space(6);
+            }
+        }
+
+        private void EndCard()
+        {
+            GUILayout.EndVertical();
+            GUILayout.Space(8);   // consistent gap between cards
+        }
+
+        // Back-compat shim: a few call sites still call DrawSection. It now renders a standalone titled rule
+        // (no box) — used for sub-headers INSIDE a card, where a nested box would look busy.
         private void DrawSection(string title)
         {
-            GUILayout.Space(10);
+            GUILayout.Space(8);
+            if (!string.IsNullOrEmpty(title)) GUILayout.Label(title, _headerStyle);
             var r = GUILayoutUtility.GetRect(1f, 2f, GUILayout.ExpandWidth(true));
             if (Event.current.type == EventType.Repaint && _texRule != null)
-                GUI.DrawTexture(new Rect(r.x, r.y, r.width - 14f, 2f), _texRule);   // -14 keeps clear of the scrollbar
+                GUI.DrawTexture(new Rect(r.x, r.y, r.width - 14f, 2f), _texRule);
             GUILayout.Space(4);
-            if (!string.IsNullOrEmpty(title)) GUILayout.Label(title, _headerStyle);
         }
 
         // ==================== GUI root ====================
         private void OnGUI()
         {
+            FeaturesOnGUI();   // feature overlays (command palette etc.) — must run even with the panel closed
             if (!_visible) return;
             EnsureSkin();
             ApplyFont();
             // Keep the window sanely sized and fully on-screen. This also self-heals a bad saved size
             // (e.g. one left over from an older build) so it can never get stuck stretched off-screen.
             // Min width 660 keeps all 8 tabs clickable in one row (the tab row can't shrink below its text).
-            _windowRect.width = Mathf.Clamp(_windowRect.width, 660f, Screen.width);
+            // MinPanelWidth() = 660 + room for the Extras tab when feature modules are enabled.
+            _windowRect.width = Mathf.Clamp(_windowRect.width, MinPanelWidth(), Screen.width);
             _windowRect.height = Mathf.Clamp(_windowRect.height, 300f, Screen.height);
             _windowRect.x = Mathf.Clamp(_windowRect.x, 0f, Mathf.Max(0f, Screen.width - _windowRect.width));
             _windowRect.y = Mathf.Clamp(_windowRect.y, 0f, Mathf.Max(0f, Screen.height - _windowRect.height));
@@ -1900,9 +2051,14 @@ namespace AdminPanel
             // runaway feedback loop that stretched the panel to full screen. GUI.Window breaks that loop.
             // With the logo header shown the title text would be redundant — keep just the close hint.
             var logoShown = _logoTex != null && _showLogoCfg.Value;
+            // Deepen the wood: the tint multiplies the window background at draw time; DrawWindow resets
+            // GUI.backgroundColor to white on its first line so nothing inside is affected.
+            var prevBg = GUI.backgroundColor;
+            GUI.backgroundColor = PanelBgTint;
             _windowRect = GUI.Window(918273, _windowRect, DrawWindow,
                 logoShown ? Loc.T("chrome.title_hint", _toggleKey.Value)
                           : Loc.T("chrome.title_full", _toggleKey.Value), _windowStyle);
+            GUI.backgroundColor = prevBg;
             // Save after the user finishes moving or resizing the window (only runs while _visible).
             if (Event.current.type == EventType.MouseUp) SaveWindowRect();
 
@@ -1916,8 +2072,10 @@ namespace AdminPanel
                 var sx = _windowRect.xMax + 6f + sideW <= Screen.width
                     ? _windowRect.xMax + 6f
                     : _windowRect.x - sideW - 6f;
+                GUI.backgroundColor = PanelBgTint;
                 GUI.Window(918274, new Rect(sx, _windowRect.y, sideW, sideH), DrawSideWindow,
                     _sideMode == SideMode.WhatsNew ? "What's New" : "Bug Report", _windowStyle);
+                GUI.backgroundColor = prevBg;
             }
         }
 
@@ -1943,6 +2101,9 @@ namespace AdminPanel
 
         private void DrawWindow(int id)
         {
+            // The window background was drawn with PanelBgTint (see OnGUI). Reset to white so every control
+            // inside — buttons, fields, cards, rules, close button — renders at full colour.
+            GUI.backgroundColor = Color.white;
             // Close button pinned to the title-bar corner (same affordance as the side window's ✕).
             // Fixed-rect GUI.Button, not GUILayout — it lives outside the layout flow, so the control
             // count stays identical on every pass. Runs the same cleanup as the F7 close path.
@@ -2001,6 +2162,7 @@ namespace AdminPanel
                 var pressed = GUILayout.Toggle(_tab == i, Loc.T(TabKeys[i]), _tabStyle);
                 if (pressed && _tab != i) { _tab = i; _openDropdown = null; _rebindTarget = 0; }
             }
+            DrawFeatureTabButton();   // Extras tab (feature modules) — draws nothing when disabled
             GUILayout.EndHorizontal();
             GUILayout.Space(14);
 
@@ -2019,6 +2181,7 @@ namespace AdminPanel
                     case 5: DrawPlayersTab(); break;
                     case 6: DrawServerTab(); break;
                     case 7: DrawSettingsTab(); break;
+                    default: DrawFeaturesTab(); break;   // index 8 = Extras (feature modules)
                 }
             }
             catch (Exception ex) { Logger.LogError($"AdminPanel tab {_tab} draw error: {ex.Message}"); }
@@ -2049,7 +2212,7 @@ namespace AdminPanel
             }
             else if (_resizing && e.type == EventType.MouseDrag && e.button == 0)
             {
-                _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, 660f, Screen.width - _windowRect.x);
+                _windowRect.width = Mathf.Clamp(e.mousePosition.x + 11, MinPanelWidth(), Screen.width - _windowRect.x);
                 _windowRect.height = Mathf.Clamp(e.mousePosition.y + 11, 300f, Screen.height - _windowRect.y);
                 e.Use();
             }
@@ -2726,7 +2889,7 @@ namespace AdminPanel
         // ==================== Bosses tab ====================
         private void DrawBossesTab()
         {
-            DrawSection(Loc.T("boss.section"));
+            BeginCard(Loc.T("boss.section"));
             GUILayout.Label(Loc.T("boss.hint"), _dimLabelStyle);
             // short fixed list — size to content so it doesn't balloon to fill a tall window (leaving a dead gap)
             _bossScroll = GUILayout.BeginScrollView(_bossScroll, GUILayout.Height(Mathf.Min(ListView(140f), BossList.Length * 28f + 8f)));
@@ -2743,19 +2906,32 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
             }
             GUILayout.EndScrollView();
+            EndCard();
 
-            DrawSection(Loc.T("boss.raids"));
+            BeginCard(Loc.T("boss.raids"));
             GUILayout.Label(Loc.T("boss.raids_hint"), _dimLabelStyle);
+            GUILayout.Space(4);
+            DrawRaidGroup("boss.raids_boss", BossRaids);
+            GUILayout.Space(8);
+            DrawRaidGroup("boss.raids_creature", CreatureRaids);
+            EndCard();
+        }
+
+        // Renders one labelled group of raid buttons in a wrapped 4-per-row grid, using the friendly Label
+        // while sending the vanilla Id to the server. Called twice (boss raids, creature raids).
+        private void DrawRaidGroup(string headerKey, (string Id, string Label)[] events)
+        {
+            GUILayout.Label(Loc.T(headerKey), _dimLabelStyle);
             GUILayout.BeginHorizontal();
             var col = 0;
-            foreach (var ev in RaidEvents)
+            foreach (var (id, label) in events)
             {
-                if (GUILayout.Button(ev, _buttonStyle))
+                if (GUILayout.Button(label, _buttonStyle, GUILayout.MinWidth(120)))
                 {
-                    SrvRpc("AP_SrvEvent", ev, LocalPlayer.transform.position);
-                    Message(Loc.T("boss.msg_event", ev));
+                    SrvRpc("AP_SrvEvent", id, LocalPlayer.transform.position);
+                    Message(Loc.T("boss.msg_event", label));
                 }
-                if (++col % 5 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
+                if (++col % 4 == 0) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); }
             }
             GUILayout.EndHorizontal();
         }
@@ -2780,9 +2956,23 @@ namespace AdminPanel
         {
             var player = LocalPlayer;
             EnsureBaseStats();
-            _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(ListView(100f)));
+            if (Event.current.type == EventType.Layout) _playerSubCatLayout = _playerSubCat;
 
-            DrawSection(Loc.T("player.toggles"));
+            // Sub-category chips (mirrors the Items tab): pick a section, only that one renders below.
+            GUILayout.BeginHorizontal();
+            for (var i = 0; i < PlayerSubKeys.Length; i++)
+            {
+                var on = _playerSubCat == i;
+                if (GUILayout.Toggle(on, Loc.T(PlayerSubKeys[i]), _catStyle) && !on)
+                { _playerSubCat = i; _playerScroll = Vector2.zero; }
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6);
+
+            _playerScroll = GUILayout.BeginScrollView(_playerScroll, GUILayout.Height(ListView(130f)));
+
+            if (_playerSubCatLayout == 0) {
+            BeginCard(Loc.T("player.toggles"));
             var god = GUILayout.Toggle(_god, " " + Loc.T("player.god"), _toggleStyle);
             if (god != _god) { _god = god; player.SetGodMode(_god); Message(Loc.T("player.msg_god", OnOff(_god))); }
 
@@ -2815,7 +3005,11 @@ namespace AdminPanel
                 Message(Loc.T("player.msg_inf_weight", OnOff(weight)));
             }
 
-            DrawSection(Loc.T("player.multipliers"));
+            EndCard();
+            }
+
+            if (_playerSubCatLayout == 1) {
+            BeginCard(Loc.T("player.multipliers"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("player.speed", _speedMult.ToString("0.0")), _labelStyle, GUILayout.MinWidth(90));
             var newSpeed = GUILayout.HorizontalSlider(_speedMult, 1f, 10f, GUILayout.Width(250));
@@ -2848,7 +3042,11 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
-            DrawSection(Loc.T("player.quick_actions"));
+            EndCard();
+            }
+
+            if (_playerSubCatLayout == 2) {
+            BeginCard(Loc.T("player.quick_actions"));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(Loc.T("player.full_heal"), _buttonStyle)) { player.Heal(player.GetMaxHealth()); Message(Loc.T("player.msg_healed")); }
             if (GUILayout.Button(Loc.T("player.full_stamina"), _buttonStyle)) { player.AddStamina(player.GetMaxStamina()); Message(Loc.T("player.msg_stamina")); }
@@ -2877,27 +3075,12 @@ namespace AdminPanel
                 Message(Loc.T("player.msg_fixed_broken", broken.Count));
             }
             GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button(Loc.T("player.tp_death"), _buttonStyle))
-            {
-                var parts = _lastDeathCfg.Value.Split(',');
-                if (parts.Length == 3 &&
-                    float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var dx) &&
-                    float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var dy) &&
-                    float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var dz))
-                {
-                    player.TeleportTo(new Vector3(dx, dy + 0.5f, dz), player.transform.rotation, true);
-                    Message(Loc.T("player.msg_tp_death"));
-                }
-                else Message(Loc.T("player.msg_no_death"));
+            // (Teleport to Last Death moved to World → Teleport, where the other teleports live.)
+            EndCard();
             }
-            GUILayout.Label(string.IsNullOrEmpty(_lastDeathCfg.Value)
-                ? Loc.T("player.no_death_yet")
-                : Loc.T("player.last_death", _lastDeathCfg.Value), _dimLabelStyle);
-            GUILayout.EndHorizontal();
 
-            DrawSection(Loc.T("player.skills"));
+            if (_playerSubCatLayout == 3) {
+            BeginCard(Loc.T("player.skills"));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(Loc.T("player.skills_plus10"), _buttonStyle)) ChangeSkills(10);
             if (GUILayout.Button(Loc.T("player.skills_100"), _buttonStyle)) SetSkills(100);
@@ -2922,7 +3105,10 @@ namespace AdminPanel
                     GUILayout.Label(Loc.T("player.private_note_hint"), _hintStyle);
                 }
                 var skills = player.GetSkills();
-                _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(220));
+                // Fill the window instead of a fixed 220px stub. Reserve covers the outer Player scroll's
+                // base (130) plus this card's header + the "All skills" buttons row + the browser toggle +
+                // the "Apply to / Custom" row, so the OUTER scroll stays passive (no double scrollbar).
+                _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(ListView(280f)));
                 foreach (var type in AllSkillTypes)
                 {
                     GUILayout.BeginHorizontal();
@@ -2946,7 +3132,11 @@ namespace AdminPanel
                 GUILayout.EndScrollView();
             }
 
-            DrawSection(Loc.T("player.status_effects"));
+            EndCard();
+            }
+
+            if (_playerSubCatLayout == 4) {
+            BeginCard(Loc.T("player.status_effects"));
             _showStatusEffects = GUILayout.Toggle(_showStatusEffects, " " + Loc.T("player.show_se"), _toggleStyle);
             if (_showStatusEffects && ObjectDB.instance != null)
             {
@@ -2969,7 +3159,9 @@ namespace AdminPanel
                 // rebuilt when the search text changes, so Layout and Repaint iterate the identical list and emit an
                 // identical control count (each entry = one Horizontal row; each new bucket = one header Label).
                 var seList = FilteredStatusEffects();
-                _seScroll = GUILayout.BeginScrollView(_seScroll, GUILayout.Height(200));
+                // Fill the window instead of a fixed 200px stub (reserve = outer scroll base + this card's
+                // header + browser toggle + Search/Apply-to row), keeping the outer Player scroll passive.
+                _seScroll = GUILayout.BeginScrollView(_seScroll, GUILayout.Height(ListView(270f)));
                 if (seList.Count == 0)
                 {
                     GUILayout.Label(Loc.T("player.no_se_match"), _dimLabelStyle);
@@ -3008,6 +3200,9 @@ namespace AdminPanel
                 }
                 GUILayout.EndScrollView();
             }
+            EndCard();
+            }
+
             GUILayout.EndScrollView();
         }
 
@@ -3096,7 +3291,7 @@ namespace AdminPanel
             // the OnGUI callback. The controls always render (stable IMGUI control count); only the click acts.
             var env = EnvMan.instance;
 
-            DrawSection(Loc.T("world.time_weather"));
+            BeginCard(Loc.T("world.time_weather"));
             GUILayout.BeginHorizontal();
             _timeSlider = GUILayout.HorizontalSlider(_timeSlider, 0f, 1f, GUILayout.Width(280));
             GUILayout.Label(TimeLabel(_timeSlider), _labelStyle, GUILayout.MinWidth(50));
@@ -3129,8 +3324,9 @@ namespace AdminPanel
                 Message(string.IsNullOrEmpty(_weather) ? Loc.T("world.msg_weather_reset") : Loc.T("world.msg_weather_forced", _weather));
             }
             GUILayout.EndHorizontal();
+            EndCard();
 
-            DrawSection(Loc.T("world.wind"));
+            BeginCard(Loc.T("world.wind"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("world.wind_dir", _windAngle.ToString("0")), _labelStyle, GUILayout.MinWidth(70));
             _windAngle = GUILayout.HorizontalSlider(_windAngle, 0f, 360f, GUILayout.Width(160));
@@ -3141,13 +3337,16 @@ namespace AdminPanel
             if (_windLocked && GUILayout.Button(Loc.T("world.reset"), _buttonStyle, GUILayout.MinWidth(55)) && env != null)
             { env.ResetDebugWind(); _windLocked = false; Message(Loc.T("world.msg_wind_reset")); }
             GUILayout.EndHorizontal();
+            EndCard();
 
-            DrawSection(Loc.T("world.teleport"));
+            BeginCard(Loc.T("world.teleport"));
             GUILayout.Label(Loc.T("world.map_hint", _mapTpKey.Value), _hintStyle);
+            var pos = LocalPlayer.transform.position;
+            const float tpLbl = 135f;   // one aligned label column so every teleport row lines up
 
-            // teleport straight to an online player
+            // To a player
             GUILayout.BeginHorizontal();
-            GUILayout.Label(Loc.T("world.to_player"), _labelStyle, GUILayout.MinWidth(80));
+            GUILayout.Label(Loc.T("world.to_player"), _labelStyle, GUILayout.MinWidth(tpLbl));
             var tpOthers = _othersSnapshot ?? (_othersSnapshot = OtherPlayers());
             if (tpOthers.Count == 0) GUILayout.Label(Loc.T("world.no_others"), _dimLabelStyle);
             else foreach (var p in tpOthers)
@@ -3158,11 +3357,11 @@ namespace AdminPanel
                 }
             GUILayout.EndHorizontal();
 
-            // quick jump to known world locations (spawn + boss altars)
+            // Sacrificial stones (boss summon altars) — the game's own name for these locations
             if (ZoneSystem.instance != null)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(Loc.T("world.bosses"), _labelStyle, GUILayout.MinWidth(80));
+                GUILayout.Label(Loc.T("world.sac_stones"), _labelStyle, GUILayout.MinWidth(tpLbl));
                 var any = false;
                 foreach (var (label, loc) in QuickJumps)
                 {
@@ -3174,16 +3373,16 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
             }
 
-            var pos = LocalPlayer.transform.position;
+            // Coordinates
             GUILayout.BeginHorizontal();
-            GUILayout.Label(Loc.T("world.position"), _labelStyle, GUILayout.MinWidth(80));
-            GUILayout.Label(Loc.T("world.now_at", pos.x.ToString("0"), pos.y.ToString("0"), pos.z.ToString("0")), _dimLabelStyle, GUILayout.MinWidth(140));
+            GUILayout.Label(Loc.T("world.position"), _labelStyle, GUILayout.MinWidth(tpLbl));
+            GUILayout.Label(Loc.T("world.now_at", pos.x.ToString("0"), pos.y.ToString("0"), pos.z.ToString("0")), _dimLabelStyle, GUILayout.MinWidth(130));
             GUILayout.Label("X:", _labelStyle, GUILayout.MinWidth(18));
-            _tpX = GUILayout.TextField(_tpX, _textFieldStyle, GUILayout.Width(60));
+            _tpX = GUILayout.TextField(_tpX, _textFieldStyle, GUILayout.Width(58));
             GUILayout.Label("Y:", _labelStyle, GUILayout.MinWidth(18));
             _tpY = GUILayout.TextField(_tpY, _textFieldStyle, GUILayout.Width(50));
             GUILayout.Label("Z:", _labelStyle, GUILayout.MinWidth(18));
-            _tpZ = GUILayout.TextField(_tpZ, _textFieldStyle, GUILayout.Width(60));
+            _tpZ = GUILayout.TextField(_tpZ, _textFieldStyle, GUILayout.Width(58));
             if (GUILayout.Button(Loc.T("world.go"), _buttonStyle, GUILayout.MinWidth(40)) &&
                 float.TryParse(_tpX, out var x) && float.TryParse(_tpY, out var y) && float.TryParse(_tpZ, out var z))
             {
@@ -3192,8 +3391,30 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
+            // Last death (moved here from the Player tab — it's a teleport, so it belongs with the others)
             GUILayout.BeginHorizontal();
-            GUILayout.Label(Loc.T("world.bookmark"), _labelStyle, GUILayout.MinWidth(80));
+            GUILayout.Label(Loc.T("world.last_death_lbl"), _labelStyle, GUILayout.MinWidth(tpLbl));
+            if (GUILayout.Button(Loc.T("player.tp_death"), _buttonStyle, GUILayout.MinWidth(170)))
+            {
+                var parts = _lastDeathCfg.Value.Split(',');
+                if (parts.Length == 3 &&
+                    float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var dx) &&
+                    float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var dy) &&
+                    float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var dz))
+                {
+                    LocalPlayer.TeleportTo(new Vector3(dx, dy + 0.5f, dz), LocalPlayer.transform.rotation, true);
+                    Message(Loc.T("player.msg_tp_death"));
+                }
+                else Message(Loc.T("player.msg_no_death"));
+            }
+            GUILayout.Label(string.IsNullOrEmpty(_lastDeathCfg.Value)
+                ? Loc.T("player.no_death_yet")
+                : Loc.T("player.last_death", _lastDeathCfg.Value), _dimLabelStyle);
+            GUILayout.EndHorizontal();
+
+            // Bookmarks
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Loc.T("world.bookmark"), _labelStyle, GUILayout.MinWidth(tpLbl));
             _bookmarkName = GUILayout.TextField(_bookmarkName, _textFieldStyle, GUILayout.Width(110));
             if (GUILayout.Button(Loc.T("world.save_here"), _buttonStyle, GUILayout.MinWidth(80)) && !string.IsNullOrEmpty(_bookmarkName))
             {
@@ -3234,14 +3455,23 @@ namespace AdminPanel
                 }
                 GUILayout.EndHorizontal();
             }
+            EndCard();
 
-            DrawSection(Loc.T("world.area_actions"));
+            BeginCard(Loc.T("world.area_actions"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("world.combat"), _labelStyle, GUILayout.MinWidth(80));
-            if (GUILayout.Button(Loc.T("world.kill_50"), _buttonStyle)) KillNearby(50f, false);
+            if (GUILayout.Button(Loc.T("world.kill_50"), _buttonStyle)) KillNearby(50f, _killTamed);
             // World-wide and unrecoverable — the only one here that can wipe creatures the admin can't even see.
-            if (ConfirmButton("killAll", Loc.T("world.kill_all"))) KillNearby(100000f, false);
+            if (ConfirmButton("killAll", Loc.T("world.kill_all"))) KillNearby(100000f, _killTamed);
             if (GUILayout.Button(Loc.T("world.tame_30"), _buttonStyle)) TameNearby(30f);
+            GUILayout.EndHorizontal();
+            // KillNearby has always taken includeTamed, but both call sites hard-coded false and nothing
+            // exposed it — so tames survived every kill. Off by default keeps that behaviour; a toggle is
+            // control-count stable, so it needs no Layout snapshot.
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(84);
+            _killTamed = GUILayout.Toggle(_killTamed, " " + Loc.T("world.incl_tamed"), _toggleStyle);
+            GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("world.cleanup"), _labelStyle, GUILayout.MinWidth(80));
@@ -3262,8 +3492,9 @@ namespace AdminPanel
                 Message(Loc.T("world.msg_peaceful", OnOff(_peaceful)));
             }
             GUILayout.EndHorizontal();
+            EndCard();
 
-            DrawSection(Loc.T("world.global_keys"));
+            BeginCard(Loc.T("world.global_keys"));
             GUILayout.Label(Loc.T("world.global_keys_hint"), _hintStyle);
             if (ZoneSystem.instance != null)
             {
@@ -3281,6 +3512,7 @@ namespace AdminPanel
                 { ZoneSystem.instance.SetGlobalKey(_newGlobalKey); Message(Loc.T("world.msg_key_added", _newGlobalKey)); _newGlobalKey = ""; }
                 GUILayout.EndHorizontal();
             }
+            EndCard();
 
             GUILayout.EndScrollView();
         }
@@ -3377,7 +3609,7 @@ namespace AdminPanel
         {
             if (ZNet.instance == null) { GUILayout.Label(Loc.T("players.not_connected"), _labelStyle); return; }
 
-            DrawSection(Loc.T("players.broadcast_section"));
+            BeginCard(Loc.T("players.broadcast_section"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("players.broadcast"), _labelStyle, GUILayout.MinWidth(70));
             _broadcastText = GUILayout.TextField(_broadcastText, _textFieldStyle);
@@ -3393,8 +3625,9 @@ namespace AdminPanel
                 Message(Loc.T("players.msg_summon_all"));
             }
             GUILayout.EndHorizontal();
+            EndCard();
 
-            DrawSection(Loc.T("players.connected"));
+            BeginCard(Loc.T("players.connected"));
             _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUILayout.Height(Mathf.Min(250f, ListView(330f))));
             foreach (var info in ZNet.instance.GetPlayerList())
             {
@@ -3460,8 +3693,9 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
             }
             GUILayout.EndScrollView();
+            EndCard();
 
-            DrawSection(Loc.T("players.inv_viewer"));
+            BeginCard(Loc.T("players.inv_viewer"));
             GUILayout.Label(_inspectPlayerName ?? Loc.T("players.pick_player"), _labelStyle);
             if (_inspectPending)
             {
@@ -3488,6 +3722,7 @@ namespace AdminPanel
                 GUILayout.EndScrollView();
                 GUILayout.Label(Loc.T("players.remove_hint"), _hintStyle);
             }
+            EndCard();
         }
 
         private void RemoveFromInspected(string itemName, int amount)
@@ -3578,15 +3813,16 @@ namespace AdminPanel
             // Kick the periodic server-truth requests (time-gated; remote servers only).
             RequestServerTruth();
 
-            DrawSection(Loc.T("srv.live_stats"));
+            BeginCard(Loc.T("srv.live_stats"));
             GUILayout.Label(_statsMain, _labelStyle);
             GUILayout.Label(_statsLoad, _labelStyle);
             if (_statsHost.Length > 0) GUILayout.Label(_statsHost, _labelStyle);
             GUILayout.Label(Loc.T("srv.versions", PluginVersion, _srvCompVersion ?? Loc.T("srv.no_reply")), _labelStyle);
+            EndCard();
 
             // ---- Authoritative server block (companion 2.4.0 replies; a host IS the server already) ----
             var isHost = ZNet.instance != null && ZNet.instance.IsServer();
-            DrawSection(Loc.T("srv.truth_section"));
+            BeginCard(Loc.T("srv.truth_section"));
             if (isHost)
             {
                 GUILayout.Label(Loc.T("srv.host_local_hint"), _hintStyle);
@@ -3607,9 +3843,10 @@ namespace AdminPanel
                 if (info.PeerTotal > info.Peers.Count)
                     GUILayout.Label("  " + Loc.T("srv.list_truncated", info.PeerTotal - info.Peers.Count), _dimLabelStyle);
             }
+            EndCard();
 
             // ---- World save ----
-            DrawSection(Loc.T("srv.save_section"));
+            BeginCard(Loc.T("srv.save_section"));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(Loc.T("srv.save_now"), _buttonStyle, GUILayout.MinWidth(140)))
             {
@@ -3633,9 +3870,10 @@ namespace AdminPanel
                     GUILayout.Label(Loc.T("srv.next_autosave", FormatAgo(_srvInfo.NextAutosave)), _dimLabelStyle);
             }
             GUILayout.EndHorizontal();
+            EndCard();
 
             // ---- Access lists (server truth; remote only — a host can read its own files) ----
-            DrawSection(Loc.T("srv.lists_section"));
+            BeginCard(Loc.T("srv.lists_section"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("srv.ban_id_label"), _labelStyle, GUILayout.MinWidth(90));
             _banId = GUILayout.TextField(_banId, _textFieldStyle, GUILayout.Width(200));
@@ -3695,9 +3933,10 @@ namespace AdminPanel
                     GUILayout.EndScrollView();
                 }
             }
+            EndCard();
 
             // ---- Server plugins ----
-            DrawSection(Loc.T("srv.plugins_section"));
+            BeginCard(Loc.T("srv.plugins_section"));
             _showServerPlugins = GUILayout.Toggle(_showServerPlugins,
                 " " + Loc.T("srv.show_plugins", _srvInfo != null ? _srvInfo.PluginTotal.ToString() : "?"), _toggleStyle);
             if (_showServerPlugins)
@@ -3724,10 +3963,11 @@ namespace AdminPanel
                     GUILayout.EndScrollView();
                 }
             }
+            EndCard();
 
             // ---- Join/leave: prefer the server-side history (survives this admin's relogs) ----
             var srvLog = _srvJoinLog;
-            DrawSection(srvLog != null ? Loc.T("srv.joinlog_server") : Loc.T("srv.joinlog_title"));
+            BeginCard(srvLog != null ? Loc.T("srv.joinlog_server") : Loc.T("srv.joinlog_title"));
             if (srvLog != null)
             {
                 if (srvLog.Count == 0) GUILayout.Label(Loc.T("common.nothing_yet"), _labelStyle);
@@ -3748,6 +3988,7 @@ namespace AdminPanel
                 for (var i = 0; i < shown; i++)
                     GUILayout.Label(_joinLog[i], _labelStyle);
             }
+            EndCard();
 
             GUILayout.EndScrollView();
         }
@@ -3790,6 +4031,7 @@ namespace AdminPanel
         // ==================== Side window (What's New / Bug Report) ====================
         private void DrawSideWindow(int id)
         {
+            GUI.backgroundColor = Color.white;   // window bg drawn tinted (see OnGUI); reset for inner controls
             // Snapshot mutable state on Layout so mid-frame changes (mode switch, async status arriving,
             // cooldown expiring) can't desync IMGUI control counts (same rule as _openDropdownLayout).
             if (Event.current.type == EventType.Layout)
@@ -4044,7 +4286,7 @@ namespace AdminPanel
         {
             _settingsScroll = GUILayout.BeginScrollView(_settingsScroll, GUILayout.Height(ListView(100f)));
 
-            DrawSection(Loc.T("set.appearance"));
+            BeginCard(Loc.T("set.appearance"));
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("set.font"), _labelStyle, GUILayout.MinWidth(90));
@@ -4104,11 +4346,15 @@ namespace AdminPanel
             }
             GUILayout.Label(Loc.T("set.language_hint"), _hintStyle);
 
-            DrawSection(Loc.T("set.behavior"));
+            EndCard();
+
+            BeginCard(Loc.T("set.behavior"));
             var cam = GUILayout.Toggle(_cameraLockCfg.Value, " " + Loc.T("set.camera_lock"), _toggleStyle);
             if (cam != _cameraLockCfg.Value) { _cameraLockCfg.Value = cam; Config.Save(); }
 
-            DrawSection(Loc.T("set.panel"));
+            EndCard();
+
+            BeginCard(Loc.T("set.panel"));
             var wnAuto = GUILayout.Toggle(_autoWhatsNewCfg.Value, " " + Loc.T("set.auto_whats_new"), _toggleStyle);
             if (wnAuto != _autoWhatsNewCfg.Value) { _autoWhatsNewCfg.Value = wnAuto; Config.Save(); }
             GUILayout.BeginHorizontal();
@@ -4116,14 +4362,18 @@ namespace AdminPanel
             if (GUILayout.Button(Loc.T("set.report_bug"), _buttonStyle, GUILayout.MinWidth(130))) _sideMode = SideMode.BugReport;
             GUILayout.EndHorizontal();
 
-            DrawSection(Loc.T("set.support"));
+            EndCard();
+
+            BeginCard(Loc.T("set.support"));
             GUILayout.BeginHorizontal();
             DrawCoffeeButton(240f);
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
             GUILayout.Label(Loc.T("set.support_hint"), _hintStyle);
 
-            DrawSection(Loc.T("set.hotkeys"));
+            EndCard();
+
+            BeginCard(Loc.T("set.hotkeys"));
             DrawRebindRow(Loc.T("set.key_toggle"), _toggleKey, 1);
             DrawRebindRow(Loc.T("set.key_map_tp"), _mapTpKey, 2);
             // Emit the "listening" hint only when the Layout pass saw the rebind active (same control-count
@@ -4156,7 +4406,9 @@ namespace AdminPanel
                 }
             }
 
-            DrawSection(Loc.T("set.reset"));
+            EndCard();
+
+            BeginCard(Loc.T("set.reset"));
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(Loc.T("set.reset_window"), _buttonStyle, GUILayout.MinWidth(230)))
             {
@@ -4174,6 +4426,7 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
             GUILayout.Label(Loc.T("set.saved_hint"), _hintStyle);
+            EndCard();
 
             GUILayout.EndScrollView();
         }

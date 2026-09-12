@@ -8,13 +8,13 @@ using UnityEngine;
 namespace AdminPanelCompanion
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    public class CompanionPlugin : BaseUnityPlugin
+    public partial class CompanionPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.halitb.adminpanelcompanion";
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.4.0";
+        public const string PluginVersion = "2.5.0";
 
         internal static CompanionPlugin Instance;
 
@@ -41,6 +41,7 @@ namespace AdminPanelCompanion
             catch (Exception e) { Logger.LogWarning($"Peer leave-log patch failed (join/leave history unavailable): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(SaveTimestampPatch)); }
             catch (Exception e) { Logger.LogWarning($"Save-timestamp patch failed (last-save time unavailable): {e.Message}"); }
+            FeaturesInit();   // additive feature modules (Features*.cs); safe no-op if none are compiled in
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
         }
 
@@ -619,13 +620,19 @@ namespace AdminPanelCompanion
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             var host = HostOfPeer(uid);          // read the Steam ID BEFORE kicking (socket closes)
             var bare = BareId(host);
-            if (!string.IsNullOrEmpty(bare))
+            var banned = GetList("m_bannedList");
+            if (banned != null)
             {
-                var banned = GetList("m_bannedList");
-                if (banned != null && !banned.Contains(bare)) banned.Add(bare);
+                // Store BOTH forms. The bare id keeps every pre-existing bannedlist.txt entry working
+                // (earlier versions only ever wrote bare ids), while the full "Platform_id" is what
+                // actually matches a crossplay peer — an Xbox/PlayStation id is not a bare SteamID64,
+                // so storing only the stripped form made bans through the roster button silently no-op.
+                // OnServerUnban already removes both forms, so this stays symmetric.
+                if (!string.IsNullOrEmpty(bare) && !banned.Contains(bare)) banned.Add(bare);
+                if (!string.IsNullOrEmpty(host) && host != bare && !banned.Contains(host)) banned.Add(host);
             }
             var ok = KickByUid(uid);
-            Log($"Admin {sender} ban peer {uid} ({bare ?? "unknown"}): {(ok ? "kicked" : "peer not found")}");
+            Log($"Admin {sender} ban peer {uid} ({host ?? "unknown"}): {(ok ? "kicked" : "peer not found")}");
         }
 
         private static void OnServerUnban(long sender, string host)
@@ -633,8 +640,19 @@ namespace AdminPanelCompanion
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             var banned = GetList("m_bannedList");
             var bare = BareId(host);
-            if (banned != null) { banned.Remove(bare); banned.Remove(host); }
-            Log($"Admin {sender} unbans {bare}");
+            if (banned != null)
+            {
+                // Match on the BARE form of every stored entry rather than on the two literal spellings of
+                // what the admin typed. Bans now store both "Steam_765..." and "765...", so removing only
+                // the entered string and its bare form leaves the OTHER spelling behind and the player
+                // stays banned — which is exactly what happens when an admin unbans using the bare id.
+                var list = banned.GetList();
+                if (list != null)
+                    foreach (var entry in new List<string>(list))
+                        if (BareId(entry) == bare) banned.Remove(entry);
+                banned.Remove(host);   // belt and braces for an entry BareId cannot normalise
+            }
+            Log($"Admin {sender} unbans {bare} (all stored spellings)");
         }
 
         private static void OnServerBroadcast(long sender, string text)
