@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using BepInEx;
@@ -13,27 +12,52 @@ using UnityEngine;
 namespace AdminPanelCompanion
 {
     // ==================== Wave 2 — backups, staged restore, restarts, autosave, save integrity ====
-    // Everything in this file touches the one thing a server owner cannot re-create: the world file.
-    // The rules that shape every line below (spec-valheim-api.md §5, spec-companion.md §5.5/§8):
+    // Everything in this file touches the one thing a server owner cannot re-create: the world save.
     //
-    //  * NEVER copy .db/.fwl while ZNet.IsSaving() — SaveWorldThread renames the file underneath us
-    //    (ZNet.cs:1658 FileHelpers.ReplaceOldFile). The only safe window is after a completed save.
+    // THE 1.0.12 SAVE LAYOUT (decompile-1.0.12; FeatureStore's "World save set" section carries the line-level
+    // citations and the scanner that turns a directory into a loadable file set):
+    //  * A world lives in a CHUNKED DIRECTORY <worlds root>/<name>/ (World.GetSaveDirectory, World.cs:91) holding
+    //    ONE save generation N as _main.N.fwl2 + _main.N.db2 + _main.N.chunks + _main.N.ok plus the per-chunk
+    //    "<hh>_<ll>__<size>_<version>.chunk" files that the .chunks index names. ZNet.SaveWorldThread
+    //    (ZNet.cs:1801-1912) writes generation N+1 as NEW files (FileWriter.cs:64 File.Create, no rename), writes
+    //    _main.N+1.ok LAST and only on success (:1877-1879), then deletes generation N's four files and the
+    //    superseded chunk versions (:1880-1884). A rewritten chunk always lands under a bumped version, i.e. a
+    //    new file name (ChunkSaveMapping.CreateOrUpdate).
+    //  * The legacy <worlds root>/<name>.db + <name>.fwl pair is what a pre-chunked world still is until its first
+    //    1.0.12 save, which migrates it into the directory and renames the pair to <name>_backup_<stamp>.*
+    //    (SaveSystem.CheckMove :623-658 -> MoveToBackup :735). World.IsChunkedSave() reports the layout the world
+    //    was LOADED from (World.cs:316/386), so FeatureStore.ResolveSaveSet lets the directory on disk win.
+    //  * The engine's own backups and restores copy the WHOLE directory filtered to {.fwl2 .db2 .chunks .ok .chunk}
+    //    (SaveSystem.CopyDirectory :371-379, s_saveFileExtensions :70) and a restore renames the current directory
+    //    to <name>_backup_restore-<stamp> (SaveSystem.RestoreBackup :587-620). The engine enumerates ONE directory
+    //    level under the worlds root (FileHelpers.GetFiles :589-600), so a set two levels down is invisible to it.
+    //
+    // The rules that shape every line below (spec-valheim-api.md §5, spec-companion.md §5.5/§8):
+    //  * NEVER copy while ZNet.IsSaving() — the save thread is rewriting the directory (new generation, then the
+    //    deletions of the old one). The only safe window is after a completed save.
     //  * The completion signal is a postfix on ZNet.SaveWorldThread; ZNet.WorldSaveFinished fires from
     //    PrintWorldSaveMessage which dereferences MessageHud.instance FIRST — null on headless, so on the
-    //    exact machine this targets it may never fire (ZNet.cs:1542-1556).
+    //    exact machine this targets it may never fire (ZNet.cs:1784-1798).
     //  * That postfix runs on the SAVE WORKER THREAD: it may only set atomics. Every path resolution
-    //    (World.GetDBPath() -> Utils.GetSaveDataPath -> Application.persistentDataPath) is a Unity call and
-    //    is therefore done on the main thread from Tick, never in the postfix.
-    //  * A .db without its .fwl is not a restorable world: both files are copied, and a pair is only ever
-    //    listed/pruned/restored as a pair. Copies land as .tmp then File.Move, so a half-written file can
-    //    never appear in a listing.
-    //  * The byte copy itself runs on a WORKER THREAD. A mature world .db is hundreds of megabytes; copying
-    //    it inline froze the simulation for seconds on every interval. Everything Unity/ZNet-backed (the
-    //    paths, the backup directory, the "no save is in flight" decision) is resolved on the main thread
-    //    BEFORE the worker starts; the worker does pure System.IO and publishes its result through a
+    //    (World.GetSaveDirectory -> SaveSystem.GetWorldsSaveRootPath -> Utils.GetSaveDataPath) is done on the
+    //    main thread from Tick through FeatureStore's cached resolver, never in the postfix.
+    //  * A BACKUP SET is a loadable snapshot and is listed, pruned, staged and restored only as a whole:
+    //      chunked world: the newest complete _main.N quartet plus every .chunk file of the directory (the engine's
+    //                     own copy semantics) as <backupRoot>/<world>/<stamp>/ with an apbackup.txt manifest;
+    //      legacy world:  the .db + .fwl pair as <backupRoot>/<world>-<stamp>.db/.fwl, exactly as before.
+    //    Copies land in a ".tmp" sibling (directory or files) and are moved into place only after the copy has
+    //    been verified complete, so a half-written set can never appear in a listing.
+    //  * The byte copy runs on a WORKER THREAD (a mature world is hundreds of megabytes; copying it inline froze
+    //    the simulation for seconds). Everything Unity/ZNet-backed (the set, the backup directory, the "no save
+    //    is in flight" decision) is resolved on the main thread BEFORE the worker starts; the worker does pure
+    //    System.IO (FeatureStore.ScanChunkedSet is pure IO by contract) and publishes its result through a
     //    volatile flag that Tick picks up. Retention pruning is file IO too and runs in the same worker.
-    //  * A running server cannot swap its own live world file, so "restore" is staged and applied at the
-    //    next process start, and the current files are moved aside (never deleted).
+    //  * A running server cannot swap its own live save, so "restore" is staged (a marker file naming the set)
+    //    and applied at the next process start before the world loads: the set is copied to a sibling of the
+    //    live directory and verified, the live directory is moved aside as <name>_backup_restore-<stamp> (the
+    //    engine's own convention, never deleted), the copy is moved in and verified again before
+    //    "RESTORE APPLIED" is declared. A legacy world keeps the file-pair swap. Any definitive failure consumes
+    //    the marker and is logged/posted honestly: a restore must never apply unannounced on a later boot.
     //  * Behaviour-changing background work is OFF by default: EnableAutoBackup (writes to disk) and
     //    EnableScheduledRestart (terminates the process) both default false.
     internal static class Wave2Backup
@@ -49,17 +73,23 @@ namespace AdminPanelCompanion
         private const string KeyAutosaveMin = "autosave_min";
         private const string KeyRestoreStaged = "restore_staged";   // "<backupName>|<stagedTicksUtc>"
 
-        // ---- wire caps (contract: AP_BackupData ships at most 30 pairs, newest first) ----
+        // ---- wire caps (contract: AP_BackupData ships at most 30 sets, newest first) ----
         private const int BackupShipCap = 30;
         private const int MaxNameLen = 128;
         private const int MaxReasonLen = 200;
         private const int MaxRestartMinutes = 10080;   // one week; longer is a calendar, not a countdown
 
+        // ---- on-disk names ----
+        private const string BackupRootName = "adminpanel_backups";
+        private const string ManifestName = "apbackup.txt";     // written LAST into a chunked set: "this set is complete"
+        private const string TmpSuffix = ".tmp";                // half-copied set (directory or file); never listed
+        private const string StampFormat = "yyyyMMdd-HHmmss";   // SaveSystem.s_defaultDateFormat (SaveSystem.cs:68)
+
         // ---- tuning ----
-        private const double FreeSpaceFactor = 3d;      // refuse a backup under 3x the .db size free
+        private const double FreeSpaceFactor = 3d;      // refuse a backup under 3x the set size free
         private const float SaveWaitSeconds = 300f;     // give up waiting for a save to finish
         private const long SlowSaveMs = 20000;          // integrity warning threshold
-        private const double ShrinkRatio = 0.75d;       // .db smaller than 75% of the previous one
+        private const double ShrinkRatio = 0.75d;       // set smaller than 75% of the previous one
         private const double WarnThrottleMinutes = 10d;
         private const int AutosaveMinMinutes = 5;
         private const int AutosaveMaxMinutes = 120;
@@ -97,6 +127,19 @@ namespace AdminPanelCompanion
         private static string _copyModLog = "";
         private static List<string> _copyLog;      // what the worker would have logged; emitted from Tick
 
+        // Built on the main thread, then owned by the worker alone: plain strings, ints and a list of paths.
+        private sealed class CopyJob
+        {
+            public bool Chunked;
+            public string WorldName;
+            public int Generation;        // chunked: the _main.N generation the set was resolved to
+            public List<string> Files;    // absolute source paths (chunked: quartet then chunks; legacy: db, fwl)
+            public string SetParent;      // chunked: <backupRoot>/<world>; legacy: <backupRoot>
+            public string Name;           // chunked: the stamp directory; legacy: the "<world>-<stamp>" file stem
+            public string StagedName;     // the set staged for restore is never pruned ("" = none)
+            public int Keep;
+        }
+
         // ---- save observation. The two volatiles below are written on the SAVE WORKER THREAD. ----
         private static long _saveThreadStartTicks;       // Interlocked
         private static long _saveCompletions;            // Interlocked counter
@@ -105,8 +148,9 @@ namespace AdminPanelCompanion
         private static volatile bool _saveSignal;        // "a save finished since we started waiting"
 
         private static long _lastSaveEndTicksUtc;
-        private static long _lastDbBytes;
-        private static long _prevDbBytes;
+        private static long _lastSetBytes;               // size of the complete save set after the last save
+        private static long _prevSetBytes;
+        private static int _lastSetGeneration = -1;      // chunked: _main.N after the last save (-1 legacy/unknown)
         private static string _saveWarning = "";
         private static long _saveWarningTicks;            // warnings expire so health recovers on its own
         private const double WarnExpiryMinutes = 30d;
@@ -122,13 +166,12 @@ namespace AdminPanelCompanion
         private static float _quitAt;
 
         // ---- autosave override ----
-        private static FieldInfo _saveIntervalField;
-        private static bool _saveIntervalProbed;
         private static float _defaultSaveIntervalSeconds = -1f;
         private static bool _autosaveApplied;
 
         // ---- staged restore ----
-        private static string _restoreApplied;           // set by Init, reported once the store is readable
+        private static string _restoreApplied;           // set by Init on success, reported once the store is readable
+        private static string _restoreFailed;            // set by Init on a definitive failure, reported the same way
         private static bool _restoreReported;
 
         private static float _nextTick;
@@ -149,13 +192,13 @@ namespace AdminPanelCompanion
             if (cfg != null)
             {
                 _enableAutoBackup = cfg.Bind("Features", "EnableAutoBackup", false,
-                    "Copy the world .db + .fwl into BackupDir on a timer. OFF by default: it writes to disk on a schedule. Manual backups from the panel work regardless of this setting.");
+                    "Copy the world save set (the chunked save directory's current generation, or a legacy world's .db + .fwl pair) into BackupDir on a timer. OFF by default: it writes to disk on a schedule. Manual backups from the panel work regardless of this setting.");
                 _backupIntervalMinutes = cfg.Bind("Features", "BackupIntervalMinutes", 60,
                     "Minutes between automatic backups (minimum 10). Each backup forces a world save first and copies only after it completes.");
                 _backupKeep = cfg.Bind("Features", "BackupKeep", 10,
-                    "How many complete .db+.fwl backup pairs to keep. Older pairs are pruned oldest-first (minimum 1).");
+                    "How many complete backup sets to keep per world. Older sets are pruned oldest-first (minimum 1); a set staged for restore is never pruned.");
                 _backupDir = cfg.Bind("Features", "BackupDir", "",
-                    "Absolute directory for backups. Empty = <world folder>/adminpanel_backups.");
+                    "Absolute directory for backups. Empty = <worlds root>/adminpanel_backups. A chunked world's sets land in <BackupDir>/<world>/<stamp>/, a legacy world's pairs directly in <BackupDir>.");
                 _enableScheduledRestart = cfg.Bind("Features", "EnableScheduledRestart", false,
                     "Allow a scheduled restart to actually terminate the server process. OFF by default: the countdown still announces, then logs 'restart suppressed' instead of quitting, so announcements can be tested safely.");
             }
@@ -217,7 +260,7 @@ namespace AdminPanelCompanion
 
         // Stacked alongside CompanionPlugin.SaveTimestampPatch on the same method — sanctioned by
         // spec-companion.md §8.3. BOTH halves run on the save worker thread: they may only touch atomics.
-        // No ZNet/Unity/World access here (World.GetDBPath() reaches Application.persistentDataPath).
+        // No ZNet/Unity/World access here (World.GetSaveDirectory reaches Utils.GetSaveDataPath).
         [HarmonyPatch(typeof(ZNet), "SaveWorldThread")]
         internal static class SaveWatchPatch
         {
@@ -235,7 +278,10 @@ namespace AdminPanelCompanion
             }
         }
 
-        // Main thread: pick up whatever the worker recorded, measure the resulting .db, raise warnings.
+        // Main thread: pick up whatever the worker recorded, measure the resulting save set, raise warnings.
+        // The set is measured once per completed save (a stat per file of the chunked directory): the save
+        // thread has already deleted the previous generation by the time the postfix fires, so the directory
+        // is consistent even though IsSaving() may still be true until UpdateSave joins the thread.
         private static void ObserveSaves()
         {
             var done = Interlocked.Read(ref _saveCompletions);
@@ -243,26 +289,23 @@ namespace AdminPanelCompanion
             {
                 _processedCompletions = done;
                 _lastSaveEndTicksUtc = DateTime.UtcNow.Ticks;
-                var wp = ResolveWorldPaths();
-                if (wp != null)
+                // Cheap on purpose: this runs on the main thread after EVERY save. Only the main data file is
+                // measured (_main.N.db2, or the legacy .db): a handful of stats, never a per-chunk sweep of the
+                // save directory. The full set is scanned only when a backup is actually taken.
+                var layout = FeatureStore.ResolveSaveLayout();
+                long bytes; int generation;
+                if (layout != null && !layout.IsCloud && TryMainDataSize(layout, out bytes, out generation))
                 {
-                    try
-                    {
-                        if (File.Exists(wp.Db))
-                        {
-                            var size = new FileInfo(wp.Db).Length;
-                            _prevDbBytes = _lastDbBytes;
-                            _lastDbBytes = size;
-                        }
-                    }
-                    catch (Exception) { }
+                    _prevSetBytes = _lastSetBytes;
+                    _lastSetBytes = bytes;
+                    _lastSetGeneration = generation;
                 }
 
                 var ms = Interlocked.Read(ref _lastSaveDurationMs);
                 if (ms > SlowSaveMs)
                     RaiseSaveWarning("slow", $"World save took {ms / 1000.0:0.0}s (over {SlowSaveMs / 1000}s). Disk or storage backend may be struggling.");
-                if (_prevDbBytes > 0 && _lastDbBytes > 0 && _lastDbBytes < (long)(_prevDbBytes * ShrinkRatio))
-                    RaiseSaveWarning("shrink", $"World .db shrank from {_prevDbBytes / 1024} KB to {_lastDbBytes / 1024} KB in one save. Check for mass object loss BEFORE the next save overwrites it.");
+                if (_prevSetBytes > 0 && _lastSetBytes > 0 && _lastSetBytes < (long)(_prevSetBytes * ShrinkRatio))
+                    RaiseSaveWarning("shrink", $"World data file shrank from {Mb(_prevSetBytes)} to {Mb(_lastSetBytes)} in one save. Check for mass object loss BEFORE the next save overwrites it.");
             }
 
             // Stale-save watchdog: nothing has completed for 3x the autosave interval.
@@ -275,6 +318,50 @@ namespace AdminPanelCompanion
                 if (sinceSeconds > interval * 3f)
                     RaiseSaveWarning("stale", $"No world save has completed for {(int)(sinceSeconds / 60)} min (autosave interval is {(int)(interval / 60)} min). Saving may be broken.");
             }
+        }
+
+        // Size of the world's main data file (chunked: _main.N.db2 of the newest generation that has its .ok
+        // marker; legacy: the .db). Directory.GetFiles with a narrow pattern plus one FileInfo - no chunk sweep.
+        private static bool TryMainDataSize(FeatureStore.WorldSaveSet layout, out long bytes, out int generation)
+        {
+            bytes = 0; generation = -1;
+            try
+            {
+                if (!layout.Chunked)
+                {
+                    if (string.IsNullOrEmpty(layout.LegacyDb) || !File.Exists(layout.LegacyDb)) return false;
+                    bytes = new FileInfo(layout.LegacyDb).Length;
+                    return true;
+                }
+                if (string.IsNullOrEmpty(layout.SaveDirectory) || !Directory.Exists(layout.SaveDirectory)) return false;
+                foreach (var ok in Directory.GetFiles(layout.SaveDirectory, "_main.*.ok"))
+                {
+                    var stem = Path.GetFileNameWithoutExtension(ok);   // "_main.N"
+                    int n;
+                    if (stem.Length > 6 && int.TryParse(stem.Substring(6), NumberStyles.Integer, CultureInfo.InvariantCulture, out n) && n > generation)
+                        generation = n;
+                }
+                if (generation < 0) return false;
+                var db2 = Path.Combine(layout.SaveDirectory, "_main." + generation + ".db2");
+                if (!File.Exists(db2)) return false;
+                bytes = new FileInfo(db2).Length;
+                return true;
+            }
+            catch (Exception) { return false; }
+        }
+
+        // Where a set that failed to verify after a restore is parked: next to the backup sets when that
+        // parent is reachable (the engine never looks there), else a dot-named sibling of the live folder.
+        private static string FailedRestoreParkingPath(string source, string liveDir, string stamp)
+        {
+            try
+            {
+                var parent = !string.IsNullOrEmpty(source) ? Path.GetDirectoryName(source) : null;
+                if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                    return Path.Combine(parent, "failedrestore-" + stamp);
+            }
+            catch (Exception) { }
+            return liveDir + ".failedrestore-" + stamp;
         }
 
         private static void RaiseSaveWarning(string key, string text)
@@ -299,17 +386,21 @@ namespace AdminPanelCompanion
             SendBackupData(sender);
         }
 
+        // AP_BackupData v1 (unchanged wire format): int ver=1, int shipped(<=30) x (string name, long sizeBytes,
+        // long ticksUtc) newest first, bool autoOn, int intervalMinutes, string lastError. "name" is what the
+        // panel sends back in AP_SrvBackupStage: a chunked set's stamp directory, a legacy pair's file stem.
         private static void SendBackupData(long sender)
         {
             var pkg = new ZPackage();
             pkg.Write(1);   // payload version — bump, never reorder
 
-            var list = ListBackups(ResolveBackupDir());
+            var set = FeatureStore.ResolveSaveLayout();   // layout only: this is polled every 20 s
+            var list = ListBackups(BackupSetParent(set), set != null && set.Chunked);
             var shipped = Math.Min(list.Count, BackupShipCap);
             pkg.Write(shipped);
             for (var i = 0; i < shipped; i++)
             {
-                pkg.Write(list[i].Name);     // base name, no extension: the pair is <name>.db + <name>.fwl
+                pkg.Write(list[i].Name);
                 pkg.Write(list[i].Bytes);
                 pkg.Write(list[i].Ticks);
             }
@@ -328,7 +419,7 @@ namespace AdminPanelCompanion
             if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
             if (!CompanionPlugin.SenderCanFeature(sender, "AP_SrvBackupNow")) return;
 
-            CompanionPlugin.SrvAudit(sender, "BACKUP-NOW", $"dir={ResolveBackupDir() ?? "?"}");
+            CompanionPlugin.SrvAudit(sender, "BACKUP-NOW", $"dir={BackupSetParent(FeatureStore.ResolveSaveLayout()) ?? "?"}");
             var admin = CompanionPlugin.SenderDisplayName(sender);
             CompanionPlugin.FeatureLog($"Manual backup requested by {admin}");
             StartBackup(sender);
@@ -353,6 +444,13 @@ namespace AdminPanelCompanion
                 {
                     CompanionPlugin.NotifySender(requester, "Backup refused: " + why);
                     SendBackupData(requester);
+                }
+                else
+                {
+                    // The timer counts from the refusal, not from the last success: otherwise a world that
+                    // cannot be backed up right now (never saved yet, low disk) is re-refused - and re-logged -
+                    // on every one-second tick until it can.
+                    _lastBackupTicksUtc = DateTime.UtcNow.Ticks;
                 }
                 return;
             }
@@ -416,7 +514,7 @@ namespace AdminPanelCompanion
             {
                 // Both conditions matter: the postfix fires on the worker thread the moment the write
                 // finishes, but IsSaving() (m_saveThread != null) stays true until UpdateSave clears it on
-                // the main thread. Copying between those two points is still unsafe.
+                // the main thread (ZNet.cs:1766-1780). Copying between those two points is still unsafe.
                 if (_saveSignal && !ZNet.instance.IsSaving())
                 {
                     _saveSignal = false;
@@ -461,14 +559,15 @@ namespace AdminPanelCompanion
             StartBackup(0);
         }
 
-        // Recover "when did we last back up" from the newest pair ON DISK, once per world. Without this a
+        // Recover "when did we last back up" from the newest set ON DISK, once per world. Without this a
         // server that restarts often would take a fresh backup on every boot.
         private static bool SeedLastBackupTime()
         {
             if (_backupSeeded) return true;
-            var dir = ResolveBackupDir();
-            if (dir == null) return false;   // no world yet — try again next tick
-            var list = ListBackups(dir);
+            var set = FeatureStore.ResolveSaveLayout();
+            var parent = BackupSetParent(set);
+            if (parent == null) return false;   // no world yet — try again next tick
+            var list = ListBackups(parent, set.Chunked);
             _lastBackupTicksUtc = list.Count > 0 ? list[0].Ticks : DateTime.UtcNow.Ticks;
             _backupSeeded = true;
             return true;
@@ -477,38 +576,36 @@ namespace AdminPanelCompanion
         private static bool PreflightBackup(out string why)
         {
             why = "";
-            var wp = ResolveWorldPaths();
-            if (wp == null) { why = "no world is loaded"; return false; }
-            if (wp.IsCloud)
+            var set = FeatureStore.ResolveSaveSet();
+            if (set == null) { why = "no world is loaded"; return false; }
+            if (set.IsCloud)
             {
-                why = $"the world is stored on a cloud save ({wp.Source}); a file copy cannot back it up safely";
+                why = $"the world is stored on a cloud save ({set.Source}); a file copy cannot back it up safely";
                 return false;
             }
-            if (!File.Exists(wp.Db) || !File.Exists(wp.Fwl))
+            if (!set.Complete)
             {
-                why = "the world .db/.fwl are not both present on disk yet";
+                why = DescribeIncomplete(set);
                 return false;
             }
-            var dir = ResolveBackupDir();
-            if (dir == null) { why = "the backup directory could not be resolved"; return false; }
-            try { Directory.CreateDirectory(dir); }
+            var parent = BackupSetParent(set);
+            if (parent == null) { why = "the backup directory could not be resolved"; return false; }
+            try { Directory.CreateDirectory(parent); }
             catch (Exception e) { why = "cannot create the backup directory: " + e.Message; return false; }
 
-            long dbSize;
-            try { dbSize = new FileInfo(wp.Db).Length; }
-            catch (Exception e) { why = "cannot read the world .db: " + e.Message; return false; }
-
-            // Free-space guard. If the drive cannot be queried (exotic mount, permissions) we proceed
-            // rather than block backups forever — the copy itself will fail loudly if the disk is full.
+            // Free-space guard on the set's total size. If the drive cannot be queried (exotic mount,
+            // permissions) we proceed rather than block backups forever — the copy itself will fail loudly
+            // if the disk is full.
             try
             {
-                var root = Path.GetPathRoot(Path.GetFullPath(dir));
+                var root = Path.GetPathRoot(Path.GetFullPath(parent));
                 if (!string.IsNullOrEmpty(root))
                 {
                     var free = new DriveInfo(root).AvailableFreeSpace;
-                    if (free < (long)(dbSize * FreeSpaceFactor))
+                    var need = (long)(set.Bytes * FreeSpaceFactor);
+                    if (free < need)
                     {
-                        why = $"only {free / 1048576} MB free on {root}, need {(long)(dbSize * FreeSpaceFactor) / 1048576} MB ({FreeSpaceFactor}x the world size)";
+                        why = $"only {free / 1048576} MB free on {root}, need {need / 1048576} MB ({FreeSpaceFactor}x the save set of {Mb(set.Bytes)})";
                         return false;
                     }
                 }
@@ -517,35 +614,58 @@ namespace AdminPanelCompanion
             return true;
         }
 
-        // MAIN THREAD. Resolves everything that needs Unity/ZNet/config — the world paths, the backup
-        // directory, the unique name and the "no save is in flight" decision — and then hands the byte copy
-        // to a worker. Returns false when the copy could not even be started (_lastError says why).
+        private static string DescribeIncomplete(FeatureStore.WorldSaveSet set)
+        {
+            if (set.Chunked)
+            {
+                if (set.Generation < 0)
+                    return $"the save directory {set.SaveDirectory} has no complete _main.N generation yet (the world has not been saved by this game build)";
+                return $"save generation {set.Generation} in {set.SaveDirectory} is missing chunk file(s) named by its index; nothing loadable to copy until the next save";
+            }
+            if (set.Files.Count == 0)
+                return "the world has no save on disk yet: neither a chunked save directory with a finished generation nor a legacy .db + .fwl pair exists (a world that has never been saved reports this)";
+            return "the legacy .db + .fwl pair is incomplete on disk (one of the two files is missing)";
+        }
+
+        // MAIN THREAD. Resolves everything that needs Unity/ZNet/config — the save set, the backup directory,
+        // the unique name and the "no save is in flight" decision — and then hands the byte copy to a worker.
+        // Returns false when the copy could not even be started (_lastError says why).
         private static bool BeginCopy()
         {
-            var wp = ResolveWorldPaths();
-            var dir = ResolveBackupDir();
-            if (wp == null || dir == null) { _lastError = "no world / backup directory at copy time"; return false; }
+            var set = FeatureStore.ResolveSaveSet();
+            var parent = BackupSetParent(set);
+            if (set == null || parent == null) { _lastError = "no world / backup directory at copy time"; return false; }
+            if (set.IsCloud) { _lastError = "the world is on a cloud save"; return false; }
             if (ZNet.instance.IsSaving()) { _lastError = "a save started again before the copy could run"; return false; }
             if (_copyBusy) { _lastError = "the previous backup copy is still running"; return false; }
+            if (!set.Complete) { _lastError = DescribeIncomplete(set); return false; }
 
-            string baseName;
+            string name;
             try
             {
-                Directory.CreateDirectory(dir);
-                baseName = UniqueBackupName(dir, wp.FileName);
+                Directory.CreateDirectory(parent);
+                name = UniqueSetName(parent, set);
             }
             catch (Exception e) { _lastError = "cannot prepare the backup directory: " + e.Message; return false; }
 
-            var srcDb = wp.Db;
-            var srcFwl = wp.Fwl;
-            var keep = BackupKeep;   // a ConfigEntry read: taken here so the worker touches nothing but System.IO
+            var job = new CopyJob
+            {
+                Chunked = set.Chunked,
+                WorldName = set.WorldName,
+                Generation = set.Generation,
+                Files = new List<string>(set.Files),
+                SetParent = parent,
+                Name = name,
+                StagedName = StagedBackupName(),
+                Keep = BackupKeep,   // ConfigEntry/store reads happen here so the worker touches nothing but System.IO
+            };
             _copyBusy = true;
             _copyDone = false;
             _copyOk = false;
             _copyError = "";
             _copyModLog = "";
             _copyLog = null;
-            try { Task.Run(() => CopyWorker(srcDb, srcFwl, dir, baseName, keep)); }
+            try { Task.Run(() => CopyWorker(job)); }
             catch (Exception e)
             {
                 _copyBusy = false;
@@ -555,35 +675,67 @@ namespace AdminPanelCompanion
             return true;
         }
 
-        // WORKER THREAD. Pure System.IO: no Unity, no ZNet, no FeatureStore, no logging. Copies to .tmp then
-        // File.Move so a half-copied file is never listed or restored, and publishes the outcome through
-        // _copyDone for TickBackup to report.
-        private static void CopyWorker(string srcDb, string srcFwl, string dir, string baseName, int keep)
+        // WORKER THREAD. Pure System.IO: no Unity, no ZNet, no store, no logging. A chunked set is copied into
+        // "<stamp>.tmp/", verified as a loadable set (FeatureStore.ScanChunkedSet), given its manifest and only
+        // then renamed to "<stamp>/"; a legacy pair goes through .tmp files the same way. So a half-copied set is
+        // never listed or restored. The outcome is published through _copyDone for TickBackup to report.
+        private static void CopyWorker(CopyJob job)
         {
             var log = new List<string>();
             var ok = false;
             var err = "";
             var modLog = "";
-            string tmpDb = null, tmpFwl = null;
+            string tmpDir = null, tmpDb = null, tmpFwl = null;
             try
             {
-                var db = Path.Combine(dir, baseName + ".db");
-                var fwl = Path.Combine(dir, baseName + ".fwl");
-                tmpDb = db + ".tmp";
-                tmpFwl = fwl + ".tmp";
+                if (job.Chunked)
+                {
+                    tmpDir = Path.Combine(job.SetParent, job.Name + TmpSuffix);
+                    if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+                    Directory.CreateDirectory(tmpDir);
+                    var skipped = 0;
+                    foreach (var src in job.Files)
+                    {
+                        try { CopySnapshot(src, Path.Combine(tmpDir, Path.GetFileName(src))); }
+                        catch (Exception e) when ((e is FileNotFoundException || e is DirectoryNotFoundException)
+                                                  && src.EndsWith(".chunk", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // A save finished while this copy ran and DeleteOldChunks removed a superseded chunk
+                            // version (ZNet.cs:1884). Only the chunks the index names matter, and the verification
+                            // below refuses the set if one of THOSE is missing; a stale vintage is not part of it.
+                            skipped++;
+                        }
+                    }
 
-                CopySnapshot(srcDb, tmpDb);
-                CopySnapshot(srcFwl, tmpFwl);
-                File.Move(tmpDb, db);
-                tmpDb = null;
-                File.Move(tmpFwl, fwl);
-                tmpFwl = null;
-
-                var bytes = 0L;
-                try { bytes = new FileInfo(db).Length + new FileInfo(fwl).Length; } catch (Exception) { }
-                log.Add($"Backup written: {baseName} ({bytes / 1024} KB) in {dir}");
-                modLog = $"BACKUP {baseName} ({bytes / 1024} KB)";
-                PruneBackups(dir, keep, log);
+                    var scan = FeatureStore.ScanChunkedSet(tmpDir);
+                    if (!scan.Complete || scan.Generation != job.Generation || scan.Files.Count + skipped != job.Files.Count)
+                        throw new IOException(
+                            $"the copied set is not loadable (generation {scan.Generation} vs {job.Generation}, {scan.Files.Count}/{job.Files.Count} files, {scan.MissingIndexed.Count} indexed chunk(s) missing)");
+                    WriteManifest(tmpDir, job.WorldName, scan);
+                    var final = Path.Combine(job.SetParent, job.Name);
+                    Directory.Move(tmpDir, final);
+                    tmpDir = null;
+                    log.Add($"Backup written: {job.Name} (generation {scan.Generation}, {scan.Files.Count} files, {Mb(scan.Bytes)}) in {job.SetParent}");
+                    modLog = $"BACKUP {job.Name} ({scan.Files.Count} files, {Mb(scan.Bytes)})";
+                }
+                else
+                {
+                    var db = Path.Combine(job.SetParent, job.Name + ".db");
+                    var fwl = Path.Combine(job.SetParent, job.Name + ".fwl");
+                    tmpDb = db + TmpSuffix;
+                    tmpFwl = fwl + TmpSuffix;
+                    CopySnapshot(job.Files[0], tmpDb);
+                    CopySnapshot(job.Files[1], tmpFwl);
+                    File.Move(tmpDb, db);
+                    tmpDb = null;
+                    File.Move(tmpFwl, fwl);
+                    tmpFwl = null;
+                    var bytes = 0L;
+                    try { bytes = new FileInfo(db).Length + new FileInfo(fwl).Length; } catch (Exception) { }
+                    log.Add($"Backup written: {job.Name} ({Mb(bytes)}) in {job.SetParent}");
+                    modLog = $"BACKUP {job.Name} ({Mb(bytes)})";
+                }
+                PruneBackups(job.SetParent, job.Chunked, job.Keep, job.StagedName, log);
                 ok = true;
             }
             catch (Exception e)
@@ -593,6 +745,7 @@ namespace AdminPanelCompanion
             }
             finally
             {
+                try { if (tmpDir != null && Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true); } catch (Exception) { }
                 try { if (tmpDb != null && File.Exists(tmpDb)) File.Delete(tmpDb); } catch (Exception) { }
                 try { if (tmpFwl != null && File.Exists(tmpFwl)) File.Delete(tmpFwl); } catch (Exception) { }
                 _copyOk = ok;
@@ -604,11 +757,13 @@ namespace AdminPanelCompanion
         }
 
         // The source is opened with FileShare.ReadWrite | FileShare.Delete deliberately. While this copy runs
-        // the game may finish a save, and SaveWorldThread swaps the live .db in by RENAMING it aside
-        // (FileHelpers.ReplaceOldFile). File.Copy holds the source without FileShare.Delete, so that rename
-        // would fail on the save thread — a backup must never be able to break a save. With these flags the
-        // save proceeds untouched and this handle keeps reading the complete pre-save file it opened, which
-        // is exactly the snapshot a backup wants.
+        // the game may start and finish a save: SaveWorldThread never rewrites a file in place (every file is
+        // File.Create'd under a new generation number or chunk version, FileWriter.cs:64), but on success it
+        // DELETES the previous generation's _main files and the superseded chunk versions (ZNet.cs:1880-1884)
+        // - the very files this copy holds open. Without FileShare.Delete that delete would fail on the save
+        // thread; a backup must never be able to break a save. With it the save proceeds untouched and this
+        // handle keeps reading the complete file it opened. A file of the set that was deleted before this
+        // copy reached it simply fails the copy (reported honestly; the next interval retries).
         private static void CopySnapshot(string src, string dst)
         {
             const int Buf = 1 << 16;
@@ -618,40 +773,135 @@ namespace AdminPanelCompanion
                 input.CopyTo(output, Buf);
         }
 
-        private static string UniqueBackupName(string dir, string worldFile)
+        // Chunked: "<stamp>" directory under <backupRoot>/<world>/; legacy: "<world>-<stamp>" file stem, as before.
+        private static string UniqueSetName(string parent, FeatureStore.WorldSaveSet set)
         {
-            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-            var name = worldFile + "-" + stamp;
+            var stamp = DateTime.UtcNow.ToString(StampFormat, CultureInfo.InvariantCulture);
+            var stem = set.Chunked ? stamp : set.WorldName + "-" + stamp;
+            var name = stem;
             var n = 2;
-            while (File.Exists(Path.Combine(dir, name + ".db")) && n < 100)
-                name = worldFile + "-" + stamp + "-" + n++;
+            while (n < 100 && (set.Chunked
+                       ? Directory.Exists(Path.Combine(parent, name)) || Directory.Exists(Path.Combine(parent, name + TmpSuffix))
+                       : File.Exists(Path.Combine(parent, name + ".db"))))
+                name = stem + "-" + n++;
             return name;
         }
 
-        // Retention counts COMPLETE pairs only; a lone .db is never counted and never deletes a good pair.
-        // WORKER THREAD (called from CopyWorker): it is file IO like the copy, so `keep` arrives pre-read and
-        // log lines are collected instead of emitted.
-        private static void PruneBackups(string dir, int keep, List<string> log)
+        // ---- manifest: one small file per chunked set so a listing costs two stats per set, not one per chunk ----
+
+        private static void WriteManifest(string setDir, string world, FeatureStore.ChunkedScan scan)
+        {
+            var text = "world=" + world + "\r\n" +
+                       "generation=" + scan.Generation.ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                       "files=" + scan.Files.Count.ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                       "bytes=" + scan.Bytes.ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                       "ticks=" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                       "companion=" + CompanionPlugin.PluginVersion + "\r\n";
+            File.WriteAllText(Path.Combine(setDir, ManifestName), text);
+        }
+
+        // Cheap listing of a chunked set: the manifest (written last, after verification) plus one existence
+        // check of the generation's .ok and .db2. A set without a manifest (copied by hand, or by a future
+        // layout) falls back to the full scan and is listed only when that scan says it is loadable.
+        private static bool ReadSetEntry(string setDir, out long bytes, out long ticks)
+        {
+            bytes = 0; ticks = 0;
+            var manifest = Path.Combine(setDir, ManifestName);
+            var generation = -1;
+            var haveManifest = false;
+            try
+            {
+                if (File.Exists(manifest))
+                {
+                    foreach (var line in File.ReadAllLines(manifest))
+                    {
+                        var eq = line.IndexOf('=');
+                        if (eq <= 0) continue;
+                        var k = line.Substring(0, eq).Trim();
+                        var v = line.Substring(eq + 1).Trim();
+                        if (k == "generation") int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out generation);
+                        else if (k == "bytes") long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out bytes);
+                        else if (k == "ticks") long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out ticks);
+                    }
+                    haveManifest = generation >= 0 && bytes > 0 && ticks > 0;
+                }
+            }
+            catch (Exception) { haveManifest = false; }
+
+            if (haveManifest)
+            {
+                return File.Exists(Path.Combine(setDir, "_main." + generation + ".ok")) &&
+                       File.Exists(Path.Combine(setDir, "_main." + generation + ".db2"));
+            }
+            var scan = FeatureStore.ScanChunkedSet(setDir);
+            if (!scan.Complete) return false;
+            bytes = scan.Bytes;
+            ticks = StampTicks(Path.GetFileName(setDir));
+            if (ticks == 0)
+            {
+                try { ticks = File.GetLastWriteTimeUtc(Path.Combine(setDir, "_main." + scan.Generation + ".ok")).Ticks; }
+                catch (Exception) { ticks = 0; }
+            }
+            return true;
+        }
+
+        // "yyyyMMdd-HHmmss[-n]" (our own UTC stamps) -> ticks; 0 when the name is not one of ours.
+        private static long StampTicks(string name)
+        {
+            if (string.IsNullOrEmpty(name) || name.Length < StampFormat.Length) return 0;
+            DateTime t;
+            return DateTime.TryParseExact(name.Substring(0, StampFormat.Length), StampFormat, CultureInfo.InvariantCulture,
+                       DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out t)
+                ? t.Ticks
+                : 0;
+        }
+
+        // Retention counts COMPLETE sets only; a half-copied set is never counted and never deletes a good one.
+        // WORKER THREAD (called from CopyWorker): it is file IO like the copy, so `keep` and the staged name
+        // arrive pre-read and log lines are collected instead of emitted. Whole sets are pruned, never files.
+        private static void PruneBackups(string parent, bool chunked, int keep, string stagedName, List<string> log)
         {
             try
             {
-                var list = ListBackups(dir);
+                var list = ListBackups(parent, chunked);
                 for (var i = keep; i < list.Count; i++)
                 {
+                    var name = list[i].Name;
+                    if (!string.IsNullOrEmpty(stagedName) && string.Equals(name, stagedName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        log.Add($"Kept old backup {name}: it is staged for restore");
+                        continue;
+                    }
                     try
                     {
-                        File.Delete(Path.Combine(dir, list[i].Name + ".db"));
-                        File.Delete(Path.Combine(dir, list[i].Name + ".fwl"));
-                        log.Add($"Pruned old backup {list[i].Name} (keep={keep})");
+                        if (chunked) Directory.Delete(Path.Combine(parent, name), true);
+                        else
+                        {
+                            File.Delete(Path.Combine(parent, name + ".db"));
+                            File.Delete(Path.Combine(parent, name + ".fwl"));
+                        }
+                        log.Add($"Pruned old backup {name} (keep={keep})");
                     }
-                    catch (Exception e) { log.Add($"Could not prune backup {list[i].Name}: {e.Message}"); }
+                    catch (Exception e) { log.Add($"Could not prune backup {name}: {e.Message}"); }
                 }
-                // Abandoned half-copies from a crash mid-backup.
+                // Abandoned half-copies from a crash mid-backup. The set this worker just wrote has already been
+                // renamed into place, so any ".tmp" older than an hour belongs to nobody.
                 var cutoff = DateTime.UtcNow.AddHours(-1);
-                foreach (var tmp in Directory.GetFiles(dir, "*.tmp"))
+                if (chunked)
                 {
-                    try { if (File.GetLastWriteTimeUtc(tmp) < cutoff) File.Delete(tmp); }
-                    catch (Exception) { }
+                    foreach (var tmp in Directory.GetDirectories(parent, "*" + TmpSuffix))
+                    {
+                        try { if (Directory.GetLastWriteTimeUtc(tmp) < cutoff) Directory.Delete(tmp, true); }
+                        catch (Exception) { }
+                    }
+                }
+                else
+                {
+                    foreach (var tmp in Directory.GetFiles(parent, "*" + TmpSuffix))
+                    {
+                        try { if (File.GetLastWriteTimeUtc(tmp) < cutoff) File.Delete(tmp); }
+                        catch (Exception) { }
+                    }
                 }
             }
             catch (Exception e) { log.Add($"Backup prune failed: {e.Message}"); }
@@ -664,28 +914,45 @@ namespace AdminPanelCompanion
             public long Ticks;
         }
 
-        private static List<BackupEntry> ListBackups(string dir)
+        // Pure System.IO (main thread for the RPC replies and health, worker thread for pruning). A chunked
+        // world lists the set directories under <backupRoot>/<world>/, a legacy world the pairs in <backupRoot>;
+        // a layout's sets are only ever restored into the same layout, so the other kind is never listed.
+        private static List<BackupEntry> ListBackups(string parent, bool chunked)
         {
             var res = new List<BackupEntry>();
-            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return res;
+            if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent)) return res;
             try
             {
-                foreach (var db in Directory.GetFiles(dir, "*.db"))
+                if (chunked)
                 {
-                    var fwl = Path.ChangeExtension(db, ".fwl");
-                    if (!File.Exists(fwl)) continue;   // incomplete pair: not restorable, so not listed
-                    try
+                    foreach (var dir in Directory.GetDirectories(parent))
                     {
-                        var fi = new FileInfo(db);
-                        var fm = new FileInfo(fwl);
-                        res.Add(new BackupEntry
-                        {
-                            Name = Path.GetFileNameWithoutExtension(db),
-                            Bytes = fi.Length + fm.Length,
-                            Ticks = fi.LastWriteTimeUtc.Ticks,
-                        });
+                        var name = Path.GetFileName(dir);
+                        if (name.EndsWith(TmpSuffix, StringComparison.OrdinalIgnoreCase)) continue;
+                        long bytes, ticks;
+                        if (!ReadSetEntry(dir, out bytes, out ticks)) continue;   // incomplete: not restorable, so not listed
+                        res.Add(new BackupEntry { Name = name, Bytes = bytes, Ticks = ticks });
                     }
-                    catch (Exception) { }
+                }
+                else
+                {
+                    foreach (var db in Directory.GetFiles(parent, "*.db"))
+                    {
+                        var fwl = Path.ChangeExtension(db, ".fwl");
+                        if (!File.Exists(fwl)) continue;   // incomplete pair: not restorable, so not listed
+                        try
+                        {
+                            var fi = new FileInfo(db);
+                            var fm = new FileInfo(fwl);
+                            res.Add(new BackupEntry
+                            {
+                                Name = Path.GetFileNameWithoutExtension(db),
+                                Bytes = fi.Length + fm.Length,
+                                Ticks = fi.LastWriteTimeUtc.Ticks,
+                            });
+                        }
+                        catch (Exception) { }
+                    }
                 }
             }
             catch (Exception) { }
@@ -695,7 +962,7 @@ namespace AdminPanelCompanion
 
         // ==================== staged restore ====================
 
-        // The name arrives from the network: it is a FILE NAME, never a path. Anything with a separator or
+        // The name arrives from the network: it is a set NAME, never a path. Anything with a separator or
         // ".." is rejected outright and the resolved path is re-verified against the backup directory
         // prefix — path traversal here would let an admin-role account overwrite arbitrary files.
         private static void OnBackupStage(long sender, string rawName)
@@ -711,64 +978,132 @@ namespace AdminPanelCompanion
                 return;
             }
 
-            var dir = ResolveBackupDir();
-            var wp = ResolveWorldPaths();
-            if (dir == null || wp == null)
+            var set = FeatureStore.ResolveSaveLayout();   // the set itself is scanned once the name is validated
+            if (set == null)
             {
-                CompanionPlugin.NotifySender(sender, "Restore refused: no world / backup directory");
+                CompanionPlugin.NotifySender(sender, "Restore refused: no world is loaded");
                 return;
             }
-            if (wp.IsCloud)
+            if (set.IsCloud)
             {
                 CompanionPlugin.NotifySender(sender, "Restore refused: this world is on a cloud save and cannot be file-restored");
                 CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=cloud-save");
                 return;
             }
-
-            string srcDb, srcFwl;
-            if (!ResolveInsideBackupDir(dir, name, out srcDb, out srcFwl))
+            var parent = BackupSetParent(set);
+            if (parent == null)
             {
-                CompanionPlugin.NotifySender(sender, "Restore refused: that backup pair does not exist in the backup folder");
-                CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=not-found-or-outside-dir");
+                CompanionPlugin.NotifySender(sender, "Restore refused: the backup directory could not be resolved");
                 return;
             }
 
-            var stagedDb = wp.Db + ".aprestore";
-            var stagedFwl = wp.Fwl + ".aprestore";
-            try
+            string keptAs;
+            if (set.Chunked)
             {
-                File.Copy(srcDb, stagedDb + ".tmp", true);
-                File.Copy(srcFwl, stagedFwl + ".tmp", true);
-                if (File.Exists(stagedDb)) File.Delete(stagedDb);
-                if (File.Exists(stagedFwl)) File.Delete(stagedFwl);
-                File.Move(stagedDb + ".tmp", stagedDb);
-                File.Move(stagedFwl + ".tmp", stagedFwl);
+                if (set.SaveDirectory == null)
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore refused: the world's save directory is not readable on this build");
+                    return;
+                }
+                string srcDir;
+                if (!ResolveSetDirInside(parent, name, out srcDir))
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore refused: that backup set does not exist in the backup folder");
+                    CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=not-found-or-outside-dir");
+                    return;
+                }
+                var scan = FeatureStore.ScanChunkedSet(srcDir);
+                if (!scan.Complete)
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore refused: that backup set is incomplete and would not load");
+                    CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=incomplete-set generation={scan.Generation} missing={scan.MissingIndexed.Count}");
+                    return;
+                }
+                // Nothing is copied now: the set stays where it is (and is exempt from pruning) and is copied
+                // in at the next boot, when the copy can take as long as it needs without stalling the server.
+                if (!WriteRestoreMarker(set, name, srcDir))
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore staging failed: the restore marker could not be written (see the log)");
+                    return;
+                }
+                keptAs = $"{set.WorldName}_backup_restore-<stamp>";
             }
-            catch (Exception e)
+            else
             {
-                try { if (File.Exists(stagedDb + ".tmp")) File.Delete(stagedDb + ".tmp"); } catch (Exception) { }
-                try { if (File.Exists(stagedFwl + ".tmp")) File.Delete(stagedFwl + ".tmp"); } catch (Exception) { }
-                CompanionPlugin.FeatureLog($"Restore staging failed for {name}: {e.Message}");
-                CompanionPlugin.NotifySender(sender, "Restore staging failed: " + e.Message);
-                CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=copy-failed detail={e.Message}");
-                return;
+                string srcDb, srcFwl;
+                if (!ResolveInsideBackupDir(parent, name, out srcDb, out srcFwl))
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore refused: that backup pair does not exist in the backup folder");
+                    CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=not-found-or-outside-dir");
+                    return;
+                }
+                if (set.LegacyDb == null || set.LegacyFwl == null)
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore refused: the world's file paths are not readable on this build");
+                    return;
+                }
+
+                var stagedDb = set.LegacyDb + ".aprestore";
+                var stagedFwl = set.LegacyFwl + ".aprestore";
+                try
+                {
+                    File.Copy(srcDb, stagedDb + TmpSuffix, true);
+                    File.Copy(srcFwl, stagedFwl + TmpSuffix, true);
+                    if (File.Exists(stagedDb)) File.Delete(stagedDb);
+                    if (File.Exists(stagedFwl)) File.Delete(stagedFwl);
+                    File.Move(stagedDb + TmpSuffix, stagedDb);
+                    File.Move(stagedFwl + TmpSuffix, stagedFwl);
+                }
+                catch (Exception e)
+                {
+                    TryDelete(stagedDb + TmpSuffix);
+                    TryDelete(stagedFwl + TmpSuffix);
+                    CompanionPlugin.FeatureLog($"Restore staging failed for {name}: {e.Message}");
+                    CompanionPlugin.NotifySender(sender, "Restore staging failed: " + e.Message);
+                    CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} result=copy-failed detail={e.Message}");
+                    return;
+                }
+                if (!WriteRestoreMarker(set, name, null))
+                {
+                    CompanionPlugin.NotifySender(sender, "Restore staging failed: the restore marker could not be written (see the log)");
+                    return;
+                }
+                keptAs = ".prerestore files";
             }
 
-            WriteRestoreMarker(wp, name);
             var t = FeatureStore.Table(TblCfg);
             t[KeyRestoreStaged] = name + "|" + DateTime.UtcNow.Ticks;
             FeatureStore.SaveTable(TblCfg);
 
             var admin = CompanionPlugin.SenderDisplayName(sender);
-            CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} world={wp.FileName} result=staged");
-            CompanionPlugin.FeatureLog($"RESTORE STAGED: {name} -> {wp.FileName}. It will be applied on the NEXT server start (staged by {admin}).");
-            Wave1AuditRpc.PostModLog($"RESTORE STAGED {name} for world {wp.FileName} (by {admin}) - applies on next server start");
+            CompanionPlugin.SrvAudit(sender, "BACKUP-STAGE", $"name={name} world={set.WorldName} layout={(set.Chunked ? "chunked" : "legacy")} result=staged");
+            CompanionPlugin.FeatureLog($"RESTORE STAGED: {name} -> {set.WorldName}. It will be applied on the NEXT server start (staged by {admin}).");
+            Wave1AuditRpc.PostModLog($"RESTORE STAGED {name} for world {set.WorldName} (by {admin}) - applies on next server start");
             Wave1Moderation.NotifyOnlineAdmins($"Restore staged: {name}. A server restart is required to apply it.");
             CompanionPlugin.NotifySender(sender,
-                $"Backup '{name}' is staged. A running server cannot swap its own world file - RESTART the server to apply it. The current world will be kept as .prerestore files.");
+                $"Backup '{name}' is staged. A running server cannot swap its own world save - RESTART the server to apply it. The current world will be kept as {keptAs}.");
         }
 
-        // Validate + resolve a network-supplied backup name strictly inside the backup directory.
+        // Validate + resolve a network-supplied set name strictly inside <backupRoot>/<world>/.
+        private static bool ResolveSetDirInside(string parent, string name, out string dir)
+        {
+            dir = null;
+            try
+            {
+                var root = Path.GetFullPath(parent);
+                if (!root.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                    root += Path.DirectorySeparatorChar;
+                var cand = Path.GetFullPath(Path.Combine(root, name));
+                if (!cand.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return false;
+                if (cand.Length <= root.Length) return false;
+                if (!Directory.Exists(cand)) return false;
+                dir = cand;
+                return true;
+            }
+            catch (Exception) { return false; }
+        }
+
+        // Validate + resolve a network-supplied backup name strictly inside the backup directory (legacy pair).
         private static bool ResolveInsideBackupDir(string dir, string name, out string db, out string fwl)
         {
             db = null; fwl = null;
@@ -795,41 +1130,59 @@ namespace AdminPanelCompanion
         }
 
         // The marker is a plain file, not a store table: it must be readable at plugin-Awake time, BEFORE a
-        // world exists (FeatureStore keys its directory off the loaded world's name).
-        private static void WriteRestoreMarker(WorldPaths wp, string backupName)
+        // world exists (FeatureStore keys its directory off the loaded world's name). Keys: layout, world,
+        // dir (worlds root), backup (set name); chunked adds savedir (the live directory), source (the set
+        // directory to copy from) and tmp (the sibling the copy lands in, fixed so a retry can reuse it).
+        private static bool WriteRestoreMarker(FeatureStore.WorldSaveSet set, string backupName, string sourceDir)
         {
             var path = RestoreMarkerPath();
-            if (path == null) return;
+            if (path == null) return false;
             try
             {
+                var stamp = DateTime.UtcNow.ToString(StampFormat, CultureInfo.InvariantCulture);
+                var text = "layout=" + (set.Chunked ? "chunked" : "legacy") + "\r\n" +
+                           "world=" + set.WorldName + "\r\n" +
+                           "dir=" + set.WorldsRoot + "\r\n" +
+                           "backup=" + backupName + "\r\n" +
+                           "ticks=" + DateTime.UtcNow.Ticks + "\r\n";
+                if (set.Chunked)
+                    text += "savedir=" + set.SaveDirectory + "\r\n" +
+                            "source=" + sourceDir + "\r\n" +
+                            "tmp=" + Path.Combine(set.WorldsRoot, set.WorldName + "_backup_staging-" + stamp) + "\r\n";
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
-                File.WriteAllText(path,
-                    "world=" + wp.FileName + "\r\n" +
-                    "dir=" + wp.Dir + "\r\n" +
-                    "backup=" + backupName + "\r\n" +
-                    "ticks=" + DateTime.UtcNow.Ticks + "\r\n");
+                File.WriteAllText(path, text);
+                return true;
             }
-            catch (Exception e) { CompanionPlugin.FeatureLog($"Could not write the restore marker: {e.Message}"); }
+            catch (Exception e)
+            {
+                CompanionPlugin.FeatureLog($"Could not write the restore marker: {e.Message}");
+                return false;
+            }
         }
 
-        // Called from Init, before the game opens the world. Moves the CURRENT pair aside (never deletes it)
-        // and swaps the staged pair in. Any failure leaves the world exactly as it was.
+        // Called from Init, before the game opens the world. Moves the CURRENT save aside (never deletes it)
+        // and swaps the staged set in. Any failure leaves the world exactly as it was. The marker is consumed
+        // on success and on every definitive failure (source gone, copy or verification failed): a restore
+        // that could not be applied is reported, not silently retried on some later boot. It survives only an
+        // interrupted attempt (crash mid-swap), which the next boot resumes safely.
         private static void ApplyPendingRestore()
         {
             var marker = RestoreMarkerPath();
             if (marker == null || !File.Exists(marker)) return;
 
-            string world = null, dir = null, backup = null;
+            var kv = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var line in File.ReadAllLines(marker))
             {
                 var eq = line.IndexOf('=');
                 if (eq <= 0) continue;
-                var k = line.Substring(0, eq).Trim();
-                var v = line.Substring(eq + 1).Trim();
-                if (k == "world") world = v;
-                else if (k == "dir") dir = v;
-                else if (k == "backup") backup = v;
+                kv[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
             }
+            string world, dir, backup, layout;
+            kv.TryGetValue("world", out world);
+            kv.TryGetValue("dir", out dir);
+            kv.TryGetValue("backup", out backup);
+            kv.TryGetValue("layout", out layout);
+            backup = backup ?? "(unnamed)";
 
             if (string.IsNullOrEmpty(world) || string.IsNullOrEmpty(dir))
             {
@@ -838,6 +1191,140 @@ namespace AdminPanelCompanion
                 return;
             }
 
+            if (layout == "chunked")
+            {
+                string saveDir, source, tmp;
+                kv.TryGetValue("savedir", out saveDir);
+                kv.TryGetValue("source", out source);
+                kv.TryGetValue("tmp", out tmp);
+                if (string.IsNullOrEmpty(saveDir)) saveDir = Path.Combine(dir, world);
+                if (string.IsNullOrEmpty(tmp)) tmp = Path.Combine(dir, world + "_backup_staging-" + DateTime.UtcNow.ToString(StampFormat, CultureInfo.InvariantCulture));
+                ApplyChunkedRestore(marker, world, saveDir, source, tmp, backup);
+            }
+            else
+            {
+                ApplyLegacyRestore(marker, world, dir, backup);
+            }
+        }
+
+        // Chunked swap, in an order that is safe to interrupt at any point:
+        //   1. copy the set into the sibling <world>_backup_staging-<stamp>/ (reused if a previous attempt
+        //      already left a complete copy there) and verify it is a loadable set;
+        //   2. move the live <world>/ to <world>_backup_restore-<stamp>/ (the engine's own restore convention:
+        //      SaveSystem.RestoreBackup :601, classified as a RestoredBackup of this world, never auto-pruned);
+        //   3. move the verified copy to <world>/ and verify it again.
+        // A crash between 2 and 3 leaves the marker in place and the copy complete, so the next boot skips 1
+        // and 2 and finishes 3 instead of letting the game create a fresh world under the name.
+        private static void ApplyChunkedRestore(string marker, string world, string liveDir, string source, string tmp, string backup)
+        {
+            // Staging copies left behind by an earlier, superseded staging of this world (the marker names the
+            // current one). They are our own copies of backup sets, never the live world or a backup itself.
+            try
+            {
+                var root = Path.GetDirectoryName(liveDir);
+                if (root != null && Directory.Exists(root))
+                    foreach (var d in Directory.GetDirectories(root, world + "_backup_staging-*"))
+                        if (!string.Equals(Path.GetFullPath(d), Path.GetFullPath(tmp), StringComparison.OrdinalIgnoreCase))
+                            Directory.Delete(d, true);
+            }
+            catch (Exception) { }
+
+            FeatureStore.ChunkedScan copy = null;
+            try
+            {
+                if (Directory.Exists(tmp))
+                {
+                    copy = FeatureStore.ScanChunkedSet(tmp);
+                    if (!copy.Complete)
+                    {
+                        Directory.Delete(tmp, true);
+                        copy = null;
+                    }
+                }
+                if (copy == null)
+                {
+                    if (string.IsNullOrEmpty(source) || !Directory.Exists(source))
+                    {
+                        RestoreFailed(marker, backup, $"the staged backup set is no longer at {source ?? "?"}; nothing was changed");
+                        return;
+                    }
+                    var src = FeatureStore.ScanChunkedSet(source);
+                    if (!src.Complete)
+                    {
+                        RestoreFailed(marker, backup, $"the staged backup set at {source} is not loadable (generation {src.Generation}, {src.MissingIndexed.Count} indexed chunk(s) missing); nothing was changed");
+                        return;
+                    }
+                    Directory.CreateDirectory(tmp);
+                    foreach (var f in src.Files) CopySnapshot(f, Path.Combine(tmp, Path.GetFileName(f)));
+                    copy = FeatureStore.ScanChunkedSet(tmp);
+                    if (!copy.Complete || copy.Generation != src.Generation || copy.Files.Count != src.Files.Count)
+                    {
+                        try { Directory.Delete(tmp, true); } catch (Exception) { }
+                        RestoreFailed(marker, backup, $"the copy of the backup set did not verify (generation {copy.Generation} vs {src.Generation}, {copy.Files.Count}/{src.Files.Count} files); the live world was not touched");
+                        return;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch (Exception) { }
+                RestoreFailed(marker, backup, $"copying the backup set failed ({e.Message}); the live world was not touched");
+                return;
+            }
+
+            var stamp = DateTime.UtcNow.ToString(StampFormat, CultureInfo.InvariantCulture);
+            var kept = Path.Combine(Path.GetDirectoryName(liveDir) ?? "", world + "_backup_restore-" + stamp);
+            var movedAside = false;
+            try
+            {
+                if (Directory.Exists(liveDir))
+                {
+                    Directory.Move(liveDir, kept);
+                    movedAside = true;
+                }
+                Directory.Move(tmp, liveDir);
+            }
+            catch (Exception e)
+            {
+                // Best-effort rollback: the original world goes back exactly where it was.
+                try { if (movedAside && !Directory.Exists(liveDir) && Directory.Exists(kept)) Directory.Move(kept, liveDir); } catch (Exception) { }
+                // The staging copy sits one level under the worlds root, where the engine would list it as a backup
+                // of this world forever (SaveSystem.GetSaveInfo classifies "_backup_staging-"): remove it.
+                try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch (Exception) { }
+                RestoreFailed(marker, backup, $"swapping the save directory failed ({e.Message}); the original world was left in place");
+                return;
+            }
+
+            var live = FeatureStore.ScanChunkedSet(liveDir);
+            if (!live.Complete || live.Generation != copy.Generation)
+            {
+                // The verified copy is now the live directory and does not scan as loadable: put the original
+                // back and keep the moved-in files aside for inspection instead of guessing.
+                // Park the unloadable set OUTSIDE the worlds root (next to the backup sets) so the engine never
+                // offers a known-broken folder as a restorable backup; the same-volume fallback uses a dot-name
+                // that the engine's "_backup_" classifier does not match.
+                var broken = FailedRestoreParkingPath(source, liveDir, stamp);
+                try { Directory.Move(liveDir, broken); }
+                catch (Exception) { try { Directory.Move(liveDir, liveDir + ".failedrestore-" + stamp); } catch (Exception) { } }
+                try { if (movedAside && !Directory.Exists(liveDir) && Directory.Exists(kept)) Directory.Move(kept, liveDir); } catch (Exception) { }
+                RestoreFailed(marker, backup, $"the moved-in set did not verify (generation {live.Generation}, {live.MissingIndexed.Count} indexed chunk(s) missing); the original world was put back, the failed set is at {broken}");
+                return;
+            }
+
+            TryDelete(marker);
+            _restoreApplied = backup;
+            CompanionPlugin.FeatureLog("==================================================================");
+            CompanionPlugin.FeatureLog($"RESTORE APPLIED: world '{world}' was replaced with backup '{backup}' (generation {live.Generation}, {live.Files.Count} files, {Mb(live.Bytes)}).");
+            CompanionPlugin.FeatureLog(movedAside
+                ? $"The world as it was before this boot is kept at: {kept}"
+                : "There was no live save directory to keep (the world had never been saved).");
+            CompanionPlugin.FeatureLog("==================================================================");
+        }
+
+        // Legacy pair swap, unchanged in shape: the .aprestore files staged next to the live pair are renamed
+        // in, the live pair is kept as .prerestore-<stamp>.
+        private static void ApplyLegacyRestore(string marker, string world, string dir, string backup)
+        {
             var liveDb = Path.Combine(dir, world + ".db");
             var liveFwl = Path.Combine(dir, world + ".fwl");
             var stagedDb = liveDb + ".aprestore";
@@ -845,12 +1332,11 @@ namespace AdminPanelCompanion
 
             if (!File.Exists(stagedDb) || !File.Exists(stagedFwl))
             {
-                CompanionPlugin.FeatureLog($"Restore marker for '{backup}' found but the staged files are missing; nothing was changed.");
-                TryDelete(marker);
+                RestoreFailed(marker, backup, "the staged .aprestore files are missing; nothing was changed");
                 return;
             }
 
-            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            var stamp = DateTime.UtcNow.ToString(StampFormat, CultureInfo.InvariantCulture);
             var keptDb = liveDb + ".prerestore-" + stamp;
             var keptFwl = liveFwl + ".prerestore-" + stamp;
             var movedDb = false;
@@ -868,23 +1354,32 @@ namespace AdminPanelCompanion
                 try { if (File.Exists(liveDb) && !File.Exists(stagedDb) && movedDb) File.Move(liveDb, stagedDb); } catch (Exception) { }
                 try { if (movedDb && File.Exists(keptDb) && !File.Exists(liveDb)) File.Move(keptDb, liveDb); } catch (Exception) { }
                 try { if (movedFwl && File.Exists(keptFwl) && !File.Exists(liveFwl)) File.Move(keptFwl, liveFwl); } catch (Exception) { }
-                CompanionPlugin.FeatureLog($"!!! RESTORE FAILED for '{backup}': {e.Message}. The original world was left in place; staged files kept for a retry.");
+                RestoreFailed(marker, backup, $"{e.Message}; the original world was left in place (the staged .aprestore files are kept: stage the backup again to retry)");
                 return;
             }
 
             TryDelete(marker);
-            _restoreApplied = backup ?? "(unnamed)";
+            _restoreApplied = backup;
             CompanionPlugin.FeatureLog("==================================================================");
-            CompanionPlugin.FeatureLog($"RESTORE APPLIED: world '{world}' was replaced with backup '{_restoreApplied}'.");
+            CompanionPlugin.FeatureLog($"RESTORE APPLIED: world '{world}' was replaced with backup '{backup}'.");
             CompanionPlugin.FeatureLog($"The world as it was before this boot is kept at: {keptDb} / {keptFwl}");
             CompanionPlugin.FeatureLog("==================================================================");
         }
 
-        // The store is only readable once a world is loaded, so the mod-log entry and marker cleanup for an
-        // applied restore happen on the first tick that has a store.
+        private static void RestoreFailed(string marker, string backup, string why)
+        {
+            TryDelete(marker);
+            _restoreFailed = $"'{backup}': {why}";
+            CompanionPlugin.FeatureLog("==================================================================");
+            CompanionPlugin.FeatureLog($"!!! RESTORE FAILED for {_restoreFailed}. Stage the backup again from the panel to retry.");
+            CompanionPlugin.FeatureLog("==================================================================");
+        }
+
+        // The store is only readable once a world is loaded, so the mod-log entry and store cleanup for an
+        // applied (or failed) restore happen on the first tick that has a store.
         private static void ReportRestoreOnce()
         {
-            if (_restoreReported || _restoreApplied == null) return;
+            if (_restoreReported || (_restoreApplied == null && _restoreFailed == null)) return;
             if (!FeatureStore.Ready) return;
             _restoreReported = true;
             var t = FeatureStore.Table(TblCfg);
@@ -893,7 +1388,24 @@ namespace AdminPanelCompanion
                 t.Remove(KeyRestoreStaged);
                 FeatureStore.SaveTable(TblCfg);
             }
-            Wave1AuditRpc.PostModLog($"RESTORE APPLIED at startup: {_restoreApplied} (previous world kept as .prerestore files)");
+            if (_restoreApplied != null)
+                Wave1AuditRpc.PostModLog($"RESTORE APPLIED at startup: {_restoreApplied} (previous world kept beside it, never deleted)");
+            else
+                Wave1AuditRpc.PostModLog($"RESTORE FAILED at startup for {_restoreFailed}");
+        }
+
+        // The set name currently staged for restore ("" = none): the worker must never prune it.
+        private static string StagedBackupName()
+        {
+            try
+            {
+                if (!FeatureStore.Ready) return "";
+                string raw;
+                if (!FeatureStore.Table(TblCfg).TryGetValue(KeyRestoreStaged, out raw) || string.IsNullOrEmpty(raw)) return "";
+                var bar = raw.IndexOf('|');
+                return bar > 0 ? raw.Substring(0, bar) : raw;
+            }
+            catch (Exception) { return ""; }
         }
 
         // ==================== scheduled restart ====================
@@ -1080,55 +1592,18 @@ namespace AdminPanelCompanion
                 : "Autosave interval could not be changed on this game build");
         }
 
-        // The interval field is NOT on ZNet in the current build — it is the static Game.m_saveInterval
-        // (Game.cs:126, default 1800s) consumed by Game.UpdateSaving. Probed reflectively (ZNet first, as
-        // the task's decompile hint suggests, then Game) so a move between the two degrades to "unavailable"
-        // instead of throwing.
-        private static FieldInfo SaveIntervalField()
-        {
-            if (_saveIntervalProbed) return _saveIntervalField;
-            _saveIntervalProbed = true;
-            try
-            {
-                // Silent lookups: AccessTools.Field logs a HarmonyX warning per miss, and ZNet lost this field in 1.0.12.
-                var f = typeof(Game).GetField("m_saveInterval", AccessTools.all) ?? typeof(ZNet).GetField("m_saveInterval", AccessTools.all);
-                if (f != null && f.FieldType == typeof(float)) _saveIntervalField = f;
-                else CompanionPlugin.FeatureLog("Autosave interval field not found on this game build: autosave override disabled (saves keep the game's own cadence).");
-            }
-            catch (Exception e) { CompanionPlugin.FeatureLog($"Autosave interval probe failed: {e.Message}"); }
-            return _saveIntervalField;
-        }
-
-        private static object SaveIntervalTarget(FieldInfo f)
-        {
-            if (f == null || f.IsStatic) return null;
-            if (f.DeclaringType == typeof(ZNet)) return ZNet.instance;
-            return Game.instance;
-        }
-
-        private static float AutosaveSeconds()
-        {
-            var f = SaveIntervalField();
-            if (f == null) return -1f;
-            try
-            {
-                if (!f.IsStatic && SaveIntervalTarget(f) == null) return -1f;
-                return (float)f.GetValue(SaveIntervalTarget(f));
-            }
-            catch (Exception) { return -1f; }
-        }
+        // Game.m_saveInterval is a public static float (Game.cs:127, default 1800 s) consumed by Game.UpdateSaving;
+        // it is read directly, the same way CompanionPlugin's next-save countdown reads it.
+        private static float AutosaveSeconds() => Game.m_saveInterval;
 
         private static void ApplyAutosaveOverride()
         {
             if (_autosaveApplied) return;
             if (!FeatureStore.Ready) return;
-            var f = SaveIntervalField();
-            if (f == null) { _autosaveApplied = true; return; }
-            if (!f.IsStatic && SaveIntervalTarget(f) == null) return;   // Game not up yet; retry next tick
 
             try
             {
-                if (_defaultSaveIntervalSeconds < 0f) _defaultSaveIntervalSeconds = (float)f.GetValue(SaveIntervalTarget(f));
+                if (_defaultSaveIntervalSeconds < 0f) _defaultSaveIntervalSeconds = Game.m_saveInterval;
                 var t = FeatureStore.Table(TblCfg);
                 var on = t.TryGetValue(KeyAutosaveOn, out var v) && v == "1";
                 var minutes = 0;
@@ -1136,10 +1611,10 @@ namespace AdminPanelCompanion
                 minutes = Mathf.Clamp(minutes == 0 ? AutosaveMinMinutes : minutes, AutosaveMinMinutes, AutosaveMaxMinutes);
 
                 var target = on ? minutes * 60f : (_defaultSaveIntervalSeconds > 0f ? _defaultSaveIntervalSeconds : 1800f);
-                var current = (float)f.GetValue(SaveIntervalTarget(f));
+                var current = Game.m_saveInterval;
                 if (Mathf.Abs(current - target) > 0.5f)
                 {
-                    f.SetValue(SaveIntervalTarget(f), target);
+                    Game.m_saveInterval = target;
                     CompanionPlugin.FeatureLog($"Autosave interval set to {(int)(target / 60)} min" + (on ? " (admin override)" : " (game default)"));
                 }
                 _autosaveApplied = true;
@@ -1158,13 +1633,14 @@ namespace AdminPanelCompanion
         {
             try
             {
-                var dir = ResolveBackupDir();
-                if (dir == null) return (false, "no world loaded, backup directory unresolved");
-                var list = ListBackups(dir);
+                var set = FeatureStore.ResolveSaveLayout();
+                var parent = BackupSetParent(set);
+                if (parent == null) return (false, "no world loaded, backup directory unresolved");
+                var list = ListBackups(parent, set.Chunked);
                 var newest = list.Count > 0
                     ? $"newest '{list[0].Name}' {(int)(DateTime.UtcNow - new DateTime(list[0].Ticks, DateTimeKind.Utc)).TotalMinutes} min old"
-                    : "no complete pairs on disk";
-                var head = $"{list.Count} backup(s) in {dir}, keep={BackupKeep}, {newest}";
+                    : "no complete sets on disk";
+                var head = $"{list.Count} {(set.Chunked ? "chunked" : "legacy")} backup set(s) in {parent}, keep={BackupKeep}, {newest}";
 
                 if (!string.IsNullOrEmpty(_lastError)) return (false, head + "; last error: " + _lastError);
                 if (!AutoBackupOn) return (true, "auto-backup OFF (manual only); " + head);
@@ -1177,7 +1653,7 @@ namespace AdminPanelCompanion
             catch (Exception e) { return (false, "backup health check failed: " + e.Message); }
         }
 
-        /// <summary>World-save health for AP_SrvSelfTestReq: cadence, duration and .db size trend.</summary>
+        /// <summary>World-save health for AP_SrvSelfTestReq: cadence, duration and save-set size trend.</summary>
         internal static (bool ok, string detail) SaveHealth()
         {
             try
@@ -1189,7 +1665,8 @@ namespace AdminPanelCompanion
                     : (float)(DateTime.UtcNow - new DateTime(_lastSaveEndTicksUtc, DateTimeKind.Utc)).TotalSeconds;
                 var head = _lastSaveEndTicksUtc == 0
                     ? $"no save completed yet this session ({(int)(sinceSeconds / 60)} min uptime)"
-                    : $"last save {(int)(sinceSeconds / 60)} min ago, took {ms / 1000.0:0.0}s, db {_lastDbBytes / 1024} KB";
+                    : $"last save {(int)(sinceSeconds / 60)} min ago, took {ms / 1000.0:0.0}s, save set {Mb(_lastSetBytes)}" +
+                      (_lastSetGeneration >= 0 ? $" (generation {_lastSetGeneration})" : "");
                 head += interval > 0f ? $", autosave every {(int)(interval / 60)} min" : ", autosave interval unknown";
 
                 // A recent warning dominates the verdict; older ones expire so a server that recovered
@@ -1209,57 +1686,29 @@ namespace AdminPanelCompanion
 
         // ==================== shared helpers ====================
 
-        private sealed class WorldPaths
-        {
-            public string Db;
-            public string Fwl;
-            public string Dir;
-            public string FileName;
-            public string Source;
-            public bool IsCloud;
-        }
-
-        // MAIN THREAD ONLY: World.GetDBPath() reaches Utils.GetSaveDataPath -> Application.persistentDataPath.
-        // Reflection throughout (same discipline as FeatureStore) so a renamed member degrades this feature
-        // instead of throwing inside an RPC handler. m_fileSource is compared BY NAME: hard-coding the
-        // FileHelpers.FileSource enum values would break silently if the game reorders them.
-        private static WorldPaths ResolveWorldPaths()
-        {
-            try
-            {
-                var w = AccessTools.Property(typeof(ZNet), "World")?.GetValue(null)
-                        ?? AccessTools.Field(typeof(ZNet), "m_world")?.GetValue(null);
-                if (w == null) return null;
-                var db = AccessTools.Method(w.GetType(), "GetDBPath", Type.EmptyTypes)?.Invoke(w, null) as string;
-                var fwl = AccessTools.Method(w.GetType(), "GetMetaPath", Type.EmptyTypes)?.Invoke(w, null) as string;
-                var name = FeatureStore.WorldFileName(w);   // m_worldName since 1.0.12, m_fileName before
-                if (string.IsNullOrEmpty(db) || string.IsNullOrEmpty(fwl) || string.IsNullOrEmpty(name)) return null;
-                var src = AccessTools.Field(w.GetType(), "m_fileSource")?.GetValue(w);
-                var srcName = src != null ? src.ToString() : "";
-                var full = Path.GetFullPath(db);
-                return new WorldPaths
-                {
-                    Db = full,
-                    Fwl = Path.GetFullPath(fwl),
-                    Dir = Path.GetDirectoryName(full),
-                    FileName = name,
-                    Source = srcName,
-                    IsCloud = srcName.IndexOf("Cloud", StringComparison.OrdinalIgnoreCase) >= 0,
-                };
-            }
-            catch (Exception) { return null; }
-        }
-
-        private static string ResolveBackupDir()
+        // MAIN THREAD ONLY (FeatureStore's world helpers). The backup ROOT is the configured BackupDir or
+        // <worlds root>/adminpanel_backups; a chunked world's sets live one level further down in <root>/<world>/
+        // so that the engine's one-level scan of the worlds root (FileHelpers.GetFiles :589-600) never sees a
+        // backup's _main.* files as a world of their own. A legacy world's pairs stay directly in the root.
+        private static string BackupRoot(FeatureStore.WorldSaveSet set)
         {
             try
             {
                 var cfg = _backupDir != null ? (_backupDir.Value ?? "").Trim() : "";
                 if (cfg.Length > 0) return Path.GetFullPath(cfg);
-                var wp = ResolveWorldPaths();
-                return wp == null ? null : Path.Combine(wp.Dir, "adminpanel_backups");
+                return set == null || set.WorldsRoot == null ? null : Path.Combine(set.WorldsRoot, BackupRootName);
             }
             catch (Exception) { return null; }
+        }
+
+        private static string BackupSetParent(FeatureStore.WorldSaveSet set)
+        {
+            if (set == null) return null;
+            var root = BackupRoot(set);
+            if (root == null) return null;
+            // Every layout is namespaced per world. A flat root for legacy pairs let two legacy worlds sharing one
+            // BackupDir prune and stage each other's sets (a set is only ever listed for the world folder it sits in).
+            return Path.Combine(root, set.WorldName);
         }
 
         // Mirror the backup settings into "srvcfg" so the panel and sibling modules can read one place.
@@ -1318,6 +1767,9 @@ namespace AdminPanelCompanion
 
         private static string Trim(string s, int n) =>
             string.IsNullOrEmpty(s) ? "" : (s.Length > n ? s.Substring(0, n) : s);
+
+        private static string Mb(long bytes) =>
+            (bytes / 1048576d).ToString("0.0", CultureInfo.InvariantCulture) + " MB";
 
         private static void TryDelete(string path)
         {

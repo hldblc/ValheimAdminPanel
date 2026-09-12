@@ -19,13 +19,15 @@ namespace AdminPanelCompanion
     // ---------------------------------------------------------------------------------------------------
     // ENGINE FACTS (all verified by decompiling assembly_valheim; line numbers are from that decompile)
     // ---------------------------------------------------------------------------------------------------
-    // * ZDOMan.FindSectorObjects(Vector2i sector, int area, int distantArea, List<ZDO> sectorObjects,
-    //   List<ZDO> distantSectorObjects = null) is PUBLIC (ZDOMan.cs:841). It APPENDS (FindObjects ->
-    //   objects.AddRange, ZDOMan.cs:1039-1053) and walks the (2*area+1)^2 sector block around `sector`,
-    //   falling back to m_objectsByOutsideSector for out-of-array sectors. With distantArea = 0 the second
-    //   loop never runs. A 128 m radius is area = 2 => 25 sectors. That is the whole reason this module can
-    //   be synchronous.
-    // * ZoneSystem.GetZone(Vector3) is static and uses a hard-coded 64 m grid (ZoneSystem.cs:2458-2463);
+    // * ZDOMan.FindSectorObjects(Vector2s sector, SimulationDistance sd, List<ZDO> sectorObjects,
+    //   List<ZDO> distantSectorObjects = null) is PUBLIC (ZDOMan.cs:1201); zones are shorts since 1.0.12.
+    //   It APPENDS (FindObjects -> objects.AddRange, ZDOMan.cs:1426-1441: the sector-array bucket plus that
+    //   sector's portal bucket) and walks rings around `sector`. ZoneCompat.FindSectorObjects(man, sector,
+    //   area, list) wraps it as the classic square (2*area+1)^2 block with no distant pass, and clips the
+    //   block to the 512x512 grid (|zone| >= 256 aliases Sector 0, ZoneSystem.cs:2990-3003; the pre-1.0.12
+    //   m_objectsByOutsideSector dictionary is gone). A 128 m radius is area = 2 => 25 sectors. That is
+    //   the whole reason this module can be synchronous.
+    // * ZoneSystem.GetZone(Vector3) is static and uses a hard-coded 64 m grid (ZoneSystem.cs:2971-2976);
     //   ZoneSystem.instance.m_zoneSize is the same 64 (ZoneSystem.cs:371) and is read defensively.
     // * ZDO OWNERSHIP IS SESSION STATE, NOT SAVED STATE. ZDO.Save (ZDO.cs:1001) serialises only the typed
     //   ZDOExtraData maps; the owner lives in ZDOExtraData's owner map keyed by a session id
@@ -247,7 +249,7 @@ namespace AdminPanelCompanion
             var area = Mathf.Clamp(Mathf.CeilToInt(radius / zoneSize), 1, 4);
 
             Scratch.Clear();
-            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), area, 0, Scratch); }
+            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), area, Scratch); }
             catch (Exception e)
             {
                 Scratch.Clear();

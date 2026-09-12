@@ -46,9 +46,9 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { CompanionPlugin.FeatureLog($"AP_SrvSpawnerScanReq: malformed packet dropped ({e.Message})"); return; }
             if (ver != Ver) return;
-            if (!PosOk(center))
+            if (!CenterOk(center))   // NaN/Infinity, or beyond the world edge (see CenterOk)
             {
-                CompanionPlugin.NotifySender(sender, "Spawner scan rejected: the supplied position is not a valid point.");
+                CompanionPlugin.NotifySender(sender, "Spawner scan rejected: centre position out of range.");
                 SendSpawnerList(sender, null, 0);
                 return;
             }

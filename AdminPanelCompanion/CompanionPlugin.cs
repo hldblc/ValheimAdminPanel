@@ -14,7 +14,12 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.1";
+        public const string PluginVersion = "2.5.2";
+        // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
+        // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
+        // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
+        // anything — the bind probe below is what tells whether the mismatch actually broke something.
+        internal const string CompiledForGameVersion = "1.0.12";
 
         internal static CompanionPlugin Instance;
 
@@ -43,9 +48,145 @@ namespace AdminPanelCompanion
             catch (Exception e) { Logger.LogWarning($"Save-timestamp patch failed (last-save time unavailable): {e.Message}"); }
             FeaturesInit();   // additive feature modules (Features*.cs); safe no-op if none are compiled in
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
+            // Health self-check, after FeaturesInit so every feature type is loaded and registered. Neither step
+            // can disable anything: the version note is one warning line, the probe reports bind failures.
+            WarnIfGameVersionDiffers();
+            StartBindProbe();
         }
 
         private static void Log(string msg) => Instance?.Logger.LogInfo(msg);
+
+        // ---------- health: game version, bind probe, AP_HealthData payload ----------
+
+        // The running game's version string as the game reports it ("1.0.12", "l-1.0.12" on Linux servers).
+        private static string GameVersion
+        {
+            get
+            {
+                try { return global::Version.GetVersionString(false) ?? "unknown"; }
+                catch (Exception) { return "unknown"; }
+            }
+        }
+
+        // Steam build id of app 892970 that the DLL was built against, stamped by the csproj as
+        // AssemblyMetadata("ValheimSteamBuild", ...); "unknown" when the attribute is absent (older build scripts).
+        private static string _steamBuild;
+        private static string CompiledForSteamBuild
+        {
+            get
+            {
+                if (_steamBuild != null) return _steamBuild;
+                var v = "unknown";
+                try
+                {
+                    foreach (var a in typeof(CompanionPlugin).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false))
+                    {
+                        var m = a as System.Reflection.AssemblyMetadataAttribute;
+                        if (m != null && m.Key == "ValheimSteamBuild" && !string.IsNullOrEmpty(m.Value)) { v = m.Value; break; }
+                    }
+                }
+                catch (Exception) { }
+                return _steamBuild = v;
+            }
+        }
+
+        // Leading "major.minor.patch" of a version string, skipping any platform prefix ("l-1.0.12" -> "1.0.12").
+        // A missing patch component reads as 0 ("1.0" -> "1.0.0"), matching GameVersion.ToString(), which omits it.
+        internal static string LeadingVersion(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            int i = 0;
+            while (i < s.Length && !char.IsDigit(s[i])) i++;
+            int j = i;
+            while (j < s.Length && (char.IsDigit(s[j]) || s[j] == '.')) j++;
+            var parts = s.Substring(i, j - i).Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return "";
+            var major = parts[0];
+            var minor = parts.Length > 1 ? parts[1] : "0";
+            var patch = parts.Length > 2 ? parts[2] : "0";
+            return major + "." + minor + "." + patch;
+        }
+
+        // Contract rule 6: a mismatch is ONE warning line, never a disable. The bind probe decides whether the
+        // mismatch matters; a game patch that touched nothing the companion uses still binds cleanly.
+        private void WarnIfGameVersionDiffers()
+        {
+            var game = GameVersion;
+            var running = LeadingVersion(game);
+            var built = LeadingVersion(CompiledForGameVersion);
+            if (running.Length == 0)
+                Logger.LogWarning($"{PluginName} {PluginVersion} could not read the game version (built for Valheim {CompiledForGameVersion}); the bind probe below tells whether that matters.");
+            else if (running != built)
+                Logger.LogWarning($"{PluginName} {PluginVersion} was built for Valheim {CompiledForGameVersion} but is running on Valheim {game}. Nothing is disabled; the bind probe below reports any member that no longer exists.");
+        }
+
+        // BindProbe.Start runs the type initializers on this (main) thread and hands the JIT loop to a worker;
+        // the report is written from the main thread by a coroutine so the worker never touches the BepInEx
+        // logger or a Unity object. The result is also carried in the AP_HealthData handshake (HealthSummary).
+        private void StartBindProbe()
+        {
+            try { BindProbe.Start(); }
+            catch (Exception e) { Logger.LogWarning($"Bind probe could not start: {e.GetType().Name}: {e.Message}"); return; }
+            if (BindProbe.Finished) { LogBindProbeReport(); return; }   // phase 1 already failed; nothing to wait for
+            try { StartCoroutine(BindProbeReportWhenDone()); }
+            catch (Exception e) { Logger.LogWarning($"Bind probe report coroutine could not start (result still reaches the panel via AP_HealthData): {e.GetType().Name}: {e.Message}"); }
+        }
+
+        private IEnumerator BindProbeReportWhenDone()
+        {
+            // The JIT loop takes well under a second on a dedicated server; the cap only guards against a wedged
+            // worker (the payload then keeps saying probe=skipped, which the panel shows as "not checked").
+            const float pollSeconds = 0.25f, capSeconds = 120f;
+            float waited = 0f;
+            while (!BindProbe.Finished && waited < capSeconds)
+            {
+                yield return new WaitForSecondsRealtime(pollSeconds);
+                waited += pollSeconds;
+            }
+            if (BindProbe.Finished) LogBindProbeReport();
+            else Logger.LogWarning($"Bind probe did not finish within {capSeconds:0} s; no self-check result this session (probe=skipped).");
+        }
+
+        private void LogBindProbeReport()
+        {
+            try { BindProbe.LogReport(Logger, GameVersion, CompiledForGameVersion, PluginName + " " + PluginVersion); }
+            catch (Exception e) { Logger.LogWarning($"Bind probe report failed: {e.GetType().Name}: {e.Message}"); }
+        }
+
+        // SHARED CONTRACT health payload, key=value pairs joined by ';' in this exact order:
+        //   game=<Version.GetVersionString(false)>;built=<CompiledForGameVersion>;steam=<ValheimSteamBuild|unknown>;
+        //   probe=<ok|failed|skipped>;checked=<int>;failed=<int>;names=<up to 8 "Type.Method" joined by ','>
+        // Sent to the asker right after AP_VersionData (OnServerVersionReq); read by reflection on a listen host.
+        // probe=skipped until the worker has finished, so an early handshake may say skipped — the panel re-asks
+        // on its next handshake. Cheap: the probe never re-runs, only the string is rebuilt.
+        public static string HealthSummary
+        {
+            get
+            {
+                var r = BindProbe.Current;
+                var names = "";
+                if (r != null && r.FailedNames.Length > 0)
+                {
+                    var clean = new string[r.FailedNames.Length];
+                    for (int i = 0; i < clean.Length; i++) clean[i] = PayloadSafe(r.FailedNames[i]);
+                    names = string.Join(",", clean);
+                }
+                return "game=" + PayloadSafe(GameVersion)
+                     + ";built=" + PayloadSafe(CompiledForGameVersion)
+                     + ";steam=" + PayloadSafe(CompiledForSteamBuild)
+                     + ";probe=" + BindProbe.State
+                     + ";checked=" + (r != null ? r.Checked : 0)
+                     + ";failed=" + (r != null ? r.Failed : 0)
+                     + ";names=" + names;
+            }
+        }
+
+        // The payload's own separators may not appear inside a value.
+        private static string PayloadSafe(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace(";", "").Replace(",", "").Replace("=", "").Replace("\r", "").Replace("\n", " ").Trim();
+        }
 
         [HarmonyPatch]
         private static class RpcRegistration
@@ -801,6 +942,11 @@ namespace AdminPanelCompanion
         {
             if (!IsDedicatedServer) return;
             ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_VersionData", PluginVersion);
+            // Health payload (SHARED CONTRACT) right behind the version. Panels older than 2.5.2 never registered
+            // AP_HealthData; ZRoutedRpc.HandleRoutedRPC drops a routed call whose name has no registered method
+            // (the m_functions lookup simply misses), so the extra reply is invisible to them.
+            try { ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_HealthData", HealthSummary); }
+            catch (Exception e) { Log($"AP_HealthData reply failed: {e.GetType().Name}: {e.Message}"); }
         }
 
         // ---------- server: skip to morning ----------

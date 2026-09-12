@@ -533,9 +533,11 @@ namespace AdminPanelCompanion
             }
         }
 
-        // ONE sector (ZDOMan.FindSectorObjects with area 0 — ZDOMan.cs:841-843 forwards straight to
-        // FindObjects for the centre sector only), hard-capped iteration. This is the only ZDO read in the
-        // file and it is deliberately not frame-spread: a single sector is bounded, unlike a world sweep.
+        // ONE sector (ZoneCompat.FindSectorObjects with area 0: the engine's FindSectorObjects reads the centre
+        // sector first, ZDOMan.cs:1201-1204, and a zero near/far distance runs no ring loop; FindObjects,
+        // ZDOMan.cs:1426-1441, also appends that sector's portal bucket), hard-capped iteration. This is the
+        // only ZDO read in the file and it is deliberately not frame-spread: a single sector is bounded,
+        // unlike a world sweep.
         private static bool HighestNearbyZdoY(Vector3 from, out float y)
         {
             y = 0f;
@@ -543,7 +545,7 @@ namespace AdminPanelCompanion
             try
             {
                 var list = new List<ZDO>();
-                ZoneCompat.FindSectorObjects(ZDOMan.instance, ZoneSystem.GetZone(from), 0, 0, list);
+                ZoneCompat.FindSectorObjects(ZDOMan.instance, ZoneSystem.GetZone(from), 0, list);
                 var found = false;
                 var n = Mathf.Min(list.Count, SectorZdoCap);
                 for (var i = 0; i < n; i++)

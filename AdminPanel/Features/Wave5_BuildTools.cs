@@ -661,10 +661,12 @@ namespace AdminPanel
         //      TerrainComp arrays, which are serialized into the ZDO blob ZDOVars.s_TCData and applied by
         //      Heightmap.ApplyModifiers via TerrainComp.ApplyToHeightmap. No object exists to destroy -
         //      destroying modifiers does NOT revert these. They are cleared here by zeroing the affected
-        //      vertices and re-running TerrainComp's own private Save(), then poking the heightmap.
-        //      Those members are private, so they are reached through AccessTools with a null check on
-        //      every one: a game update that renames any of them degrades this to "modifier edits only"
-        //      plus a logged warning, never a crash.
+        //      vertices and re-running TerrainComp's own private Save(bool paintOnly), then poking the
+        //      heightmap. Those members are private, so they are reached through AccessTools; every handle
+        //      is validated BEFORE a single array is written, each compiler's arrays are snapshotted first,
+        //      and a save the engine does not accept restores the snapshot. A game update that renames any
+        //      of them degrades this to "modifier edits only" plus a logged warning - never a crash, and
+        //      never a zone left zeroed on this client but unsaved.
         private void BldResetTerrain()
         {
             var player = LocalPlayer;
@@ -693,12 +695,17 @@ namespace AdminPanel
             Message(Loc.T("bld.msg_terrain", mods, zones));
         }
 
-        // Cached reflection handles for TerrainComp's private state. Resolved once, each independently
-        // null-checked at use.
+        // Cached reflection handles for TerrainComp's private state, resolved once. 1.0.12 shapes
+        // (TerrainComp.cs): bool m_initialized; int m_width; bool[] m_modifiedHeight; float[] m_levelDelta;
+        // float[] m_smoothDelta; bool[] m_modifiedPaint; Color[] m_paintMask; Heightmap m_hmap; and
+        // private void Save(bool paintOnly = false). ALL of them are required: Save serializes every one
+        // of the five arrays unconditionally, so a missing paint field means the blob format changed and
+        // the reset must not write at all.
         private static bool _bldTcResolved;
         private static System.Reflection.FieldInfo _bldTcInit, _bldTcWidth, _bldTcModH, _bldTcLevel,
             _bldTcSmooth, _bldTcModP, _bldTcPaint, _bldTcHmap;
         private static System.Reflection.MethodInfo _bldTcSave;
+        private static object[] _bldTcSaveArgs;   // matches _bldTcSave's arity: { false } for Save(bool), empty for Save()
 
         private static void BldResolveTerrainComp()
         {
@@ -714,14 +721,48 @@ namespace AdminPanel
             _bldTcModP = AccessTools.Field(t, "m_modifiedPaint");
             _bldTcPaint = AccessTools.Field(t, "m_paintMask");
             _bldTcHmap = AccessTools.Field(t, "m_hmap");
-            _bldTcSave = AccessTools.Method(t, "Save");
+            // Save is resolved by explicit parameter shape, never by name alone: 1.0.12 made it
+            // Save(bool paintOnly = false), and a null-args Invoke against that overload throws
+            // TargetParameterCountException. paintOnly=false is the full save (heights + paint). The
+            // zero-parameter overload is accepted as a fallback for builds that still have it.
+            _bldTcSave = AccessTools.Method(t, "Save", new[] { typeof(bool) });
+            if (_bldTcSave != null) _bldTcSaveArgs = new object[] { false };
+            else
+            {
+                _bldTcSave = AccessTools.Method(t, "Save", Type.EmptyTypes);
+                if (_bldTcSave != null) _bldTcSaveArgs = new object[0];
+            }
+        }
+
+        private static bool BldTcHandlesOk() =>
+            _bldTcInit != null && _bldTcWidth != null && _bldTcModH != null && _bldTcLevel != null &&
+            _bldTcSmooth != null && _bldTcModP != null && _bldTcPaint != null && _bldTcHmap != null &&
+            _bldTcSave != null && !_bldTcSave.IsStatic && _bldTcSaveArgs != null;
+
+        // Pre-reset copy of one compiler's five arrays. They are zeroed IN PLACE (they are the compiler's
+        // own instances, reached by reference), so Restore() copies the clones back into those same
+        // instances and the local heightmap keeps matching the blob that is still in the ZDO.
+        private sealed class BldTcSnapshot
+        {
+            private readonly Array[] _live, _bak;
+
+            public BldTcSnapshot(params Array[] live)
+            {
+                _live = live;
+                _bak = new Array[live.Length];
+                for (var i = 0; i < live.Length; i++) _bak[i] = (Array)live[i].Clone();
+            }
+
+            public void Restore()
+            {
+                for (var i = 0; i < _live.Length; i++) Array.Copy(_bak[i], _live[i], _bak[i].Length);
+            }
         }
 
         private int BldResetTerrainComps(Vector3 origin, float radius)
         {
             BldResolveTerrainComp();
-            if (_bldTcInit == null || _bldTcWidth == null || _bldTcModH == null || _bldTcLevel == null ||
-                _bldTcSmooth == null || _bldTcHmap == null || _bldTcSave == null)
+            if (!BldTcHandlesOk())
             {
                 Logger.LogWarning("Terrain reset: TerrainComp internals not found (game updated?) - only modifier-based edits were reverted.");
                 return 0;
@@ -743,17 +784,28 @@ namespace AdminPanel
                 var zp = hmap.transform.position;
                 if (Mathf.Abs(origin.x - zp.x) > half || Mathf.Abs(origin.z - zp.z) > half) continue;
 
+                // Every per-instance value is read and shape-checked here, before anything is written.
+                // TerrainComp.Initialize sizes all five arrays to (m_width+1)^2 and Save serializes all
+                // five, so an unexpected shape means "not the compiler we know": skip it untouched rather
+                // than write a blob the engine may not read back.
                 var width = _bldTcWidth.GetValue(comp) as int? ?? 0;
-                if (width <= 0) continue;
                 var modH = _bldTcModH.GetValue(comp) as bool[];
                 var level = _bldTcLevel.GetValue(comp) as float[];
                 var smooth = _bldTcSmooth.GetValue(comp) as float[];
-                var modP = _bldTcModP != null ? _bldTcModP.GetValue(comp) as bool[] : null;
-                var paint = _bldTcPaint != null ? _bldTcPaint.GetValue(comp) as Color[] : null;
-                if (modH == null || level == null || smooth == null) continue;
-
+                var modP = _bldTcModP.GetValue(comp) as bool[];
+                var paint = _bldTcPaint.GetValue(comp) as Color[];
                 var side = width + 1;
-                if (modH.Length < side * side || level.Length < side * side || smooth.Length < side * side) continue;
+                var cells = side * side;
+                if (width <= 0 || modH == null || level == null || smooth == null || modP == null || paint == null ||
+                    modH.Length < cells || level.Length < cells || smooth.Length < cells ||
+                    modP.Length < cells || paint.Length < cells)
+                {
+                    Logger.LogWarning($"Terrain reset: TerrainComp at {zp} has an unexpected shape (width {width}) - left untouched.");
+                    continue;
+                }
+
+                // Snapshot BEFORE the first write: the loop below mutates the compiler's own arrays.
+                var snapshot = new BldTcSnapshot(modH, level, smooth, modP, paint);
 
                 // Vertex -> world mapping is the inverse of Heightmap.WorldToVertex: world = zoneOrigin +
                 // (index - width/2) * scale. The paint mask uses WorldToVertexMask, whose offset is
@@ -771,28 +823,61 @@ namespace AdminPanel
                         var hz = zp.z + (gy - hOff) * scale;
                         if (BldFlatDist(hx, hz, origin) <= radius && modH[idx])
                         {
+                            // Exactly the state TerrainComp.Load leaves an unmodified vertex in: flag off,
+                            // both deltas zero.
                             modH[idx] = false;
                             level[idx] = 0f;
                             smooth[idx] = 0f;
                             changed = true;
                         }
-                        if (modP == null || paint == null || idx >= modP.Length || idx >= paint.Length) continue;
                         var px = zp.x + (gx - pOff) * scale;
                         var pz = zp.z + (gy - pOff) * scale;
                         if (BldFlatDist(px, pz, origin) <= radius && modP[idx])
                         {
+                            // An unmodified paint entry is neither applied nor serialized; its colour only
+                            // matters as the "from" of a later paint op, and "nothing" (black, alpha 1 -
+                            // Heightmap.m_paintMaskNothing) is the engine's own reset target.
                             modP[idx] = false;
-                            paint[idx] = Color.black;
+                            paint[idx] = new Color(0f, 0f, 0f, paint[idx].a);   // alpha is the world-gen base mask, not paint (Heightmap.cs:1205): keep it, as every engine writer does
                             changed = true;
                         }
                     }
                 }
                 if (!changed) continue;
 
-                // Save() early-outs unless we own the ZDO, so claim it before writing the blob back.
-                nview.ClaimOwnership();
-                _bldTcSave.Invoke(comp, null);
-                hmap.Poke();   // Poke(int delayed = 0, bool paintOnly = false) since 1.0.12; was Poke(bool delayed)
+                // Save early-outs silently unless we own the ZDO, so ownership is claimed right before the
+                // call. A save the engine performs always bumps DataRevision (ZDO.Set(int, byte[]) ->
+                // IncreaseDataRevision; the compressed blob is a fresh array every time), so an unchanged
+                // revision means the write was refused. Either way the snapshot goes back so this client
+                // never keeps zeroed arrays that the ZDO does not hold - the next vanilla Save in the zone
+                // would otherwise persist them.
+                var zdo = nview.GetZDO();
+                var saved = false;
+                try
+                {
+                    nview.ClaimOwnership();
+                    var rev = zdo.DataRevision;
+                    _bldTcSave.Invoke(comp, _bldTcSaveArgs);
+                    saved = zdo.DataRevision != rev;
+                    if (!saved) Logger.LogWarning($"Terrain reset: TerrainComp at {zp} did not accept the save (not owner?) - zone left as it was.");
+                }
+                catch (Exception e)
+                {
+                    var inner = (e as System.Reflection.TargetInvocationException)?.InnerException ?? e;
+                    Logger.LogWarning($"Terrain reset: TerrainComp at {zp} save failed - zone left as it was: {inner.Message}");
+                }
+                if (!saved)
+                {
+                    snapshot.Restore();
+                    continue;
+                }
+
+                // Only a saved zone is regenerated, so the local visual state can never outrun the blob.
+                // Poke is a direct call - 1.0.12: public void Poke(int delayed = 0, bool paintOnly = false),
+                // immediate full regen with the defaults. If it ever fails the data is already consistent,
+                // so the zone still counts and only the regen waits for the next vanilla poke.
+                try { hmap.Poke(); }
+                catch (Exception e) { Logger.LogWarning($"Terrain reset: heightmap regen at {zp} failed after save: {e.Message}"); }
                 BldResetGrass(hmap, origin, radius);
                 touched++;
             }

@@ -11,20 +11,25 @@ namespace AdminPanelCompanion
     // Four admin RPCs, all cheap and bounded — none of them sweeps the world, so none of them needs the
     // frame-spread scanner Wave2SrvWorld.cs runs:
     //
-    //   AP_SrvPortalListReq   -> AP_PortalList     read-only, ZDOMan.GetPortals() (a live, already-built list)
+    //   AP_SrvPortalListReq   -> AP_PortalList     read-only, a deduplicated copy of ZDOMan.GetPortals()
+    //                                              (ZoneCompat.PortalsSnapshot; the live table is per sector)
     //   AP_SrvPortalSet                            re-tag one portal by position
     //   AP_SrvPrefabSpawnReq                       spawn ONE arbitrary prefab, owner-only, rate limited
     //   AP_SrvLocationListReq -> AP_LocationList   read-only name list from ZoneSystem.m_locations
     //
     // ---------------------------------------------------------------------------------------------------
-    // PORTALS (all line numbers refer to the decompiled game sources under spec/decompile/)
+    // PORTALS (all line numbers refer to the decompiled 1.0.12 assembly_valheim)
     //
-    // * Enumeration: ZDOMan keeps `private readonly List<ZDO> m_portalObjects` (ZDOMan.cs:74) and exposes it
-    //   as `public List<ZDO> GetPortals()` (ZDOMan.cs:1198-1201). It is filled on world load (ZDOMan.cs:329-337),
-    //   on ZDO creation (ZDOMan.cs:394-401) and on receive (ZDOMan.cs:828-831), always tested against
-    //   Game.instance.PortalPrefabHash — so it covers BOTH portal prefabs ("portal_wood" and the ancient
-    //   "portal") without hardcoding a name, and it costs nothing to read. We copy it before touching
-    //   anything, because it is the live list.
+    // * Enumeration: ZDOMan keeps `private readonly Dictionary<ZoneSystem.SectorIndex, List<ZDO>>
+    //   m_portalObjects` (ZDOMan.cs:81) — a per-sector table since 1.0.12, not a flat list — and hands it
+    //   back as-is from `GetPortals()` (ZDOMan.cs:1702-1705). It is filled on world load (LoadChunks,
+    //   ZDOMan.cs:534-537) and on ZDO creation / receive (AddIfPortal, ZDOMan.cs:1791-1809), always tested
+    //   against Game.instance.PortalPrefabHash (every prefab in Game.m_portalPrefabs, Game.cs:241-243) — so
+    //   it covers every portal prefab (portal_wood, portal_stone, the ancient "portal") without hardcoding
+    //   a name. Buckets are keyed by the sector at insert time and never re-keyed, so a portal carried across
+    //   a zone edge sits in two buckets and a destroyed one can leave a pooled ghost behind; everything here
+    //   therefore reads ZoneCompat.PortalsSnapshot — a COPY deduplicated by m_uid, IsValid()-checked and
+    //   prefab-filtered — never the live table.
     //
     // * Tag: ZDOVars.s_tag ("tag", ZDOVars.cs:281). Author: ZDOVars.s_tagauthor (ZDOVars.cs:283), used only to
     //   pick the UGC censor's user id in TeleportWorld.GetText (TeleportWorld.cs:145-147); an empty author is
@@ -227,10 +232,12 @@ namespace AdminPanelCompanion
             var man = ZDOMan.instance;
             if (man == null) return 0;
 
-            // GetPortals() hands back the LIVE list (ZDOMan.cs:1198-1201). Copy it before doing anything else:
-            // reading a tag cannot mutate it today, but a mod (or a future engine change) that creates a ZDO
-            // mid-walk would invalidate the enumerator, and this list is small enough that a copy is free.
-            var snapshot = ZoneCompat.PortalsSnapshot(man);   // per-sector table since 1.0.12, flattened copy
+            // GetPortals() hands back the LIVE per-sector dictionary (ZDOMan.cs:1702-1705). PortalsSnapshot is
+            // a flattened COPY, deduplicated by m_uid (a moved portal sits in two buckets) and filtered to
+            // valid portal prefabs (a destroyed one can leave a pooled ghost), so `total` counts each portal
+            // once. The copy also means a ZDO created mid-walk cannot invalidate an enumerator, and the set
+            // is small enough that copying is free.
+            var snapshot = ZoneCompat.PortalsSnapshot(man);
             if (snapshot.Count == 0) return 0;
 
             Vector3 origin;

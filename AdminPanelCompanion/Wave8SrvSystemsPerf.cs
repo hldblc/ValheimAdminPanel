@@ -17,9 +17,9 @@ namespace AdminPanelCompanion
     //            frames / window seconds, the minimum is the lowest one-second frame count in the window.
     //   PING     the dedicated-server build stubs ZNet.GetNetStats (verified by decompiling), so the reporter
     //            asks the server peer's socket directly: ISocket.GetConnectionQuality(out ..., out int ping,
-    //            ...) is the Steam/PlayFab round-trip in ms. GetNetStats is the second try, and a reflective
-    //            read of an "m_averagePing" field on the peer's ZRpc the last (no current build has one;
-    //            -1 = unknown).
+    //            ...) is the Steam/PlayFab round-trip in ms. ZNet.GetNetStats (ZNet.cs:2751) is the second
+    //            and last try (-1 = unknown). ZRpc carries no ping field in 1.0.12, so nothing is probed
+    //            reflectively.
     //   MODS     Wave7Guard already collects the plugin list from Chainloader.PluginInfos for AP_ModList; its
     //            collector is reused reflectively (it is private there) with an equivalent local fallback.
     //
@@ -49,8 +49,6 @@ namespace AdminPanelCompanion
         private static float _nextReport;
         private static MethodInfo _pluginListMi;
         private static bool _pluginListProbed;
-        private static FieldInfo _avgPingField;
-        private static bool _avgPingProbed;
 
         // ---- server roster (memory only) ----
         private sealed class ClientPerf
@@ -155,21 +153,6 @@ namespace AdminPanelCompanion
                 float lq, rq, ob, ib; int ping;
                 ZNet.instance.GetNetStats(out lq, out rq, out ping, out ob, out ib);
                 if (ping > 0) return ping;
-            }
-            catch (Exception) { }
-            try
-            {
-                if (!_avgPingProbed)
-                {
-                    _avgPingProbed = true;
-                    _avgPingField = typeof(ZRpc).GetField("m_averagePing", AccessTools.all);   // gone in 1.0.12; GetNetStats above is the primary path
-                }
-                if (_avgPingField != null && sp.m_rpc != null)
-                {
-                    var v = _avgPingField.GetValue(sp.m_rpc);
-                    if (v is float f && f > 0f) return Mathf.RoundToInt(f * (f < 10f ? 1000f : 1f));   // seconds vs ms: nobody has a 10 s ping
-                    if (v is int n && n > 0) return n;
-                }
             }
             catch (Exception) { }
             return -1;

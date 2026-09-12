@@ -9,11 +9,38 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <DebugType>none</DebugType>
-    <!-- Compile against the LIVE game install: Steam keeps it current. The steamcmd dedicated-server copy
-         below is only a fallback - it froze at build 21981590 (2026-07-12) and 2.5.0 shipped compiled against
-         it while the game had moved to 1.0.12 (World.m_fileName gone, ZRoutedRpc.Everybody now const). -->
-    <ValheimManaged Condition="Exists('C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed\assembly_valheim.dll')">C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed</ValheimManaged>
+    <!-- ===== Valheim reference assemblies — INTENTIONALLY DUPLICATED in AdminPanelCompanion.csproj =====
+         The two projects sit in different directories in both layouts (siblings under C:\Users\HEPHAESTUS; AdminPanel\
+         and AdminPanelCompanion\ side by side in the git mirror), so a shared Directory.Build.props cannot reach both.
+         Keep this PropertyGroup block, the AssemblyMetadata ItemGroup and the VerifyValheimRefs target byte-identical
+         in the two csproj files.
+
+         Resolution order (first non-empty wins, recorded in ValheimRefsSource):
+           1. -p:ValheimManaged=<dir>                                   -> override
+           2. live Steam client install (Steam keeps it current)        -> live
+           3. frozen steamcmd dedicated-server copy, fallback only      -> steamcmd
+         Compiling against 3 is how 2.5.0 shipped broken: built against a July 2026 copy while the game had moved to
+         1.0.12 (World.m_fileName gone, ZRoutedRpc.Everybody now const). VerifyValheimRefs below therefore errors on 3,
+         and on 2 when the installed Steam build differs from ValheimSteamBuild, unless -p:AllowStaleValheimRefs=true
+         is passed on purpose. -->
+    <ValheimRefsSource Condition="'$(ValheimManaged)' != ''">override</ValheimRefsSource>
+    <ValheimLiveManaged>C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed</ValheimLiveManaged>
+    <ValheimManaged Condition="'$(ValheimManaged)' == '' And Exists('$(ValheimLiveManaged)\assembly_valheim.dll')">$(ValheimLiveManaged)</ValheimManaged>
+    <ValheimRefsSource Condition="'$(ValheimRefsSource)' == '' And '$(ValheimManaged)' != ''">live</ValheimRefsSource>
     <ValheimManaged Condition="'$(ValheimManaged)' == ''">C:\Users\HEPHAESTUS\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
+    <ValheimRefsSource Condition="'$(ValheimRefsSource)' == ''">steamcmd</ValheimRefsSource>
+    <ValheimAssemblyPath>$(ValheimManaged)\assembly_valheim.dll</ValheimAssemblyPath>
+    <!-- Steam build id of app 892970 (Valheim client) this code was verified against; same value as
+         valheim-modding\decompile-1.0.12\STEAM_BUILD.txt. After every game update: rebuild BOTH DLLs, re-run the
+         reflection sweep, then bump this in both csproj files together with CompiledForGameVersion in
+         AdminPanelPlugin.cs and CompanionPlugin.cs. -->
+    <ValheimSteamBuild>25253764</ValheimSteamBuild>
+    <!-- Build id actually installed at build time, read from the live Steam client's appmanifest. Only meaningful for
+         the live source (override/steamcmd -> unknown). Ships in the DLL as AssemblyMetadata "ValheimSteamBuild" so the
+         companion's health payload can report what it was compiled against. -->
+    <ValheimAppManifest>C:\Program Files (x86)\Steam\steamapps\appmanifest_892970.acf</ValheimAppManifest>
+    <ValheimInstalledSteamBuild Condition="'$(ValheimRefsSource)' == 'live' And Exists('$(ValheimAppManifest)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(ValheimAppManifest)')), '&quot;buildid&quot;\s+&quot;(\d+)&quot;').Groups[1].Value)</ValheimInstalledSteamBuild>
+    <ValheimInstalledSteamBuild Condition="'$(ValheimInstalledSteamBuild)' == ''">unknown</ValheimInstalledSteamBuild>
     <BepInExCore>C:\Users\HEPHAESTUS\valheim-modding\bepinex-core</BepInExCore>
   </PropertyGroup>
 
@@ -78,5 +105,41 @@
          AdminPanel_Localization\<code>.txt next to the plugin, so translators can iterate without a rebuild. -->
     <EmbeddedResource Include="Localization\*.txt" />
   </ItemGroup>
+
+  <!-- Assembly metadata read at runtime via typeof(...).Assembly.GetCustomAttributes(typeof(AssemblyMetadataAttribute), false):
+         ValheimSteamBuild   = Steam build id installed when the DLL was built (or "unknown")
+         ValheimManagedStamp = "<assembly_valheim.dll size>|<utc last-write yyyy-MM-ddTHH:mm:ssZ>", added by VerifyValheimRefs.
+       Intentionally duplicated in AdminPanelCompanion.csproj (see the ValheimManaged block above). -->
+  <ItemGroup>
+    <AssemblyMetadata Include="ValheimSteamBuild" Value="$(ValheimInstalledSteamBuild)" />
+  </ItemGroup>
+
+  <!-- Tripwire against stale reference assemblies. Runs before GetAssemblyAttributes (the SDK target that turns
+       @(AssemblyMetadata) into attributes; its input hash regenerates AssemblyInfo whenever the stamp changes) and
+       before CoreCompile. Intentionally duplicated in AdminPanelCompanion.csproj. -->
+  <Target Name="VerifyValheimRefs" BeforeTargets="GetAssemblyAttributes;CoreCompile">
+    <Error Condition="!Exists('$(ValheimAssemblyPath)')"
+           Text="VerifyValheimRefs: assembly_valheim.dll not found at $(ValheimAssemblyPath) (ValheimRefsSource=$(ValheimRefsSource))." />
+    <Error Condition="'$(ValheimRefsSource)' == 'steamcmd' And '$(AllowStaleValheimRefs)' != 'true'"
+           Text="VerifyValheimRefs: compiling against the frozen steamcmd copy ($(ValheimManaged)); that is how 2.5.0 shipped broken. Install or launch the Steam client copy of Valheim ($(ValheimLiveManaged)), or point -p:ValheimManaged=&lt;dir&gt; at a current install. Pass -p:AllowStaleValheimRefs=true only on purpose." />
+    <Error Condition="'$(ValheimRefsSource)' == 'live' And '$(ValheimInstalledSteamBuild)' != '$(ValheimSteamBuild)' And '$(AllowStaleValheimRefs)' != 'true'"
+           Text="VerifyValheimRefs: installed Valheim Steam build $(ValheimInstalledSteamBuild) (from $(ValheimAppManifest)) differs from the verified build $(ValheimSteamBuild) in $(MSBuildProjectFile). The game updated under you: rebuild BOTH DLLs (AdminPanel and AdminPanelCompanion), re-run the reflection sweep against the new assemblies, then bump ValheimSteamBuild in both csproj files and CompiledForGameVersion in AdminPanelPlugin.cs and CompanionPlugin.cs. Pass -p:AllowStaleValheimRefs=true only on purpose." />
+    <!-- File size: MSBuild property functions cannot construct a FileInfo, and ReadAllBytes(...).Length would slurp
+         2.5 MB just to count it, so ask cmd (%~z = size of the for-variable). Exec runs the command from a temporary
+         .cmd file, hence the batch-style %% escaping. -->
+    <Exec Command="for %%A in (&quot;$(ValheimAssemblyPath)&quot;) do @echo %%~zA" ConsoleToMSBuild="true" EchoOff="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_ValheimAssemblySize" />
+    </Exec>
+    <PropertyGroup>
+      <!-- System.IO.File::GetLastWriteTimeUtc is not on MSBuild's property-function allow-list (MSB4185);
+           GetLastWriteTime(...).ToUniversalTime() is. -->
+      <_ValheimAssemblyUtc>$([System.IO.File]::GetLastWriteTime('$(ValheimAssemblyPath)').ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))</_ValheimAssemblyUtc>
+      <ValheimManagedStamp>$(_ValheimAssemblySize)|$(_ValheimAssemblyUtc)</ValheimManagedStamp>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="ValheimManagedStamp" Value="$(ValheimManagedStamp)" />
+    </ItemGroup>
+    <Message Importance="high" Text="Valheim refs: $(ValheimRefsSource) $(ValheimManaged) | assembly_valheim $(_ValheimAssemblySize) bytes, $(_ValheimAssemblyUtc) | Steam build $(ValheimInstalledSteamBuild) (verified $(ValheimSteamBuild))" />
+  </Target>
 
 </Project>

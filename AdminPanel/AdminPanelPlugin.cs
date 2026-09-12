@@ -17,7 +17,11 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.1";
+        public const string PluginVersion = "2.5.2";
+        // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
+        // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
+        // a warning and disables nothing — the bind probe reports what actually stopped binding.
+        internal const string CompiledForGameVersion = "1.0.12";
 
         internal static AdminPanelPlugin Instance;
 
@@ -316,7 +320,9 @@ namespace AdminPanel
         private string _versionWarnLayout;          // Layout-pass snapshot of the warning line (null = no warning)
         private float _nextVersionReq;              // ≥30s between requests — a missing/old companion can NEVER cause a request loop
         private float _versionReqFirst;             // when the first request went out (drives the no-reply timeout)
-        private const string ReleasesApi = "https://api.github.com/repos/hldblc/ValheimAdminPanel/releases/latest";
+        private volatile CompanionHealth _srvHealth; // companion's AP_HealthData / in-process HealthSummary (null = none yet)
+        private float _nextHostHealthRead;          // listen-host reflection read throttle (≥5s; float.MaxValue = give up)
+        private const string ReleasesApi ="https://api.github.com/repos/hldblc/ValheimAdminPanel/releases/latest";
         private const string ReleasesPage = "https://github.com/hldblc/ValheimAdminPanel/releases/latest";
         // Baked-in so reports work out of the box; server owners can point BugReport.WebhookUrl elsewhere.
         // Targets the 🐞-bug-reports FORUM channel, so every payload must carry a thread_name (see PostToWebhook).
@@ -326,11 +332,16 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
-            "• 2.5.1 hotfix for Valheim 1.0.12 (the 11 Sep game update): the companion's data store, " +
-            "rule broadcasts and death rules were dead on the current game version and the server " +
-            "log filled with warnings. BOTH DLLs are 2.5.1 - server owners: update " +
-            "AdminPanelCompanion.dll on the server and restart, or the panel shows a version-mismatch " +
-            "banner and the new server features stay silent.\n\n" +
+            "• 2.5.2: the review of the 1.0.12 hotfix found four more breaks and fixed them all - Build Tools " +
+            "terrain reset could flatten a zone for everyone (it now validates every engine handle, keeps a " +
+            "snapshot and restores it if the save is refused), server backups now understand the chunked " +
+            "world folders 1.0.12 saves (backup sets, staged restore by directory swap, honest health), and " +
+            "portals are counted again by every scan and listed without duplicates.\n\n" +
+            "• Self-check: both DLLs now JIT-compile every one of their own methods at startup and report " +
+            "anything that no longer binds to the running game - in the log, on the Server tab, and as a " +
+            "panel warning when the server companion is affected. The build itself now fails when Valheim " +
+            "updates underneath it. BOTH DLLs are 2.5.2 - server owners: update AdminPanelCompanion.dll " +
+            "and restart.\n\n" +
             "• New Extras tab (9th tab): 33 optional modules for dedicated-server admins, one chip " +
             "each — moderation (warn / mute / freeze / jail / watchlist), audit trail, tiered admin " +
             "roles, rap sheets, server tools (MOTD, restarts, backups), diagnostics, Discord " +
@@ -713,6 +724,30 @@ namespace AdminPanel
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded. Press {_toggleKey.Value} in-game.");
             StartUpdateCheck();
             FeaturesInit();   // additive feature modules (Features\*.cs); safe no-op if none are compiled in
+            // Runtime health, after everything is patched and registered: one warning if the game moved on
+            // from the version this build targets, then the bind probe (Features\BindProbe.cs) JIT-compiles
+            // every method in this assembly to find any that no longer bind against the running game.
+            try { WarnIfGameVersionDiffers(); }
+            catch (Exception e) { Logger.LogWarning($"Game-version check failed (cosmetic only): {e.Message}"); }
+            StartBindProbe();
+        }
+
+        // Main thread, spread over frames. Mono's RuntimeHelpers.PrepareMethod is not pure JIT work: after
+        // compiling a method it runs the declaring type's class constructor, so a background thread would
+        // execute every static initializer in this assembly off the Unity main thread — fine for today's
+        // (all thread-agnostic) initializers, but one future `static readonly GUIStyle` would poison its type
+        // for the whole session. A budgeted coroutine keeps the work on the main thread with no startup
+        // hitch; if the coroutine cannot start, the probe runs synchronously instead (same result, one hitch).
+        private void StartBindProbe()
+        {
+            var asm = typeof(AdminPanelPlugin).Assembly;
+            try { StartCoroutine(BindProbe.RunBudgeted(asm, Logger, 3f)); }
+            catch (Exception e)
+            {
+                Logger.LogWarning($"Bind probe coroutine could not start ({e.Message}); running it synchronously.");
+                try { BindProbe.RunNow(asm, Logger); }
+                catch (Exception e2) { Logger.LogWarning($"Bind probe failed to run: {e2.Message}"); }
+            }
         }
 
         // ValheimPlus's FirstPerson feature zooms the camera from ITS OWN UpdateCamera postfix, reading the
@@ -867,7 +902,8 @@ namespace AdminPanel
                 if (ZRoutedRpc.instance == null) return;
                 ZRoutedRpc.instance.Register<ZPackage>("AP_InvData", OnInventoryData);
                 ZRoutedRpc.instance.Register<string>("AP_VersionData", OnVersionData);
-                // 2.4.0 server-truth replies (companion → requesting admin). Parsed defensively like
+                ZRoutedRpc.instance.Register<string>("AP_HealthData", OnHealthData);
+                // 2.5.x server-truth replies (companion → requesting admin). Parsed defensively like
                 // AP_InvData: bounded counts + try/catch, so a malformed packet can at worst blank a
                 // section, never crash the panel.
                 ZRoutedRpc.instance.Register<ZPackage>("AP_ServerInfo", OnServerInfoData);
@@ -882,7 +918,84 @@ namespace AdminPanel
             if (Instance != null) Instance._srvCompVersion = version;
         }
 
-        // ==================== 2.4.0: server-truth state (companion replies) ====================
+        // ==================== Companion runtime health (AP_HealthData) ====================
+        // Sent by a 2.5.2+ companion right after AP_VersionData, as "key=value" pairs joined by ';':
+        //   game=<Version.GetVersionString(false)>;built=<version it was compiled for>;steam=<build id|unknown>;
+        //   probe=<ok|failed|skipped>;checked=<int>;failed=<int>;names=<up to 8 "Type.Method", ','-joined>
+        // Same (absent) sender gating as OnVersionData: a forged payload can at worst paint a spurious warning
+        // line; it grants nothing and drives no action. Parsing is tolerant — unknown keys are ignored, missing
+        // ones keep their defaults — so a newer companion never breaks an older panel. An old companion
+        // simply never sends it: _srvHealth stays null, and no warning or Server-tab line appears.
+        private sealed class CompanionHealth
+        {
+            public string Game = "", Built = "", Steam = "", Probe = "skipped", Names = "";
+            public int Checked, Failed;
+        }
+
+        private static CompanionHealth ParseHealth(string payload)
+        {
+            if (string.IsNullOrEmpty(payload)) return null;
+            var h = new CompanionHealth();
+            foreach (var part in payload.Split(';'))
+            {
+                var eq = part.IndexOf('=');
+                if (eq <= 0) continue;
+                var key = part.Substring(0, eq).Trim();
+                var val = part.Substring(eq + 1).Trim();
+                if (val.Length > 400) val = val.Substring(0, 400) + "…";   // display-bound; the wire cap is the companion's
+                switch (key)
+                {
+                    case "game": h.Game = val; break;
+                    case "built": h.Built = val; break;
+                    case "steam": h.Steam = val; break;
+                    case "probe": h.Probe = val; break;
+                    case "checked": int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out h.Checked); break;
+                    case "failed": int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out h.Failed); break;
+                    case "names": h.Names = val; break;
+                }
+            }
+            return h;
+        }
+
+        private static void OnHealthData(long sender, string payload)
+        {
+            var self = Instance;
+            if (self == null) return;
+            try { self._srvHealth = ParseHealth(payload); }
+            catch (Exception e) { self.Logger.LogWarning($"AP_HealthData parse failed (ignored): {e.Message}"); }
+        }
+
+        // Listen-host path: read CompanionPlugin.HealthSummary (and its PluginVersion, for the warning text)
+        // straight out of the in-process companion. Reflection handles are resolved once per process; a
+        // companion too old to have the property leaves _srvHealth null, exactly like a missing RPC reply.
+        private static System.Reflection.PropertyInfo _hostHealthProp;
+        private static bool _hostHealthLookupDone;
+        private static string _hostCompVersion;
+        private void ReadHostCompanionHealth()
+        {
+            try
+            {
+                var t = CompanionTypeInProcess();
+                if (t == null) return;
+                if (!_hostHealthLookupDone)
+                {
+                    _hostHealthLookupDone = true;
+                    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+                    _hostHealthProp = t.GetProperty("HealthSummary", flags);
+                    _hostCompVersion = t.GetField("PluginVersion", flags)?.GetValue(null) as string;
+                }
+                if (_hostHealthProp == null) { _nextHostHealthRead = float.MaxValue; return; }   // pre-2.5.2 companion: nothing to read, ever
+                var parsed = ParseHealth(_hostHealthProp.GetValue(null, null) as string);
+                if (parsed != null) _srvHealth = parsed;
+            }
+            catch (Exception e)
+            {
+                _nextHostHealthRead = float.MaxValue;   // log once, never per tick
+                Logger.LogWarning($"Could not read the in-process companion's health summary: {e.Message}");
+            }
+        }
+
+        // ==================== 2.5.x: server-truth state (companion replies) ====================
         // Replies arrive via the game's routed-RPC dispatch, which runs during ZNet.Update — a DIFFERENT
         // Unity phase than OnGUI. No RPC handler runs between a frame's Layout and Repaint passes, so these
         // fields are frame-stable for the draw code without an explicit snapshot.
@@ -1104,6 +1217,19 @@ namespace AdminPanel
                 SrvRpc("AP_SrvVersion");
             }
 
+            // Listen host: the companion runs in THIS process, so its self-check is readable directly
+            // (CompanionPlugin.HealthSummary — "probe=skipped" until its probe has run). Re-read while nothing
+            // definitive is known, at most every 5s and only while the panel is open: one static-property
+            // read through a cached PropertyInfo, nowhere near a hot path. The routed path usually works on
+            // a host as well (SrvRpc targets peer 0, which ZRoutedRpc.InvokeRoutedRPC dispatches in-process,
+            // ZRoutedRpc.cs:130), so this also covers a companion whose reply handler is the thing that broke.
+            if (_visible && ZNet.instance != null && ZNet.instance.IsServer() && Time.time >= _nextHostHealthRead
+                && (_srvHealth == null || _srvHealth.Probe == "skipped"))
+            {
+                _nextHostHealthRead = Time.time + 5f;
+                ReadHostCompanionHealth();
+            }
+
             // Per-session state reset, fired once when leaving a world. Logout destroys the objects behind
             // the caches (ObjectDB prefabs, sprites, ZNet roster), so drop everything that points at them
             // and let the existing lazy rebuilds re-create it all on the next login.
@@ -1184,6 +1310,7 @@ namespace AdminPanel
             _joinLog.Clear(); _lastSeenPlayers.Clear(); _seenPlayersInit = false;
             _skillTargetId = 0; _skillMsg = "";
             _srvCompVersion = null; _versionReqFirst = 0f; _nextVersionReq = 0f;
+            _srvHealth = null; _nextHostHealthRead = 0f;   // health is per-server too (the next server may be a different build)
             // Server-truth is per-server: without this, logging out of server A and hosting (or joining B)
             // would render A's stale admin/ban lists — with live Unban buttons — as if current.
             _srvInfo = null; _accessLists = null; _accessListTotals = null; _srvJoinLog = null;
@@ -1971,32 +2098,78 @@ namespace AdminPanel
         }
 
         // A host runs the companion (or not) in ITS OWN process, so its presence is knowable directly —
-        // no RPC round-trip involved. Nullable-bool caches the one-time reflection scan.
-        private static bool? _companionLoadedHost;
-        private static bool CompanionLoadedInProcess()
+        // no RPC round-trip involved. The type lookup runs once per process: the assembly-qualified
+        // Type.GetType first (a plain load-context probe), then Harmony's AppDomain scan for a companion
+        // loaded under another name. The two assemblies deliberately do not reference each other.
+        private static Type _companionType;
+        private static bool _companionTypeResolved;
+        private static Type CompanionTypeInProcess()
         {
-            _companionLoadedHost = _companionLoadedHost
-                ?? (AccessTools.TypeByName("AdminPanelCompanion.CompanionPlugin") != null);
-            return _companionLoadedHost.Value;
+            if (_companionTypeResolved) return _companionType;
+            _companionTypeResolved = true;
+            try
+            {
+                _companionType = Type.GetType("AdminPanelCompanion.CompanionPlugin, AdminPanelCompanion")
+                                 ?? AccessTools.TypeByName("AdminPanelCompanion.CompanionPlugin");
+            }
+            catch (Exception) { _companionType = null; }
+            return _companionType;
         }
 
-        // One-line mismatch warning, or null when everything is fine. The no-reply case only fires on a
-        // REMOTE server and only after 15s of silence, so a slow login can't flash a false warning.
-        // A host is checked in-process instead: the old "a host answers itself instantly" assumption held
-        // only when the host HAD the companion — a host without it got silent no-ops and success toasts
-        // for every server action, with no warning path able to fire.
+        private static bool CompanionLoadedInProcess() => CompanionTypeInProcess() != null;
+
+        // One-line warning, or null when everything is fine, in priority order: no companion on this host;
+        // version mismatch; companion present and matching but failing to bind on the server's game build;
+        // no reply. The no-reply case only fires on a REMOTE server and only after 15s of silence, so a slow
+        // login can't flash a false warning. A host is checked in-process instead: the old "a host answers
+        // itself instantly" assumption held only when the host HAD the companion — a host without it got
+        // silent no-ops and success toasts for every server action, with no warning path able to fire.
         private string CompanionWarning()
         {
             if (ZNet.instance == null) return null;
             if (ZNet.instance.IsServer() && !CompanionLoadedInProcess())
                 return Loc.T("chrome.companion_missing_host");
-            if (_srvCompVersion != null)
-                return _srvCompVersion == PluginVersion
-                    ? null
-                    : Loc.T("chrome.version_mismatch", PluginVersion, _srvCompVersion);
+            if (_srvCompVersion != null && _srvCompVersion != PluginVersion)
+                return Loc.T("chrome.version_mismatch", PluginVersion, _srvCompVersion);
+            // A companion that matches our version can still be broken by a game update it was not built
+            // for: its own bind probe (AP_HealthData / HealthSummary) says so. Old companions never send
+            // this, so _srvHealth stays null and nothing here fires.
+            var health = _srvHealth;
+            if (health != null && health.Probe == "failed" && health.Failed > 0)
+                return Loc.T("chrome.companion_broken", _srvCompVersion ?? _hostCompVersion ?? "?",
+                    health.Failed, health.Game, health.Built, health.Names);
+            if (_srvCompVersion != null) return null;
             if (!ZNet.instance.IsServer() && _versionReqFirst > 0f && Time.time - _versionReqFirst > 15f)
                 return Loc.T("chrome.companion_silent");
             return null;
+        }
+
+        // Server-truth placeholder for the "nothing received yet" spots. Two distinct states: a companion
+        // whose version is known and differs from ours will never answer these requests (say so, and which
+        // version would); otherwise the data is simply still in flight. One helper keeps all call sites identical.
+        private string TruthPendingText()
+        {
+            var v = _srvCompVersion;
+            return v != null && v != PluginVersion
+                ? Loc.T("srv.truth_old_companion", PluginVersion, v)
+                : Loc.T("srv.truth_pending", PluginVersion);
+        }
+
+        // Text for the Server tab's "Panel self-check" line (the client-side bind probe, Features\BindProbe.cs).
+        private static string BindProbeStateText()
+        {
+            if (!BindProbe.Done) return Loc.T("srv.bind_probe_pending");
+            return BindProbe.Failed > 0
+                ? Loc.T("srv.bind_probe_failed", BindProbe.Failed)
+                : Loc.T("srv.bind_probe_ok", BindProbe.Checked);
+        }
+
+        // Text for the companion half of the same line, from its AP_HealthData payload.
+        private static string CompanionProbeStateText(CompanionHealth h)
+        {
+            if (h.Probe == "failed") return Loc.T("srv.companion_probe_failed", h.Failed);
+            if (h.Probe == "ok") return Loc.T("srv.bind_probe_ok", h.Checked);
+            return Loc.T("srv.companion_probe_skipped");
         }
 
         // ==================== Section cards ====================
@@ -3822,9 +3995,17 @@ namespace AdminPanel
             GUILayout.Label(_statsLoad, _labelStyle);
             if (_statsHost.Length > 0) GUILayout.Label(_statsHost, _labelStyle);
             GUILayout.Label(Loc.T("srv.versions", PluginVersion, _srvCompVersion ?? Loc.T("srv.no_reply")), _labelStyle);
+            // The panel's own startup bind probe (always one label — only its text varies) and, once the
+            // companion's AP_HealthData reply / in-process summary is known, the server's game version and
+            // self-check. _srvHealth is written from ZNet.Update (RPC dispatch) or this plugin's Update(),
+            // never from inside OnGUI, so the label count is identical across a frame's passes.
+            GUILayout.Label(Loc.T("srv.bind_probe", BindProbeStateText()), _labelStyle);
+            var health = _srvHealth;
+            if (health != null)
+                GUILayout.Label(Loc.T("srv.companion_health", health.Game, CompanionProbeStateText(health)), _labelStyle);
             EndCard();
 
-            // ---- Authoritative server block (companion 2.4.0 replies; a host IS the server already) ----
+            // ---- Authoritative server block (companion 2.5.x replies; a host IS the server already) ----
             var isHost = ZNet.instance != null && ZNet.instance.IsServer();
             BeginCard(Loc.T("srv.truth_section"));
             if (isHost)
@@ -3833,7 +4014,7 @@ namespace AdminPanel
             }
             else if (_srvInfo == null)
             {
-                GUILayout.Label(Loc.T("srv.truth_pending"), _hintStyle);
+                GUILayout.Label(TruthPendingText(), _hintStyle);
             }
             else
             {
@@ -3907,7 +4088,7 @@ namespace AdminPanel
             {
                 if (_accessLists == null)
                 {
-                    GUILayout.Label(isHost ? Loc.T("srv.host_lists_hint") : Loc.T("srv.truth_pending"), _hintStyle);
+                    GUILayout.Label(isHost ? Loc.T("srv.host_lists_hint") : TruthPendingText(), _hintStyle);
                 }
                 else
                 {
@@ -3947,7 +4128,7 @@ namespace AdminPanel
             {
                 if (_srvInfo == null)
                 {
-                    GUILayout.Label(isHost ? Loc.T("srv.host_plugins_hint") : Loc.T("srv.truth_pending"), _hintStyle);
+                    GUILayout.Label(isHost ? Loc.T("srv.host_plugins_hint") : TruthPendingText(), _hintStyle);
                 }
                 else
                 {
@@ -4211,14 +4392,51 @@ namespace AdminPanel
             return m != null ? (byte[])m.Invoke(null, new object[] { tex, 85 }) : null;
         }
 
+        // The running game's version as Valheim itself prints it. The project compiles against the live
+        // assembly, so this is a direct call: Version.GetVersionString(bool includeMercurialHash = false) is
+        // the ONLY overload in 1.0.12 (Version.cs:170) — the old reflection lookup with Type.EmptyTypes never
+        // matched it, and every bug report silently showed Unity's Application.version instead.
+        // The direct call lives in its own non-inlined method so that a future engine rename surfaces as a
+        // MissingMethodException at ITS JIT time — inside this try — rather than at the caller's.
         private static string GameVersionString()
         {
-            try
+            try { return GameVersionDirect(); }
+            catch (Exception)
             {
-                var m = AccessTools.Method(AccessTools.TypeByName("Version"), "GetVersionString", Type.EmptyTypes);
-                return m?.Invoke(null, null)?.ToString() ?? Application.version;
+                try { return Application.version; }
+                catch (Exception) { return "unknown"; }
             }
-            catch { return "unknown"; }
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static string GameVersionDirect() => global::Version.GetVersionString(false);
+
+        // Leading "major.minor.patch" of a Valheim version string, normalised so two spellings of the same
+        // release compare equal. GetVersionString(false) is GameVersion.ToString() behind an optional
+        // platform prefix ("dw-1.0.12" on Steam Deck, Version.cs:216-227); GameVersion.ToString() drops a
+        // zero patch ("1.1", GameVersion.cs:103) and prints release candidates as "1.0.rc3" (:107).
+        // Anything unparseable comes back trimmed as-is, so a mismatch is reported rather than hidden.
+        private static string LeadingGameVersion(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var m = System.Text.RegularExpressions.Regex.Match(s, "(\\d+)\\.(\\d+)(?:\\.(\\d+))?");
+            if (!m.Success) return s.Trim();
+            var patch = m.Groups[3].Success ? m.Groups[3].Value : "0";
+            return int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) + "." +
+                   int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) + "." +
+                   int.Parse(patch, CultureInfo.InvariantCulture);
+        }
+
+        // Contract rule 6: a game-version mismatch is logged ONCE as a warning and never disables anything —
+        // the bind probe (Features\BindProbe.cs) reports what, if anything, actually failed to bind.
+        private void WarnIfGameVersionDiffers()
+        {
+            string running;
+            try { running = GameVersionString(); }
+            catch (Exception) { return; }
+            if (LeadingGameVersion(running) == LeadingGameVersion(CompiledForGameVersion)) return;
+            Logger.LogWarning($"{PluginName} {PluginVersion} was built for Valheim {CompiledForGameVersion} but is running on " +
+                              $"Valheim {running}. Nothing is disabled; the bind probe below lists any method that no longer binds.");
         }
 
         private static string SessionModeString() =>

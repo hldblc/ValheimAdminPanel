@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.5.2
+
+**BOTH DLLs are 2.5.2** — server owners: update `AdminPanelCompanion.dll` on the server and restart.
+
+A full review of the 2.5.1 hotfix (15 findings) is fixed here. The four that mattered:
+
+- **Terrain reset could flatten a zone for everyone.** `TerrainComp.Save` gained a parameter in 1.0.12; the reset
+  zeroed the terrain data in place, then the save call threw, leaving the zone flat on the admin's client until the
+  next vanilla save persisted it. It now validates every engine handle before touching anything, keeps a snapshot,
+  restores it if the engine refuses the save, and counts only zones that were really written.
+- **Backups understand chunked worlds.** 1.0.12 saves a world as a folder (`_main.N.db2/.fwl2/.chunks/.ok` plus
+  chunk files), not a `.db/.fwl` pair. Backup sets now copy the complete current generation and verify it, listing,
+  retention and free-space checks work on sets, the staged restore swaps the whole directory (the previous folder is
+  kept, never deleted) and reports "applied" only after re-verifying, and the self-test / save-health views report the
+  real files. Legacy worlds keep the old pair behaviour.
+- **Portals are counted again.** Portals live outside the sector array in 1.0.12; every world scan (census, hotspots,
+  tames, chests) now walks them too, and the portal list is deduplicated (a portal moved across a zone edge sat in two
+  buckets; a removed one could linger as a phantom).
+- **Bug reports show the real game version** (`Version.GetVersionString(bool)` was looked up with the wrong shape).
+
+Hardening so this class of failure is visible next time:
+
+- **Startup self-check in both DLLs:** every method is JIT-compiled at startup; anything that no longer binds to the
+  running game is logged once, shown on the Server tab, and (for the server companion) sent to the panel as a
+  warning — instead of a silent "did nothing". A game version newer than the one the build targets logs a warning.
+- **The build fails when Valheim updates:** both projects now compile against the live install, refuse the frozen
+  fallback copy, and stop with an error when the installed Steam build differs from the verified one.
+- Shared, silent, cached engine lookups (world identity, save layout, sector containers) replace duplicated per-call
+  reflection; dead pre-1.0.12 fallbacks and stale engine comments are gone; the "needs companion X" hint is
+  generated from the panel version and distinguishes "no reply yet" from "companion is older".
+- Object scans reject centres beyond the world edge, so a far-off coordinate can no longer return every stray ZDO.
+
 ## 2.5.1
 
 **Hotfix for Valheim 1.0.12 (the 11 September game update). BOTH DLLs are 2.5.1** — server owners: update

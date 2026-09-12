@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Reflection;
 using BepInEx.Configuration;
 using HarmonyLib;
 using UnityEngine;
@@ -13,25 +12,30 @@ namespace AdminPanelCompanion
     // server that is 100k-500k objects, so the walk is a single shared, cancellable, TIME-BOXED scanner
     // driven from Tick — never from an RPC handler. A synchronous sweep would freeze the simulation for
     // seconds (ZDOMan.GetAllZDOsWithPrefabIterative is deliberately incremental for exactly this reason,
-    // ZDOMan.cs:1126-1168, ~400 sectors per call).
+    // ZDOMan.cs:1501-1553, ~400 non-empty sectors per call).
     //
-    // Enumeration source (decompiled ZDOMan, assembly_valheim):
-    //   * m_objectsBySector : List<ZDO>[512*512]  (ZDOMan.cs:88, sized from ZNet.m_zdoSectorsWidth=512)
-    //   * m_objectsByOutsideSector : Dictionary<Vector2i, List<ZDO>>  (ZDOMan.cs:76) — objects whose sector
-    //     falls outside the array (including sector-invalidated ZDOs).
-    //   Every ZDO lives in exactly one of those two containers (AddToSector, ZDOMan.cs:405-431), so walking
-    //   them covers the world without the 3-6 MB key snapshot that iterating m_objectsByID would need. The
-    //   array slot is read fresh every frame and the array LENGTH is re-checked, so a world reload aborts the
-    //   scan instead of walking a stale container. Within one frame nothing mutates the lists (we call no
-    //   engine code while iterating and Unity is single-threaded here), so index iteration cannot throw
+    // Enumeration source (decompiled 1.0.12 ZDOMan, assembly_valheim; all access goes through ZoneCompat):
+    //   * m_objectsBySector : List<ZDO>[512*512] indexed by SectorIndex.Sector (ZDOMan.cs:99, sized in
+    //     ResetSectorArray 205-208) — one bucket per zone for every NON-portal ZDO. Sector 0 doubles as the
+    //     OutsideZones bucket (sector-invalidated ZDOs, ZDO.cs:493-496), so walking the whole array covers
+    //     those too; the pre-1.0.12 m_objectsByOutsideSector dictionary no longer exists.
+    //   * m_portalObjects : Dictionary<ZoneSystem.SectorIndex, List<ZDO>> (ZDOMan.cs:81) — portals live ONLY
+    //     here (LoadChunks 534-537, AddIfPortal 1791-1809, ZDO.SetSector early-return ZDO.cs:498-503), so the
+    //     array pass is followed by a PORTAL pass over ZoneCompat.PortalsSnapshot, a deduplicated copy (the
+    //     live table can hold a moved portal twice and a destroyed one as a stale pooled reference).
+    //   Together the two passes cover m_objectsByID (ZDOMan.cs:91; NrOfObjects() is its Count, 1717-1720)
+    //   without the 3-6 MB key snapshot that iterating the dictionary would need. The array slot is read
+    //   fresh every frame and the array LENGTH is re-checked, so a world reload ends the scan instead of
+    //   walking a stale container. Within one frame nothing mutates the lists (we call no engine code while
+    //   iterating and Unity is single-threaded here), so index iteration cannot throw
     //   InvalidOperationException. Between frames a ZDO may move sectors, so a moving object can be missed
     //   or counted twice — the census is a best-effort snapshot, never an accounting ledger.
     //   If m_objectsBySector cannot be resolved (game update renamed it) we fall back to a one-shot snapshot
-    //   of m_objectsByID.Values and walk that array instead; if neither resolves, the feature reports itself
-    //   unavailable and nothing crashes.
+    //   of m_objectsByID.Values — portals included, so that path needs no portal pass — and walk that array
+    //   instead; if neither resolves, the feature reports itself unavailable and nothing crashes.
     //
     // Deletion follows the claim-then-destroy rule the undo path documents (CompanionPlugin.cs:340-349):
-    // ZDOMan.DestroyZDO is a SILENT no-op unless the caller owns the ZDO (ZDOMan.cs:630-635), so we
+    // ZDOMan.DestroyZDO is a SILENT no-op unless the caller owns the ZDO (ZDOMan.cs:988-994), so we
     // SetOwner(ZDOMan.GetSessionID()) first.
     internal static class Wave2World
     {
@@ -65,10 +69,6 @@ namespace AdminPanelCompanion
         private static HashSet<int> _itemFamily;
         private static object _mapScene;
 
-        // ---- reflection handles (resolved once, re-checked when null) ----
-        private static FieldInfo _fSectors, _fOutside, _fById;
-        private static bool _fieldsProbed;
-
         // ---- the one and only scan ----
         private static ScanJob _job;
         private static readonly HashSet<long> LivePeers = new HashSet<long>();
@@ -80,9 +80,9 @@ namespace AdminPanelCompanion
         private const int KindHotspot = 1;
         private const int KindCleanup = 2;
 
-        private const int PhaseSectors = 0;
-        private const int PhaseOutside = 1;
-        private const int PhaseFlat = 2;
+        private const int PhaseSectors = 0;   // m_objectsBySector, one slot per step
+        private const int PhasePortals = 1;   // ZoneCompat.PortalsSnapshot, after the array pass
+        private const int PhaseFlat = 2;      // fallback: one snapshot of m_objectsByID.Values (portals included)
         private const int PhaseDelete = 3;
         private const int PhaseDone = 4;
 
@@ -107,8 +107,8 @@ namespace AdminPanelCompanion
             public int Phase;
             public int SectorIndex;
             public int SectorLen;
-            public int OutsideIndex;
-            public List<List<ZDO>> Outside;
+            public List<ZDO> Portals;
+            public int PortalIndex;
             public ZDO[] Flat;
             public int FlatIndex;
 
@@ -282,10 +282,9 @@ namespace AdminPanelCompanion
         {
             if (ZDOMan.instance == null) return null;
             EnsureNameMap();   // best effort — unknown hashes simply render as "#<hash>"
-            EnsureFields();
 
             var job = new ScanJob { Kind = kind, Requester = requester };
-            var sectors = SectorArray();
+            var sectors = ZoneCompat.SectorArray(ZDOMan.instance);
             if (sectors != null)
             {
                 job.Phase = PhaseSectors;
@@ -293,7 +292,7 @@ namespace AdminPanelCompanion
             }
             else
             {
-                var flat = FlatSnapshot();
+                var flat = ZoneCompat.FlatSnapshot(ZDOMan.instance);
                 if (flat == null)
                 {
                     CompanionPlugin.FeatureLog("World scan unavailable: neither ZDOMan.m_objectsBySector nor m_objectsByID could be read on this game build.");
@@ -341,7 +340,7 @@ namespace AdminPanelCompanion
                 switch (job.Phase)
                 {
                     case PhaseSectors: RunSectors(job, sw, budget); break;
-                    case PhaseOutside: RunOutside(job, sw, budget); break;
+                    case PhasePortals: RunPortals(job, sw, budget); break;
                     case PhaseFlat: RunFlat(job, sw, budget); break;
                     case PhaseDelete:
                         RunDelete(job, sw, budget, ref deletedThisFrame);
@@ -354,13 +353,17 @@ namespace AdminPanelCompanion
             if (job.Phase == PhaseDone) FinishJob(job);
         }
 
+        // The phase that follows the last enumeration pass: deletions when a live cleanup queued any, else done.
+        private static int AfterScan(ScanJob job) => job.Doomed != null && job.Doomed.Count > 0 ? PhaseDelete : PhaseDone;
+
         private static void RunSectors(ScanJob job, Stopwatch sw, int budget)
         {
-            var arr = SectorArray();
+            var arr = ZoneCompat.SectorArray(ZDOMan.instance);
             if (arr == null || arr.Length != job.SectorLen)
             {
-                // World reloaded under us: stop walking a container that no longer describes this world.
-                job.Phase = PhaseOutside;
+                // World reloaded under us: stop walking a container that no longer describes this world,
+                // and skip the portal pass (it would add the NEW world's portals to a partial count).
+                job.Phase = AfterScan(job);
                 return;
             }
             var since = 0;
@@ -378,34 +381,34 @@ namespace AdminPanelCompanion
                 since = 0;
                 if (sw.ElapsedMilliseconds >= budget) return;
             }
-            job.Phase = PhaseOutside;
+            job.Phase = PhasePortals;
         }
 
-        private static void RunOutside(ScanJob job, Stopwatch sw, int budget)
+        // Portals are absent from the sector array (see the header), so the array pass is followed by ONE
+        // walk over a deduplicated copy of ZDOMan.m_portalObjects. The copy is taken when the phase starts
+        // and, like the flat snapshot, may be held across frames: ProcessZdo re-checks IsValid() on every
+        // entry, so a portal destroyed mid-scan is skipped rather than counted as a pooled ghost. The
+        // InSectorBucket guard is belt and braces — the engine never puts a portal in the array — so a
+        // portal can never be counted by both passes.
+        private static void RunPortals(ScanJob job, Stopwatch sw, int budget)
         {
-            if (job.Outside == null)
+            if (job.Portals == null)
             {
-                // Snapshot the (small) outside-sector lists once: this dictionary is enumerated across
-                // frames, and a live Dictionary enumeration would throw the moment anything moved.
-                job.Outside = OutsideLists() ?? new List<List<ZDO>>();
-                job.OutsideIndex = 0;
+                job.Portals = ZoneCompat.PortalsSnapshot(ZDOMan.instance);
+                job.PortalIndex = 0;
             }
+            var arr = ZoneCompat.SectorArray(ZDOMan.instance);
             var since = 0;
-            while (job.OutsideIndex < job.Outside.Count)
+            while (job.PortalIndex < job.Portals.Count)
             {
-                var list = job.Outside[job.OutsideIndex++];
-                if (list != null && list.Count > 0)
-                {
-                    for (var i = 0; i < list.Count; i++) ProcessZdo(job, list[i]);
-                    since += list.Count;
-                }
-                else since++;
-
-                if (since < WorkUnitsPerClockRead) continue;
+                var zdo = job.Portals[job.PortalIndex++];
+                if (!ZoneCompat.InSectorBucket(arr, zdo)) ProcessZdo(job, zdo);
+                if (++since < WorkUnitsPerClockRead) continue;
                 since = 0;
                 if (sw.ElapsedMilliseconds >= budget) return;
             }
-            job.Phase = job.Doomed != null && job.Doomed.Count > 0 ? PhaseDelete : PhaseDone;
+            job.Portals = null;
+            job.Phase = AfterScan(job);
         }
 
         private static void RunFlat(ScanJob job, Stopwatch sw, int budget)
@@ -420,7 +423,7 @@ namespace AdminPanelCompanion
                 if (sw.ElapsedMilliseconds >= budget) return;
             }
             job.Flat = null;
-            job.Phase = job.Doomed != null && job.Doomed.Count > 0 ? PhaseDelete : PhaseDone;
+            job.Phase = AfterScan(job);
         }
 
         private static void ProcessZdo(ScanJob job, ZDO zdo)
@@ -796,67 +799,6 @@ namespace AdminPanelCompanion
             names[hash] = go.name;
             try { if (go.GetComponent<ItemDrop>() != null) items.Add(hash); }
             catch (Exception) { }
-        }
-
-        // ---- ZDOMan container access ----
-
-        private static void EnsureFields()
-        {
-            if (_fieldsProbed) return;
-            _fieldsProbed = true;
-            try
-            {
-                _fSectors = AccessTools.Field(typeof(ZDOMan), "m_objectsBySector");
-                // Gone in 1.0.12 (the grid covers everything now). Type.GetField stays silent where
-                // AccessTools.Field would log a HarmonyX warning; a null here simply means "no outside bucket".
-                _fOutside = typeof(ZDOMan).GetField("m_objectsByOutsideSector", AccessTools.all);
-                _fById = AccessTools.Field(typeof(ZDOMan), "m_objectsByID");
-            }
-            catch (Exception e)
-            {
-                CompanionPlugin.FeatureLog($"ZDOMan container reflection failed: {e.Message}");
-            }
-        }
-
-        private static List<ZDO>[] SectorArray()
-        {
-            EnsureFields();
-            if (_fSectors == null || ZDOMan.instance == null) return null;
-            try { return _fSectors.GetValue(ZDOMan.instance) as List<ZDO>[]; }
-            catch (Exception) { return null; }
-        }
-
-        private static List<List<ZDO>> OutsideLists()
-        {
-            EnsureFields();
-            if (_fOutside == null || ZDOMan.instance == null) return null;
-            try
-            {
-                var dict = _fOutside.GetValue(ZDOMan.instance) as Dictionary<Vector2i, List<ZDO>>;
-                if (dict == null) return null;
-                var res = new List<List<ZDO>>(dict.Count);
-                foreach (var kv in dict) res.Add(kv.Value);
-                return res;
-            }
-            catch (Exception) { return null; }
-        }
-
-        // Fallback enumeration when the sector array cannot be read: ONE snapshot of the value collection at
-        // job start. Costs an array of N references (a few MB on a huge world) but is immune to the
-        // InvalidOperationException a live dictionary walk would throw.
-        private static ZDO[] FlatSnapshot()
-        {
-            EnsureFields();
-            if (_fById == null || ZDOMan.instance == null) return null;
-            try
-            {
-                var dict = _fById.GetValue(ZDOMan.instance) as Dictionary<ZDOID, ZDO>;
-                if (dict == null) return null;
-                var arr = new ZDO[dict.Count];
-                dict.Values.CopyTo(arr, 0);
-                return arr;
-            }
-            catch (Exception) { return null; }
         }
     }
 }

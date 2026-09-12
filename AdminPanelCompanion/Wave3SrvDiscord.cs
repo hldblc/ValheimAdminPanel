@@ -417,10 +417,10 @@ namespace AdminPanelCompanion
             FeatureStore.SaveTable(TblDsc);
         }
 
-        // Low disk, at most once per hour. Free space is measured on the drive holding the companion's data
-        // directory — the same volume the world .db/.fwl live on for every normal install. If the world is on
-        // a different mount than BepInEx/config, this reports the wrong volume; that is a deliberate trade
-        // against reflecting into World.GetDBPath (whose signature has moved across game versions).
+        // Low disk, at most once per hour. Free space is measured on the drive holding the world's save
+        // directory (1.0.12: <worlds root>/<name>/ via World.GetSaveDirectory, World.cs:91; a not-yet-migrated
+        // legacy world: its .db), resolved through FeatureStore's cached helpers and remembered per world.
+        // Only while no world is loaded does it fall back to the companion's data directory.
         private static void WatchDisk(float now)
         {
             if (!AlertsOn) return;
@@ -437,12 +437,28 @@ namespace AdminPanelCompanion
             SendAlert("Low disk space", text, ColorBad);
         }
 
+        private static string _diskProbeWorld;
+        private static string _diskProbePath;
+
+        private static string DiskProbePath()
+        {
+            var w = FeatureStore.CurrentWorld();
+            var name = FeatureStore.WorldFileName(w);
+            if (name == null) return FeatureStore.DataDir;
+            if (_diskProbePath == null || !string.Equals(name, _diskProbeWorld, StringComparison.Ordinal))
+            {
+                _diskProbeWorld = name;
+                _diskProbePath = FeatureStore.WorldSaveDirectory(w) ?? FeatureStore.WorldLegacyDbPath(w) ?? FeatureStore.DataDir;
+            }
+            return _diskProbePath;
+        }
+
         private static long FreeDiskBytes(out string label)
         {
             label = "?";
             try
             {
-                var path = FeatureStore.DataDir;
+                var path = DiskProbePath();
                 if (string.IsNullOrEmpty(path)) return -1;
                 var root = Path.GetPathRoot(Path.GetFullPath(path));
                 if (string.IsNullOrEmpty(root)) return -1;
@@ -1007,14 +1023,13 @@ namespace AdminPanelCompanion
             try { CompanionPlugin.NotifySender(uid, text); } catch (Exception) { }
         }
 
+        // ZNet.World through FeatureStore's cached, silent lookup (property-first, then m_world); display name
+        // (World.m_name), else the on-disk name (World.m_worldName).
         private static string WorldName()
         {
             try
             {
-                object w = AccessTools.Property(typeof(ZNet), "World")?.GetValue(null)
-                           ?? AccessTools.Field(typeof(ZNet), "m_world")?.GetValue(null);
-                if (w == null) return "?";
-                var n = FeatureStore.WorldDisplayName(w);   // display name, else on-disk name (silent reflection)
+                var n = FeatureStore.WorldDisplayName(FeatureStore.CurrentWorld());
                 return string.IsNullOrEmpty(n) ? "?" : n;
             }
             catch (Exception) { return "?"; }

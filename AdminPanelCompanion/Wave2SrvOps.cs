@@ -27,9 +27,11 @@ namespace AdminPanelCompanion
     //    lands on UNMODDED clients too.
     //  * ONE Harmony class per target method; each applied in its own try/catch with a named warning so a
     //    game update degrades one capability instead of taking the server down.
-    //  * Nothing the specs did not verify is touched directly: ZDOMan counters, ZNet.World, Game's autosave
-    //    interval and CompanionPlugin's own private state are all reached through AccessTools with a
-    //    documented fallback. A game update must degrade a check, never crash the server.
+    //  * Nothing the specs did not verify is touched directly: ZDOMan counters and CompanionPlugin's own private
+    //    state are reached through AccessTools with a documented fallback; the world (ZNet.World and its 1.0.12
+    //    chunked save layout) comes from FeatureStore's cached, silent resolver, never from per-call lookups;
+    //    Game.m_saveInterval is a public static float (Game.cs:127) and is read directly. A game update must
+    //    degrade a check, never crash the server.
     //  * Behaviour-changing background work defaults OFF (an empty schedule / empty MOTD IS off).
     //    Health alerts default ON because they only *report* — they never change server behaviour.
     //
@@ -41,8 +43,9 @@ namespace AdminPanelCompanion
     //    them. Only "motd" is written here.
     //  * The self-test calls Wave2Backup.BackupHealth() / SaveHealth() REFLECTIVELY (AccessTools.TypeByName)
     //    for the same reason: if that module is absent or renames a method, the check degrades to "unknown"
-    //    instead of failing the build or throwing inside an RPC handler. Expected shape:
-    //        internal static string BackupHealth();   internal static string SaveHealth();
+    //    instead of failing the build or throwing inside an RPC handler. Expected shape (a plain string is
+    //    tolerated too):
+    //        internal static (bool ok, string detail) BackupHealth();   internal static (bool ok, string detail) SaveHealth();
     //
     // WIRE NOTE — AP_SchedData ships EXACTLY 20 announcement entries, index == slot number (empty slots are
     // shipped as text="" everyMinutes=0 nextTicksUtc=0). The wire contract carries no slot id, so the only
@@ -805,23 +808,31 @@ namespace AdminPanelCompanion
             return Ok(count + " entr" + (count == 1 ? "y" : "ies"));
         }
 
+        // 1.0.12 layout (FeatureStore's "World save set" section has the citations): a world saved on this build
+        // is a chunked directory <worlds root>/<name>/ holding ONE complete _main.N generation (fwl2/db2/chunks/ok)
+        // plus the chunk files its index names; the legacy .db + .fwl pair is only what a world still is before
+        // its first save here. The shared resolver reports whichever is on disk.
         private static Check CheckWorldFiles()
         {
-            var db = WorldPath(false);
-            var fwl = WorldPath(true);
-            var source = WorldFileSource();
-            if (string.IsNullOrEmpty(db)) return Warn("unknown: ZNet.World not readable on this build");
+            var set = FeatureStore.ResolveSaveSet();
+            if (set == null) return Warn("unknown: ZNet.World not readable on this build");
+            var source = string.IsNullOrEmpty(set.Source) ? "?" : set.Source;
 
-            var cloud = !string.IsNullOrEmpty(source) && source.IndexOf("Cloud", StringComparison.OrdinalIgnoreCase) >= 0;
-            var dbOk = false;
-            var fwlOk = false;
-            try { dbOk = File.Exists(db); fwlOk = !string.IsNullOrEmpty(fwl) && File.Exists(fwl); } catch (Exception) { }
-
-            if (cloud)
+            if (set.IsCloud)
                 return Warn($"file source {source}: cloud saves cannot be file-copied — backups are unavailable");
-            if (!dbOk || !fwlOk)
-                return Warn($"file source {source ?? "?"}, .db={(dbOk ? "present" : "missing")} .fwl={(fwlOk ? "present" : "missing")} (a world that has never been saved reports missing)");
-            return Ok($"file source {source}, .db + .fwl present ({db})");
+            if (set.Chunked)
+            {
+                if (set.Generation < 0)
+                    return Warn($"file source {source}, chunked save directory {set.SaveDirectory ?? "?"} has no complete _main.N generation yet (a world that has never been saved on this build reports this)");
+                if (!set.Complete)
+                    return Fail($"file source {source}, chunked save generation {set.Generation} in {set.SaveDirectory} is missing chunk file(s) named by its index — the world may not load");
+                return Ok($"file source {source}, chunked save generation {set.Generation}: {set.Files.Count} files, {set.Bytes / 1048576} MB in {set.SaveDirectory}");
+            }
+            var dbOk = set.LegacyDb != null && set.Files.Contains(set.LegacyDb);
+            var fwlOk = set.LegacyFwl != null && set.Files.Contains(set.LegacyFwl);
+            if (!set.Complete)
+                return Warn($"file source {source}, legacy .db={(dbOk ? "present" : "missing")} .fwl={(fwlOk ? "present" : "missing")} (a world that has never been saved reports missing)");
+            return Ok($"file source {source}, legacy .db + .fwl present ({set.LegacyDb}); the first save on this build migrates it into a chunked directory");
         }
 
         private static Check CheckDisk()
@@ -1433,40 +1444,24 @@ namespace AdminPanelCompanion
             return -1;
         }
 
-        // ZNet.World is a STATIC property (ZNet.cs:257) backed by the static m_world field; both are probed.
-        private static object CurrentWorld()
-        {
-            try
-            {
-                return AccessTools.Property(typeof(ZNet), "World")?.GetValue(null, null)
-                       ?? AccessTools.Field(typeof(ZNet), "m_world")?.GetValue(null);
-            }
-            catch (Exception) { return null; }
-        }
+        // The path whose drive the disk checks measure: the world's chunked save directory (a legacy world: its
+        // .db), falling back to the companion's data directory while no world is loaded. Resolved through
+        // FeatureStore's cached helpers and remembered per world: this sits on the 5-second HealthSweep, so it
+        // must not cost a reflective lookup per call (main thread only, like every world helper).
+        private static string _diskProbeWorld;
+        private static string _diskProbePath;
 
-        // GetDBPath()/GetMetaPath() both have a FileSource overload, so the no-arg form is selected explicitly.
-        private static string WorldPath(bool meta)
+        private static string DiskProbePath()
         {
-            try
+            var w = FeatureStore.CurrentWorld();
+            var name = FeatureStore.WorldFileName(w);
+            if (name == null) return FeatureStore.DataDir;
+            if (_diskProbePath == null || !string.Equals(name, _diskProbeWorld, StringComparison.Ordinal))
             {
-                var w = CurrentWorld();
-                if (w == null) return null;
-                var m = AccessTools.Method(w.GetType(), meta ? "GetMetaPath" : "GetDBPath", new Type[0]);
-                return m?.Invoke(w, null) as string;
+                _diskProbeWorld = name;
+                _diskProbePath = FeatureStore.WorldSaveDirectory(w) ?? FeatureStore.WorldLegacyDbPath(w) ?? FeatureStore.DataDir;
             }
-            catch (Exception) { return null; }
-        }
-
-        private static string WorldFileSource()
-        {
-            try
-            {
-                var w = CurrentWorld();
-                if (w == null) return null;
-                var v = AccessTools.Field(w.GetType(), "m_fileSource")?.GetValue(w);
-                return v?.ToString();
-            }
-            catch (Exception) { return null; }
+            return _diskProbePath;
         }
 
         private static long FreeDiskBytes(out string label)
@@ -1474,8 +1469,7 @@ namespace AdminPanelCompanion
             label = "?";
             try
             {
-                var path = WorldPath(false);
-                if (string.IsNullOrEmpty(path)) path = FeatureStore.DataDir;
+                var path = DiskProbePath();
                 if (string.IsNullOrEmpty(path)) return -1;
                 var root = Path.GetPathRoot(Path.GetFullPath(path));
                 if (string.IsNullOrEmpty(root)) return -1;
@@ -1499,13 +1493,13 @@ namespace AdminPanelCompanion
             catch (Exception) { return 0; }
         }
 
-        // Game.m_saveInterval is a static float (Game.cs:126, default 1800).
+        // Game.m_saveInterval is a public static float (Game.cs:127, default 1800 s): read directly.
         private static int AutosaveIntervalMinutes()
         {
             try
             {
-                var f = AccessTools.Field(typeof(Game), "m_saveInterval");
-                if (f?.GetValue(null) is float s && s > 0f) return Mathf.Max(1, Mathf.RoundToInt(s / 60f));
+                var s = Game.m_saveInterval;
+                if (s > 0f) return Mathf.Max(1, Mathf.RoundToInt(s / 60f));
             }
             catch (Exception) { }
             return 0;

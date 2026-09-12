@@ -702,7 +702,7 @@ namespace AdminPanelCompanion
             catch (Exception) { return false; }
 
             SectorScratch.Clear();
-            try { ZoneCompat.FindSectorObjects(man, zone, 1, 0, SectorScratch, null); }   // 3x3 zones around the death
+            try { ZoneCompat.FindSectorObjects(man, zone, 1, SectorScratch); }   // 3x3 zones around the death (portals included)
             catch (Exception) { SectorScratch.Clear(); return false; }
 
             var wantName = string.IsNullOrEmpty(ownerName) || ownerName == "?" ? null : ownerName;

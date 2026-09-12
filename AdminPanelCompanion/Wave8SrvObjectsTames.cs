@@ -351,7 +351,7 @@ namespace AdminPanelCompanion
                 return;
             }
             prefab = Clean(prefab, 64);
-            if (prefab.Length == 0 || !PosOk(center) || float.IsNaN(radius) || float.IsInfinity(radius))
+            if (prefab.Length == 0 || !CenterOk(center) || float.IsNaN(radius) || float.IsInfinity(radius))
             {
                 CompanionPlugin.NotifySender(sender, "Cull rejected: pick a species (scan and select a row first) and a valid radius.");
                 return;

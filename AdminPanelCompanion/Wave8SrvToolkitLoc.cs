@@ -10,8 +10,9 @@ namespace AdminPanelCompanion
     //   AP_SrvLocTypesReq()          -> AP_LocTypes   every distinct location prefab with its counts
     //   AP_SrvLocFindReq(ZPackage)   -> AP_LocFind    the nearest N (<= 50) matching a name filter
     //
-    // Source: ZoneSystem.m_locationInstances (verified public in this build: Dictionary<Vector2i,
-    // LocationInstance>, LocationInstance { ZoneLocation m_location; Vector3 m_position; bool m_placed }).
+    // Source: ZoneSystem.m_locationInstances (verified public in 1.0.12, ZoneSystem.cs:543: Dictionary<Vector2s,
+    // LocationInstance> — zone keys are shorts since 1.0.12 — LocationInstance { ZoneLocation m_location;
+    // Vector3 m_position; bool m_placed }).
     // The table is filled by the world generator at load (ZoneSystem.GenerateLocations) and is complete
     // for the whole world regardless of what any player has explored, which is what makes a "nearest
     // crypt" answer possible without a ZDO sweep. m_placed only says whether the zone has been generated

@@ -50,11 +50,13 @@ namespace AdminPanelCompanion
     // * ZDO keys are the persisted STRING hashes (ZDOVars.cs): "tamed", "TamedName", "TamedNameAuthor",
     //   "health", "max_health", "level", "items", "InUse", "alive_time". The key text is what lives in the
     //   save file; the C# field name could be renamed by a game update.
-    // * ZoneSystem.GetZone(Vector3) is a static 64 m grid (ZoneSystem.cs:2458); ZDOMan.FindSectorObjects
-    //   (ZDOMan.cs:841) is public and appends the (2*area+1)^2 sector block — that is the "small zone
-    //   block" local query. World-wide walks reuse Wave2SrvWorld's container reflection
-    //   (m_objectsBySector / m_objectsByOutsideSector, flat m_objectsByID fallback) with a per-frame
-    //   time budget.
+    // * ZoneSystem.GetZone(Vector3) is a static 64 m grid returning Vector2s (ZoneSystem.cs:2971-2976);
+    //   ZDOMan.FindSectorObjects(Vector2s, SimulationDistance, ...) (ZDOMan.cs:1201) is public and appends
+    //   both the sector-array bucket and the portal bucket of every sector it visits (FindObjects,
+    //   ZDOMan.cs:1426-1441). ZoneCompat.FindSectorObjects wraps it as the classic square (2*zones+1)^2
+    //   block — that is the "small zone block" local query. World-wide walks use the shared ZoneCompat
+    //   container access (m_objectsBySector array + PortalsSnapshot; flat m_objectsByID fallback) with a
+    //   per-frame time budget; the pre-1.0.12 m_objectsByOutsideSector dictionary no longer exists.
     //
     // House rules: one Harmony class per target method, applied in Init() in its own try/catch and reported
     // through Wave2Ops.ReportPatch; every RPC parse in try/catch; every list bounded; reply payloads
@@ -317,9 +319,9 @@ namespace AdminPanelCompanion
         private const int KindTames = 0;
         private const int KindSearch = 1;
 
-        private const int PhaseSectors = 0;
-        private const int PhaseOutside = 1;
-        private const int PhaseFlat = 2;
+        private const int PhaseSectors = 0;   // m_objectsBySector, one slot per step
+        private const int PhasePortals = 1;   // ZoneCompat.PortalsSnapshot, after the array pass
+        private const int PhaseFlat = 2;      // fallback: one snapshot of m_objectsByID.Values (portals included)
         private const int PhaseDone = 3;
 
         private sealed class ScanJob
@@ -333,8 +335,8 @@ namespace AdminPanelCompanion
 
             public int Phase;
             public int SectorIndex, SectorLen;
-            public int OutsideIndex;
-            public List<List<ZDO>> Outside;
+            public List<ZDO> Portals;
+            public int PortalIndex;
             public ZDO[] Flat;
             public int FlatIndex;
 
@@ -351,15 +353,11 @@ namespace AdminPanelCompanion
         private static ScanJob _lastTame;    // finished jobs, answered to progress polls that arrive after completion
         private static ScanJob _lastSearch;
 
-        private static FieldInfo _fSectors, _fOutside, _fById;
-        private static bool _fieldsProbed;
-
         private static ScanJob NewJob(int kind, long requester)
         {
             if (ZDOMan.instance == null) return null;
-            EnsureFields();
             var job = new ScanJob { Kind = kind, Requester = requester, Total = TotalZdos() };
-            var sectors = SectorArray();
+            var sectors = ZoneCompat.SectorArray(ZDOMan.instance);
             if (sectors != null)
             {
                 job.Phase = PhaseSectors;
@@ -367,7 +365,7 @@ namespace AdminPanelCompanion
             }
             else
             {
-                var flat = FlatSnapshot();
+                var flat = ZoneCompat.FlatSnapshot(ZDOMan.instance);
                 if (flat == null)
                 {
                     CompanionPlugin.FeatureLog("World-object scan unavailable: neither ZDOMan.m_objectsBySector nor m_objectsByID could be read on this game build.");
@@ -406,7 +404,7 @@ namespace AdminPanelCompanion
                 switch (job.Phase)
                 {
                     case PhaseSectors: RunSectors(job, sw, budget); break;
-                    case PhaseOutside: RunOutside(job, sw, budget); break;
+                    case PhasePortals: RunPortals(job, sw, budget); break;
                     case PhaseFlat: RunFlat(job, sw, budget); break;
                     default: job.Phase = PhaseDone; break;
                 }
@@ -416,11 +414,12 @@ namespace AdminPanelCompanion
 
         private static void RunSectors(ScanJob job, Stopwatch sw, int budget)
         {
-            var arr = SectorArray();
+            var arr = ZoneCompat.SectorArray(ZDOMan.instance);
             if (arr == null || arr.Length != job.SectorLen)
             {
-                // World reloaded under us: stop walking a container that no longer describes this world.
-                job.Phase = PhaseOutside;
+                // World reloaded under us: stop walking a container that no longer describes this world,
+                // and skip the portal pass (it would add the NEW world's portals to a partial count).
+                job.Phase = PhaseDone;
                 return;
             }
             var since = 0;
@@ -437,32 +436,33 @@ namespace AdminPanelCompanion
                 since = 0;
                 if (sw.ElapsedMilliseconds >= budget) return;
             }
-            job.Phase = PhaseOutside;
+            job.Phase = PhasePortals;
         }
 
-        private static void RunOutside(ScanJob job, Stopwatch sw, int budget)
+        // Portals live only in ZDOMan.m_portalObjects (see the header), so the array pass is followed by ONE
+        // walk over ZoneCompat.PortalsSnapshot (a deduplicated copy). Portals carry no Character and no
+        // Container, so neither scan matches them — the pass exists so Scanned reaches Total and a portal is
+        // never an unexplained gap in the progress figures. Same frame-spreading as the other phases; the
+        // snapshot is re-validated per entry by ProcessZdo (IsValid), and InSectorBucket is a belt-and-braces
+        // guard against counting one object in both passes (the engine never puts a portal in the array).
+        private static void RunPortals(ScanJob job, Stopwatch sw, int budget)
         {
-            if (job.Outside == null)
+            if (job.Portals == null)
             {
-                // Snapshot the (small) outside-sector lists once: a live Dictionary enumeration across
-                // frames would throw the moment anything moved.
-                job.Outside = OutsideLists() ?? new List<List<ZDO>>();
-                job.OutsideIndex = 0;
+                job.Portals = ZoneCompat.PortalsSnapshot(ZDOMan.instance);
+                job.PortalIndex = 0;
             }
+            var arr = ZoneCompat.SectorArray(ZDOMan.instance);
             var since = 0;
-            while (job.OutsideIndex < job.Outside.Count)
+            while (job.PortalIndex < job.Portals.Count)
             {
-                var list = job.Outside[job.OutsideIndex++];
-                if (list != null && list.Count > 0)
-                {
-                    for (var i = 0; i < list.Count; i++) ProcessZdo(job, list[i]);
-                    since += list.Count;
-                }
-                else since++;
-                if (since < WorkUnitsPerClockRead) continue;
+                var zdo = job.Portals[job.PortalIndex++];
+                if (!ZoneCompat.InSectorBucket(arr, zdo)) ProcessZdo(job, zdo);
+                if (++since < WorkUnitsPerClockRead) continue;
                 since = 0;
                 if (sw.ElapsedMilliseconds >= budget) return;
             }
+            job.Portals = null;
             job.Phase = PhaseDone;
         }
 
@@ -506,64 +506,8 @@ namespace AdminPanelCompanion
             else SearchFinish(job);
         }
 
-        // ---- ZDOMan container access (same reflection as Wave2SrvWorld; own handles) ----
-
-        private static void EnsureFields()
-        {
-            if (_fieldsProbed) return;
-            _fieldsProbed = true;
-            try
-            {
-                _fSectors = AccessTools.Field(typeof(ZDOMan), "m_objectsBySector");
-                // Gone in 1.0.12 (the grid covers everything now). Type.GetField stays silent where
-                // AccessTools.Field would log a HarmonyX warning; a null here simply means "no outside bucket".
-                _fOutside = typeof(ZDOMan).GetField("m_objectsByOutsideSector", AccessTools.all);
-                _fById = AccessTools.Field(typeof(ZDOMan), "m_objectsByID");
-            }
-            catch (Exception e)
-            {
-                CompanionPlugin.FeatureLog($"ZDOMan container reflection failed: {e.Message}");
-            }
-        }
-
-        private static List<ZDO>[] SectorArray()
-        {
-            EnsureFields();
-            if (_fSectors == null || ZDOMan.instance == null) return null;
-            try { return _fSectors.GetValue(ZDOMan.instance) as List<ZDO>[]; }
-            catch (Exception) { return null; }
-        }
-
-        private static List<List<ZDO>> OutsideLists()
-        {
-            EnsureFields();
-            if (_fOutside == null || ZDOMan.instance == null) return null;
-            try
-            {
-                var dict = _fOutside.GetValue(ZDOMan.instance) as Dictionary<Vector2i, List<ZDO>>;
-                if (dict == null) return null;
-                var res = new List<List<ZDO>>(dict.Count);
-                foreach (var kv in dict) res.Add(kv.Value);
-                return res;
-            }
-            catch (Exception) { return null; }
-        }
-
-        private static ZDO[] FlatSnapshot()
-        {
-            EnsureFields();
-            if (_fById == null || ZDOMan.instance == null) return null;
-            try
-            {
-                var dict = _fById.GetValue(ZDOMan.instance) as Dictionary<ZDOID, ZDO>;
-                if (dict == null) return null;
-                var arr = new ZDO[dict.Count];
-                dict.Values.CopyTo(arr, 0);
-                return arr;
-            }
-            catch (Exception) { return null; }
-        }
-
+        // ZDOMan container access lives in ZoneCompat (shared with Wave2SrvWorld); the total is the public
+        // NrOfObjects() = m_objectsByID.Count, portals included (ZDOMan.cs:1717-1720).
         private static int TotalZdos()
         {
             try { return ZDOMan.instance != null ? ZDOMan.instance.NrOfObjects() : 0; }
@@ -574,16 +518,17 @@ namespace AdminPanelCompanion
 
         private static readonly List<ZDO> Scratch = new List<ZDO>();
 
-        // Every ZDO in the (2*zones+1)^2 sector block around `center`. Returns false when the object store
+        // Every ZDO in the (2*zones+1)^2 sector block around `center` (portals included: the engine's
+        // FindObjects reads the portal bucket of every visited sector). Returns false when the object store
         // is unavailable. Synchronous on purpose: at most 81 sectors, exactly the "small zone block" the
-        // area tools already walk.
+        // area tools already walk. Callers validate `center` with CenterOk first.
         private static bool CollectBlock(Vector3 center, int zones, List<ZDO> result)
         {
             result.Clear();
             var man = ZDOMan.instance;
             if (man == null) return false;
             zones = Mathf.Clamp(zones, 1, MaxZoneBlock);
-            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), zones, 0, result); }
+            try { ZoneCompat.FindSectorObjects(man, ZoneSystem.GetZone(center), zones, result); }
             catch (Exception e)
             {
                 result.Clear();
@@ -718,6 +663,16 @@ namespace AdminPanelCompanion
         private static bool PosOk(Vector3 p) =>
             !(float.IsNaN(p.x) || float.IsNaN(p.y) || float.IsNaN(p.z) ||
               float.IsInfinity(p.x) || float.IsInfinity(p.y) || float.IsInfinity(p.z));
+
+        // A zone-block CENTRE must also lie inside the world: the playable disc ends at
+        // WorldGenerator.waterEdge = 10500 m (WorldGenerator.cs:167), and far beyond it the zone grid runs out
+        // (|zone| >= 256 aliases Sector 0, the bucket every sector-invalidated ZDO shares — ZoneSystem.cs:2990-
+        // 3003), so a bogus centre would answer with unrelated objects from anywhere. PosOk stays the looser
+        // test for sort origins, where an out-of-world point only changes the row order.
+        private const float WorldEdgeMeters = 10600f;
+
+        private static bool CenterOk(Vector3 p) =>
+            PosOk(p) && Mathf.Abs(p.x) <= WorldEdgeMeters && Mathf.Abs(p.z) <= WorldEdgeMeters;
 
         private static float DistXZ(Vector3 a, Vector3 b)
         {
