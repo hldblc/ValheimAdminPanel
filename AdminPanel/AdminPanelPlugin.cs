@@ -17,7 +17,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.2";
+        public const string PluginVersion = "2.5.3";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
@@ -332,6 +332,11 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.5.3: adminlist matching now uses the game's own rules. A Steam server reports your bare " +
+            "SteamID64 while adminlist.txt may hold it as Steam_<id> or V_<id> (the form hosting panels " +
+            "write); the companion only matched the bare form, so real admins were denied every server " +
+            "action (audit.log showed DENIED-NOT-ADMIN, Extras got no replies). BOTH DLLs are 2.5.3 - " +
+            "server owners: update AdminPanelCompanion.dll and restart.\n\n" +
             "• 2.5.2: the review of the 1.0.12 hotfix found four more breaks and fixed them all - Build Tools " +
             "terrain reset could flatten a zone for everyone (it now validates every engine handle, keeps a " +
             "snapshot and restores it if the save is refused), server backups now understand the chunked " +

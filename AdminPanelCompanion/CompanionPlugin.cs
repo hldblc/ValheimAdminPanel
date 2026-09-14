@@ -14,7 +14,7 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.2";
+        public const string PluginVersion = "2.5.3";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
@@ -304,6 +304,20 @@ namespace AdminPanelCompanion
         private static SyncedList GetList(string field) =>
             AccessTools.Field(typeof(ZNet), field)?.GetValue(ZNet.instance) as SyncedList;
 
+        // Adminlist membership with the GAME's own matching rules. A Steam socket reports the bare
+        // SteamID64 while adminlist.txt may hold "Steam_<id>", "<id>" or the display form "V_<id>" that
+        // hosting panels write; vanilla ZNet.IsAdmin -> ListContainsId accepts all three, so a hand-rolled
+        // Contains(host)/Contains(BareId(host)) pair denied real admins (2.5.3 fix, GPortal report).
+        // The old pair stays as a fallback in case IsAdmin ever moves or throws on a future game build.
+        internal static bool AdminListContains(string host)
+        {
+            if (string.IsNullOrEmpty(host) || ZNet.instance == null) return false;
+            try { if (ZNet.instance.IsAdmin(host)) return true; }
+            catch (Exception e) { Log($"ZNet.IsAdmin failed for {host}, falling back to list scan: {e.Message}"); }
+            var adminList = GetList("m_adminList");
+            return adminList != null && (adminList.Contains(host) || adminList.Contains(BareId(host)));
+        }
+
         private static bool SenderIsAdmin(long sender)
         {
             if (ZNet.instance == null) return false;
@@ -315,8 +329,7 @@ namespace AdminPanelCompanion
             var host = peer != null && peer.m_socket != null ? peer.m_socket.GetHostName() : null;
             if (string.IsNullOrEmpty(host)) { Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
 
-            var adminList = GetList("m_adminList");
-            var isAdmin = adminList != null && (adminList.Contains(host) || adminList.Contains(BareId(host)));
+            var isAdmin = AdminListContains(host);
             if (!isAdmin) Log($"DENIED admin action from non-admin {host} (peer {sender})");
             return isAdmin;
         }

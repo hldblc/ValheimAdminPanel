@@ -297,6 +297,9 @@ namespace AdminPanelCompanion
         internal static bool FeatureIsAdminId(string hostId)
         {
             if (string.IsNullOrEmpty(hostId)) return false;
+            // Game-rule matching first (Steam_/bare/V_ forms, see AdminListContains); the reflective scan
+            // below is the last resort for a SyncedList whose surface has shifted.
+            try { if (AdminListContains(hostId)) return true; } catch (Exception) { }
             try
             {
                 var list = AccessTools.Field(typeof(ZNet), "m_adminList")?.GetValue(ZNet.instance);

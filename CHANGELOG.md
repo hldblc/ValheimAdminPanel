@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.3
+
+**BOTH DLLs are 2.5.3** — server owners: update `AdminPanelCompanion.dll` on the server and restart.
+
+- **Admins were denied on servers whose adminlist.txt holds a prefixed id.** A Steam-socket server reports a
+  player's bare SteamID64, while `adminlist.txt` may store the same id as `Steam_<id>` or as the display form
+  `V_<id>` that hosting panels write when you add yourself. The game accepts all three; the companion only matched
+  the bare form, so every server action was refused (`DENIED-NOT-ADMIN` in `audit.log`, no replies to the Extras
+  tab, while client-only toggles like time of day or fly kept working). Adminlist membership now goes through the
+  game's own `ZNet.IsAdmin`, with the old list scan kept as a fallback. Reported from a GPortal server.
+
 ## 2.5.2
 
 **BOTH DLLs are 2.5.2** — server owners: update `AdminPanelCompanion.dll` on the server and restart.
