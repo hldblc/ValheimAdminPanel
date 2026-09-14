@@ -8,10 +8,9 @@ using UnityEngine;
 namespace AdminPanelCompanion
 {
     // ==================== Wave 8 — SYSTEMS group core (server + client-side executors) ====================
-    // Four round-2 features share this core:
+    // Three round-2 features share this core (the #24 companion self-update lived here until 2.5.4):
     //   #21 death rules            Wave8SrvSystemsDeath.cs   (Wave8SystemsDeath)
     //   #23 bounty board           Wave8SrvSystemsBounty.cs  (Wave8SystemsBounty)
-    //   #24 companion self-update  Wave8SrvSystemsUpdate.cs  (Wave8SystemsUpdate)
     //   #25 client perf census     Wave8SrvSystemsPerf.cs    (Wave8SystemsPerf)
     //
     // This file owns what they share: the ONE ZNet.Awake registration class for every RPC name of the group,
@@ -50,10 +49,6 @@ namespace AdminPanelCompanion
             ApplyPatch("Wave8SystemsJoinPatch", typeof(Wave8SystemsJoinPatch), "join-time pushes/announcements unavailable");
             ApplyPatch("Wave8SystemsLeavePatch", typeof(Wave8SystemsLeavePatch), "per-peer state is not pruned on disconnect");
 
-            // Self-update FIRST: a staged build from the previous session is applied (or reported) before
-            // anything else in this group runs, as the contract requires.
-            try { Wave8SystemsUpdate.Init(); }
-            catch (Exception e) { CompanionPlugin.FeatureLog($"Wave8 self-update init failed (feature unavailable): {e.Message}"); }
             try { Wave8SystemsDeath.Init(); }
             catch (Exception e) { CompanionPlugin.FeatureLog($"Wave8 death rules init failed (feature unavailable): {e.Message}"); }
             try { Wave8SystemsBounty.Init(); }
@@ -75,8 +70,6 @@ namespace AdminPanelCompanion
             catch (Exception e) { CompanionPlugin.FeatureLog($"Wave8 bounty tick failed: {e.Message}"); }
 
             if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
-            try { Wave8SystemsUpdate.Tick(); }
-            catch (Exception e) { CompanionPlugin.FeatureLog($"Wave8 self-update tick failed: {e.Message}"); }
             try { StepJoinPushes(); }
             catch (Exception e) { CompanionPlugin.FeatureLog($"Wave8 join push failed: {e.Message}"); }
         }
@@ -122,12 +115,6 @@ namespace AdminPanelCompanion
                     rpc.Register<ZPackage>("AP_SrvBountyAction", Wave8SystemsBounty.OnBountyAction);            // server (builder)
                     rpc.Register<ZPackage>("AP_BountyKill", Wave8SystemsBounty.OnBountyKill);                   // server, PLAYER-authored
                     rpc.Register<ZPackage>("AP_BountyTargets", Wave8SystemsBounty.OnTargetsExecutor);           // client executor
-
-                    // --- #24 companion self-update ---
-                    rpc.Register("AP_SrvUpdateCheck", new Action<long>(Wave8SystemsUpdate.OnCheck));           // server (owner)
-                    rpc.Register("AP_SrvUpdateStage", new Action<long>(Wave8SystemsUpdate.OnStage));           // server (owner)
-                    rpc.Register("AP_SrvUpdateApply", new Action<long>(Wave8SystemsUpdate.OnApply));           // server (owner)
-                    rpc.Register("AP_SrvUpdateStateReq", new Action<long>(Wave8SystemsUpdate.OnStateReq));     // server (read)
 
                     // --- #25 client performance census ---
                     rpc.Register<ZPackage>("AP_PerfReport", Wave8SystemsPerf.OnPerfReport);                     // server, PLAYER-authored

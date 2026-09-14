@@ -29,8 +29,6 @@ namespace AdminPanel
                 AdminPanelLocalBridge.Register("AP_DeathRulesData", ParseDeathRulesData);
                 ZRoutedRpc.instance.Register<ZPackage>("AP_BountyData", BountyOnData);
                 AdminPanelLocalBridge.Register("AP_BountyData", ParseBountyData);
-                ZRoutedRpc.instance.Register<ZPackage>("AP_UpdateState", SelfupOnState);
-                AdminPanelLocalBridge.Register("AP_UpdateState", ParseUpdateState);
                 ZRoutedRpc.instance.Register<ZPackage>("AP_ClientPerf", PcensusOnData);
                 AdminPanelLocalBridge.Register("AP_ClientPerf", ParseClientPerf);
             }

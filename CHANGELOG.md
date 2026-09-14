@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.4
+
+**BOTH DLLs are 2.5.4** — server owners: update `AdminPanelCompanion.dll` on the server and restart.
+
+- **The companion self-update module is gone.** Thunderstore's Global Rules require packages to rely on mod
+  managers for updates rather than be capable of updating themselves, and this module (check GitHub, download and
+  stage `AdminPanelCompanion.dll`, swap it in at the next restart) was exactly that. Nothing in either DLL downloads
+  or replaces files any more. Update through your mod manager or from the GitHub releases page; the in-game notice
+  that a newer version exists stays, and only opens that page in your browser. The Extras tab now lists 32 modules.
+  A leftover `AdminPanelCompanion.dll.staged` file next to an older companion is no longer applied; delete it by hand.
+
 ## 2.5.3
 
 **BOTH DLLs are 2.5.3** — server owners: update `AdminPanelCompanion.dll` on the server and restart.

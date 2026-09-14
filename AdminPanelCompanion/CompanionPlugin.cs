@@ -14,7 +14,7 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.3";
+        public const string PluginVersion = "2.5.4";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables

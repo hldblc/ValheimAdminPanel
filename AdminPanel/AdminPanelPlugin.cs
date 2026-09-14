@@ -17,7 +17,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.3";
+        public const string PluginVersion = "2.5.4";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
@@ -332,6 +332,11 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.5.4: the companion self-update module was removed. Thunderstore requires mods to leave " +
+            "updating to mod managers, and this was the one piece that could download and replace a DLL " +
+            "on the server. Nothing in either DLL downloads or replaces files now; the notice that a newer " +
+            "version exists stays and only opens the releases page. Extras lists 32 modules. BOTH DLLs " +
+            "are 2.5.4 - server owners: update AdminPanelCompanion.dll and restart.\n\n" +
             "• 2.5.3: adminlist matching now uses the game's own rules. A Steam server reports your bare " +
             "SteamID64 while adminlist.txt may hold it as Steam_<id> or V_<id> (the form hosting panels " +
             "write); the companion only matched the bare form, so real admins were denied every server " +
@@ -347,14 +352,14 @@ namespace AdminPanel
             "panel warning when the server companion is affected. The build itself now fails when Valheim " +
             "updates underneath it. BOTH DLLs are 2.5.2 - server owners: update AdminPanelCompanion.dll " +
             "and restart.\n\n" +
-            "• New Extras tab (9th tab): 33 optional modules for dedicated-server admins, one chip " +
+            "• New Extras tab (9th tab): 32 optional modules for dedicated-server admins, one chip " +
             "each — moderation (warn / mute / freeze / jail / watchlist), audit trail, tiered admin " +
             "roles, rap sheets, server tools (MOTD, restarts, backups), diagnostics, Discord " +
             "webhooks, player data and offline queues, economy and shops, guard, protection zones, " +
             "build tools, map pins and map reveal, location finder, spawner manager, chest " +
             "inspector, tames, creature editor, recipe/build blacklist, skill, death and trader " +
-            "rules, raid composer, bounty board, staff chat, item forge, client perf census and " +
-            "companion self-update.\n\n" +
+            "rules, raid composer, bounty board, staff chat, item forge and client perf " +
+            "census.\n\n" +
             "• Everything that changes server behaviour is OFF by default. Hide the whole tab with " +
             "[Features] EnableExtrasTab = false in the config file.\n\n" +
             "• Server tab is now \"server truth\": real ZDO count, per-peer ping, last-save and " +

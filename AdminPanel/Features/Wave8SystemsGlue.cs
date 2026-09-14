@@ -13,7 +13,6 @@ namespace AdminPanel
         {
             DeathInit();
             BountyInit();
-            SelfupInit();
             PcensusInit();
 
             // Reply handlers. Registration rides a ZNet.Awake postfix (client RPCs bind on world join, not
@@ -28,8 +27,6 @@ namespace AdminPanel
             { Id = "Bounties", LocKey = "bounty.chip", Draw = DrawBountiesSection, Enabled = BountySectionEnabled, Tab = ToolsTab });
             RegisterFeatureSection(new FeatureSection
             { Id = "ClientPerf", LocKey = "pcensus.chip", Draw = DrawClientPerfSection, Enabled = PcensusSectionEnabled, Tab = ToolsTab });
-            RegisterFeatureSection(new FeatureSection
-            { Id = "SelfUpdate", LocKey = "selfup.chip", Draw = DrawSelfUpdateSection, Enabled = SelfupSectionEnabled, Tab = ToolsTab });
         }
 
         // Per-world state: server-truth payloads, their Layout snapshots, throttles and typed targets. All of
@@ -38,7 +35,6 @@ namespace AdminPanel
         {
             DeathReset();
             BountyReset();
-            SelfupReset();
             PcensusReset();
         }
 

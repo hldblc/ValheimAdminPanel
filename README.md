@@ -11,7 +11,7 @@ Press **F7** and run your realm from one window: spawn anything, teleport anywhe
 
 ## At a glance
 
-- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and 33 optional server modules.
+- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and 32 optional server modules.
 - **Server-validated.** Every action that touches the world or another player is checked on the server against `adminlist.txt`. Non-admins get buttons that do nothing.
 - **Single-player and dedicated servers.** In single-player you are the host and automatically an admin.
 - **Mod-aware.** Items and creatures from other installed mods show up automatically.
@@ -40,16 +40,16 @@ Both DLLs must be the **same version** on the client and the server. The Server 
 | 👥 **Players** | Live roster: teleport to, summon, spectate, heal, ping, lightning strike, live inventory viewer, kick / ban, per-player admin notes. |
 | 📊 **Server** | Stats read from the server itself: ZDO count, per-peer ping, last-save and next-autosave clocks, the server's plugin roster, admin and ban lists, join / leave log, force save, offline ban / unban by ID. |
 | ⚙ **Settings** | Language, font and size, panel opacity, logo header, camera lock, hotkey rebinding. All in-game, all persistent. |
-| 🧰 **Extras** | 33 optional modules for dedicated-server admins, one chip each. See below. |
+| 🧰 **Extras** | 32 optional modules for dedicated-server admins, one chip each. See below. |
 
-## Extras: 33 server modules
+## Extras: 32 server modules
 
 Every module is a chip you switch on in the Extras tab. **Everything that changes server behaviour is off by default** and needs the companion on the server.
 
 | Area | Modules |
 | --- | --- |
 | **Moderation & accountability** | Moderation (warn, mute, freeze, jail, watchlist, temp-ban, lockdown), audit trail, rap sheets, tiered admin roles, direct messages, staff chat, guard (anti-cheat flags, client-mod reports, dry-run mode) |
-| **Server operations** | Server tools (MOTD, scheduled restarts, backups and staged restore), diagnostics and performance, Discord webhooks, companion self-update, client performance census |
+| **Server operations** | Server tools (MOTD, scheduled restarts, backups and staged restore), diagnostics and performance, Discord webhooks, client performance census |
 | **Players & economy** | Player data and offline queues, economy and shops, trader stock editor, bounty board, death rules, skill gain rules |
 | **World & objects** | Area tools and protection zones, build tools (piece editor, blueprints, terrain reset, free camera), location finder, spawner and nest manager, chest inspector, tame roster, creature editor, map pins, map reveal |
 | **Rules & content** | Recipe and build blacklist, item forge, raid composer, macros and workflows, extensions SDK |
