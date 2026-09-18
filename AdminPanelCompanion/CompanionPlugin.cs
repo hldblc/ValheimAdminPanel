@@ -14,12 +14,12 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.4";
+        public const string PluginVersion = "2.5.5";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
         // anything — the bind probe below is what tells whether the mismatch actually broke something.
-        internal const string CompiledForGameVersion = "1.0.12";
+        internal const string CompiledForGameVersion = "1.0.14";
 
         internal static CompanionPlugin Instance;
 
@@ -46,6 +46,15 @@ namespace AdminPanelCompanion
             catch (Exception e) { Logger.LogWarning($"Peer leave-log patch failed (join/leave history unavailable): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(SaveTimestampPatch)); }
             catch (Exception e) { Logger.LogWarning($"Save-timestamp patch failed (last-save time unavailable): {e.Message}"); }
+            // 2.5.5: drop the client-bound list RPCs on the server (vanilla lets any peer rewrite the live adminlist).
+            try
+            {
+                Harmony.CreateAndPatchAll(typeof(BlockInboundAdminListPatch));
+                Harmony.CreateAndPatchAll(typeof(BlockInboundPlayerListPatch));
+                Harmony.CreateAndPatchAll(typeof(BlockInboundHistoricalListPatch));
+                InboundListGuardActive = true;
+            }
+            catch (Exception e) { Logger.LogWarning($"Inbound list-RPC guard patch failed (a modified client could rewrite this server's adminlist over the network): {e.Message}"); }
             FeaturesInit();   // additive feature modules (Features*.cs); safe no-op if none are compiled in
             Logger.LogInfo($"{PluginName} {PluginVersion} loaded.");
             // Health self-check, after FeaturesInit so every feature type is loaded and registered. Neither step
@@ -156,7 +165,8 @@ namespace AdminPanelCompanion
         // SHARED CONTRACT health payload, key=value pairs joined by ';' in this exact order:
         //   game=<Version.GetVersionString(false)>;built=<CompiledForGameVersion>;steam=<ValheimSteamBuild|unknown>;
         //   probe=<ok|failed|skipped>;checked=<int>;failed=<int>;names=<up to 8 "Type.Method" joined by ','>
-        // Sent to the asker right after AP_VersionData (OnServerVersionReq); read by reflection on a listen host.
+        // Sent to the asker right after AP_VersionData (OnServerVersionReq), which appends ";admin=0|1" for that
+        // asker (2.5.5; not part of this property, a host is admin by definition); read by reflection on a listen host.
         // probe=skipped until the worker has finished, so an early handshake may say skipped — the panel re-asks
         // on its next handshake. Cheap: the probe never re-runs, only the string is rebuilt.
         public static string HealthSummary
@@ -177,7 +187,8 @@ namespace AdminPanelCompanion
                      + ";probe=" + BindProbe.State
                      + ";checked=" + (r != null ? r.Checked : 0)
                      + ";failed=" + (r != null ? r.Failed : 0)
-                     + ";names=" + names;
+                     + ";names=" + names
+                     + ";listguard=" + (InboundListGuardActive ? "1" : "0");
             }
         }
 
@@ -318,7 +329,9 @@ namespace AdminPanelCompanion
             return adminList != null && (adminList.Contains(host) || adminList.Contains(BareId(host)));
         }
 
-        private static bool SenderIsAdmin(long sender)
+        // logDenied=false is for QUERIES (the AP_SrvVersion handshake asks "am I an admin?"): a non-admin
+        // pressing F7 is not an admin action and must not be logged as one.
+        private static bool SenderIsAdmin(long sender, bool logDenied = true)
         {
             if (ZNet.instance == null) return false;
             // The host is implicitly admin, exactly as the engine treats it in ZNet.LocalPlayerIsAdminOrHost().
@@ -327,10 +340,10 @@ namespace AdminPanelCompanion
             if (IsLocalHostSender(sender)) return true;
             var peer = ZNet.instance.GetPeer(sender);
             var host = peer != null && peer.m_socket != null ? peer.m_socket.GetHostName() : null;
-            if (string.IsNullOrEmpty(host)) { Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
+            if (string.IsNullOrEmpty(host)) { if (logDenied) Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
 
             var isAdmin = AdminListContains(host);
-            if (!isAdmin) Log($"DENIED admin action from non-admin {host} (peer {sender})");
+            if (!isAdmin && logDenied) Log($"DENIED admin action from non-admin {host} (peer {sender})");
             return isAdmin;
         }
 
@@ -572,6 +585,55 @@ namespace AdminPanelCompanion
             }
         }
 
+        // Vanilla registers the client-bound list RPCs ("AdminList", "PlayerList", "HistoricalPlayerList") on
+        // EVERY peer connection, server side included, with no IsServer guard (ZNet.RPC_PeerInfo, 1.0.14
+        // ZNet.cs:1126-1128). On the server m_adminListForRpc is the SyncedList's own live list
+        // (ZNet.cs:375 m_adminListForRpc = m_adminList.GetList()), so a modified client that invokes
+        // "AdminList" with its own id REPLACES the server's in-memory adminlist.txt until the file changes
+        // on disk — every adminlist check in the game and in this companion would then say yes. A server never
+        // legitimately receives any of the three; drop them there. Clients (and the host's own receive path
+        // for its in-process copies) are untouched because IsServer() is false for a remote client.
+        [HarmonyPatch(typeof(ZNet), "RPC_AdminList")]
+        private static class BlockInboundAdminListPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(ZNet __instance, ZRpc rpc) => !DropInboundListRpc(__instance, rpc, "AdminList");
+        }
+
+        [HarmonyPatch(typeof(ZNet), "RPC_PlayerList")]
+        private static class BlockInboundPlayerListPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(ZNet __instance, ZRpc rpc) => !DropInboundListRpc(__instance, rpc, "PlayerList");
+        }
+
+        [HarmonyPatch(typeof(ZNet), "RPC_HistoricalPlayerList")]
+        private static class BlockInboundHistoricalListPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(ZNet __instance, ZRpc rpc) => !DropInboundListRpc(__instance, rpc, "HistoricalPlayerList");
+        }
+
+        private static readonly HashSet<long> _listRpcWarned = new HashSet<long>();
+        internal static bool InboundListGuardActive;   // true once the three prefixes above are applied (Awake)
+
+        private static bool DropInboundListRpc(ZNet znet, ZRpc rpc, string name)
+        {
+            if (znet == null || !znet.IsServer()) return false;
+            try
+            {
+                ZNetPeer peer = null;
+                if (rpc != null)
+                    foreach (var p in znet.GetPeers())
+                        if (p != null && p.m_rpc == rpc) { peer = p; break; }   // GetPeer(ZRpc) is private; same walk as PeerJoinLogPatch
+                var uid = peer != null ? peer.m_uid : 0L;
+                if (_listRpcWarned.Add(uid))
+                    Log($"DROPPED inbound '{name}' RPC from peer {uid} ({(peer != null ? peer.m_playerName : "?")} / {(peer?.m_socket != null ? peer.m_socket.GetHostName() : "?")}): a server never receives this; a stock client never sends it (adminlist tampering attempt)");
+            }
+            catch (Exception) { /* logging only */ }
+            return true;
+        }
+
         // Prefix, because Disconnect tears the peer down — the name is still readable here. A kick makes the
         // game call Disconnect twice on the same peer; the pairing set in RecordPeerEvent absorbs the second.
         [HarmonyPatch(typeof(ZNet), "Disconnect", typeof(ZNetPeer))]
@@ -580,7 +642,9 @@ namespace AdminPanelCompanion
             [HarmonyPrefix]
             private static void Prefix(ZNet __instance, ZNetPeer peer)
             {
-                if (__instance.IsServer()) RecordPeerEvent(peer, false);
+                if (!__instance.IsServer()) return;
+                RecordPeerEvent(peer, false);
+                if (peer != null) _panelNotified.Remove(peer.m_uid);
             }
         }
 
@@ -951,6 +1015,10 @@ namespace AdminPanelCompanion
         // ---------- server: version handshake ----------
         // Any client may ask; the reply goes only to the asker. No admin gate needed — the version string
         // is not sensitive, and gating it would hide exactly the mismatch the panel wants to display.
+        // Peers already told (once per connection) that they opened the panel without being an admin. Uids are
+        // per connection, so a rejoin logs again; cleared in PeerLeaveLogPatch.
+        private static readonly HashSet<long> _panelNotified = new HashSet<long>();
+
         private static void OnServerVersionReq(long sender)
         {
             if (!IsDedicatedServer) return;
@@ -958,7 +1026,18 @@ namespace AdminPanelCompanion
             // Health payload (SHARED CONTRACT) right behind the version. Panels older than 2.5.2 never registered
             // AP_HealthData; ZRoutedRpc.HandleRoutedRPC drops a routed call whose name has no registered method
             // (the m_functions lookup simply misses), so the extra reply is invisible to them.
-            try { ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_HealthData", HealthSummary); }
+            // 2.5.5: ";admin=0|1" is appended - the asker's adminlist.txt verdict under the SAME rules every
+            // AP_Srv* handler applies (SenderIsAdmin -> vanilla ZNet.IsAdmin). The panel replaces its whole body
+            // with a "not an admin here" notice on 0. Older panels ignore unknown keys (ParseHealth). This is a
+            // query, so the DENIED log line is suppressed; instead the owner gets ONE line per connection.
+            var isAdmin = SenderIsAdmin(sender, logDenied: false);
+            if (!isAdmin && _panelNotified.Add(sender))
+            {
+                var peer = ZNet.instance.GetPeer(sender);
+                var who = peer != null ? $"{peer.m_playerName} / {(peer.m_socket != null ? peer.m_socket.GetHostName() : "?")}" : "?";
+                Log($"peer {sender} ({who}) runs the Admin Panel client but is not in adminlist.txt - the panel is disabled for them and every server action they send is denied");
+            }
+            try { ZRoutedRpc.instance.InvokeRoutedRPC(sender, "AP_HealthData", HealthSummary + ";admin=" + (isAdmin ? "1" : "0")); }
             catch (Exception e) { Log($"AP_HealthData reply failed: {e.GetType().Name}: {e.Message}"); }
         }
 

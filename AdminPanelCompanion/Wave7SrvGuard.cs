@@ -75,6 +75,7 @@ namespace AdminPanelCompanion
 
         // ---- rule identifiers (also the wire strings and the guard_flags key suffix) ----
         private const string RuleFly = "fly";
+        private const string RuleDamage = "damage";
         private const string RuleSpeed = "speed";
         private const string RuleHealth = "health";
         private const string RuleNoclip = "noclip";
@@ -116,6 +117,8 @@ namespace AdminPanelCompanion
         private static ConfigEntry<int> _acActionThreshold;
         private static ConfigEntry<int> _acFreezeMinutes;
         private static ConfigEntry<bool> _acRuleFly;
+        private static ConfigEntry<bool> _acRuleDamage;
+        private static ConfigEntry<float> _acDamageCap;
         private static ConfigEntry<bool> _acRuleSpeed;
         private static ConfigEntry<bool> _acRuleHealth;
         private static ConfigEntry<bool> _acRuleNoclip;
@@ -137,6 +140,8 @@ namespace AdminPanelCompanion
         private static int AcActionThreshold => _acActionThreshold != null ? Mathf.Max(1, _acActionThreshold.Value) : 5;
         private static int AcFreezeMinutes => _acFreezeMinutes != null ? Mathf.Clamp(_acFreezeMinutes.Value, 1, 60) : 5;
         private static bool RuleFlyOn => _acRuleFly == null || _acRuleFly.Value;
+        private static bool RuleDamageOn => _acRuleDamage == null || _acRuleDamage.Value;
+        private static float DamageCap => _acDamageCap != null ? Mathf.Max(100f, _acDamageCap.Value) : 10000f;
         private static bool RuleSpeedOn => _acRuleSpeed == null || _acRuleSpeed.Value;
         private static bool RuleHealthOn => _acRuleHealth == null || _acRuleHealth.Value;
         private static bool RuleNoclipOn => _acRuleNoclip == null || _acRuleNoclip.Value;
@@ -227,6 +232,10 @@ namespace AdminPanelCompanion
                     "Rule 'speed': flag sustained horizontal movement above AcSpeedThreshold. The noisiest rule - teleports, portals, deaths, boats and lag all imitate it, so it is heavily filtered (see AcSpeedTeleportCutoff / AcSpeedConsecutive / AcTeleportGraceSeconds). Turn this off first if you see false positives. Only active when EnableAntiCheat is on.");
                 _acRuleHealth = cfg.Bind("Features", "AcRuleHealth", true,
                     "Rule 'health': flag a character reporting current or maximum health above AcHealthCap for 3 consecutive samples. Only active when EnableAntiCheat is on.");
+                _acRuleDamage = cfg.Bind("Features", "AcRuleDamage", true,
+                    "Rule 'damage': DROP any routed hit whose damage total exceeds AcDamageCap before it reaches the target, and flag the sender. The only rule that prevents instead of observes: the server relays every RPC_Damage sent to a character another client or the server owns (other players, their tames, creatures simulated near someone else), so a one-hit-kill cheat never lands on those. Hits on creatures the cheater's own client simulates stay client-local and are invisible to the server (vanilla design). Admins (adminlist members) are exempt. Only active when EnableAntiCheat is on.");
+                _acDamageCap = cfg.Bind("Features", "AcDamageCap", 10000f,
+                    "Total damage (all damage types summed) above which a single routed hit is dropped by the 'damage' rule. Vanilla hits stay well under 3000 even with backstabs on Ashlands-tier gear; raise it if a mod legitimately deals more.");
                 _acRuleNoclip = cfg.Bind("Features", "AcRuleNoclip", true,
                     "Rule 'noclip': flag a character whose Y stays below AcNoclipFloorY for 3 consecutive samples (fell through the world, or is under the terrain). Only active when EnableAntiCheat is on.");
                 _acSpeedThreshold = cfg.Bind("Features", "AcSpeedThreshold", 30f,
@@ -271,6 +280,102 @@ namespace AdminPanelCompanion
                 "speed rule loses its teleport whitelist - portals/admin teleports may produce flags");
             ApplyPatch("Wave7GuardTeleportZdoWatch", typeof(Wave7TeleportZdoWatchPatch),
                 "speed rule loses the ZDO-targeted teleport whitelist");
+            ApplyPatch("Wave7GuardDamageCap", typeof(Wave7DamageCapPatch),
+                "damage rule inactive - oversized routed hits are relayed unchanged");
+        }
+
+        // ==================== rule 'damage': the relay chokepoint ====================
+        // Every RPC_Damage that targets a character SOMEONE ELSE owns passes through the server as a routed RPC
+        // (ZNetView.InvokeRPC -> ZRoutedRpc -> the owner). Reading the HitData's damage block here costs one
+        // int compare per routed packet and a handful of float reads per damage packet. Runs after the sender
+        // sanitizer (priority 400) so `sender` is the real peer, and after the chat chokepoint (150).
+        private static readonly int RpcDamageHash = "RPC_Damage".GetStableHashCode();
+        private static readonly Dictionary<long, long> DamageFlagAt = new Dictionary<long, long>();   // uid -> last flag ticks
+        private const int DamageFlagCooldownSeconds = 5;   // every oversized hit is dropped; flags/alerts are throttled
+
+        [HarmonyPatch(typeof(ZRoutedRpc), "RPC_RoutedRPC")]
+        [HarmonyPriority(140)]
+        private static class Wave7DamageCapPatch
+        {
+            private static bool Prefix(ZRpc rpc, ZPackage pkg)
+            {
+                if (!_inited || pkg == null || !AcOn || !RuleDamageOn) return true;
+                var znet = ZNet.instance;
+                if (znet == null || !znet.IsServer()) return true;
+                int pos;
+                try { pos = pkg.GetPos(); }
+                catch (Exception) { return true; }
+
+                // 1. Parse. Any failure here relays the packet untouched (never eat a legitimate hit).
+                float total;
+                try
+                {
+                    // RoutedRPCData layout: 0 msgID(8) | 8 sender(8) | 16 target(8) | 24 targetZDO(12) |
+                    // 36 methodHash(4) | 40 parameters (length-prefixed sub-package).
+                    pkg.SetPos(36);
+                    if (pkg.ReadInt() != RpcDamageHash) { pkg.SetPos(pos); return true; }
+                    pkg.SetPos(40);
+                    var parms = pkg.ReadPackage();
+                    pkg.SetPos(pos);
+                    total = ReadHitDamageTotal(parms);
+                }
+                catch (Exception)
+                {
+                    try { pkg.SetPos(pos); } catch (Exception) { }
+                    return true;
+                }
+                if (!(total > DamageCap)) return true;   // NaN never gets here: ReadHitDamageTotal maps it to +Inf
+
+                // 2. Who. The peer comes from the SOCKET that delivered the packet, never from the sender field
+                // (the same walk RouteRpcSanitizer does), so neither the exemption nor the flag can be redirected
+                // by a forged uid, and this rule does not depend on the sanitizer having applied.
+                ZNetPeer peer = null;
+                try
+                {
+                    foreach (var p in znet.GetPeers())
+                        if (p != null && p.m_rpc == rpc) { peer = p; break; }
+                }
+                catch (Exception) { peer = null; }
+                var host = peer != null && peer.m_socket != null ? peer.m_socket.GetHostName() : null;
+                if (string.IsNullOrEmpty(host)) return true;                   // not a remote peer we can name
+                if (CompanionPlugin.FeatureIsAdminId(host)) return true;       // admins are exempt, like every rule
+
+                // 3. Drop, then flag. The drop is decided; nothing the flag path does may turn it back into a relay.
+                try
+                {
+                    var now = DateTime.UtcNow.Ticks;
+                    long last;
+                    if (!DamageFlagAt.TryGetValue(peer.m_uid, out last) || now - last >= TimeSpan.TicksPerSecond * DamageFlagCooldownSeconds)
+                    {
+                        DamageFlagAt[peer.m_uid] = now;
+                        RegisterHit(host, peer.m_uid, RuleDamage,
+                            $"routed hit of {total:0} total damage (cap {DamageCap:0}) dropped before it reached the target", peer.m_refPos);
+                    }
+                }
+                catch (Exception e) { CompanionPlugin.FeatureLog($"Guard damage flag failed (hit still dropped): {e.Message}"); }
+                return false;
+            }
+        }
+
+        // HitData.Serialize: a flags word, then one float per SET damage-type bit (bits 0-10: damage, blunt,
+        // slash, pierce, chop, pickaxe, fire, frost, lightning, poison, spirit; 1.0.14 adds bit 16 = nonPlayer,
+        // written right after spirit), then the rest of the hit. Only POSITIVE finite components count: the
+        // receiver strips or clamps negative ones (Character.RPC_Damage / AddPoisonDamage), so a cheater cannot
+        // hide 50000 behind a -45000; NaN or +Infinity in any component is treated as infinite damage.
+        private static float ReadHitDamageTotal(ZPackage p)
+        {
+            var flags = p.ReadUInt();
+            var total = 0f;
+            for (var bit = 0; bit < 11; bit++)
+                if ((flags & (1u << bit)) != 0) total = AddDamageComponent(total, p.ReadSingle());
+            if ((flags & 0x10000u) != 0) total = AddDamageComponent(total, p.ReadSingle());
+            return total;
+        }
+
+        private static float AddDamageComponent(float total, float v)
+        {
+            if (float.IsNaN(v) || float.IsPositiveInfinity(v)) return float.PositiveInfinity;
+            return v > 0f ? total + v : total;
         }
 
         private static void ApplyPatch(string name, Type patchClass, string degradation)

@@ -268,7 +268,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _mpinScroll = GUILayout.BeginScrollView(_mpinScroll,
-                    GUILayout.Height(Mathf.Min(ListView(360f), rows.Count * 28f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(360f), rows.Count * 28f + 16f)));
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var r = rows[i];

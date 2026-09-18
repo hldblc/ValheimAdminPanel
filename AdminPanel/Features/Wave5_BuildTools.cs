@@ -263,7 +263,7 @@ namespace AdminPanel
                 _bldLoRowsLayout = BldRows(BldLoadoutKv());
             }
 
-            _bldScroll = GUILayout.BeginScrollView(_bldScroll, GUILayout.Height(ListView(150f)));
+            _bldScroll = GUILayout.BeginScrollView(_bldScroll, GUILayout.Height(FeatureListView(150f)));
 
             BldDrawPieceCard();
             BldDrawBlueprintCard();
@@ -907,6 +907,14 @@ namespace AdminPanel
         {
             try { return GameCamera.InFreeFly(); }
             catch (Exception) { return false; }
+        }
+
+        // Admin gate closed: a free-fly session this panel started ends now (one the player started through the
+        // game's own console is left alone, exactly like the Escape path).
+        internal void BldOnGateClosed()
+        {
+            if (!_bldInited || !_bldFreeCamOurs || !BldFreeCamActive()) return;
+            BldToggleFreeCam();
         }
 
         private void BldToggleFreeCam()

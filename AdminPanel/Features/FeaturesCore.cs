@@ -19,34 +19,52 @@ namespace AdminPanel
             public string LocKey;         // chip label locale key
             public Action Draw;
             public Func<bool> Enabled;    // section hidden when false (re-check each Layout pass)
-            // Which feature tab hosts the chip: 0 = Extras (waves 1-7, the default), ToolsTab = the Tools
-            // tab added for the round-2 features. Two tabs because 30+ chips in one row wrap into six lines.
-            public int Tab;
         }
 
-        internal const int ToolsTab = 1;
+        // The Tools tab (2.5.5: one tab, was Extras + Tools) is a category row over a section row over the
+        // section body. Categories are fixed here, in display order, and own the order of their sections;
+        // a section a wave registers under an id no category lists lands in the last category so it is
+        // never silently lost. Category ids are config/state keys and never localized.
+        internal sealed class FeatureCategory
+        {
+            public string Id;
+            public string LocKey;
+            public string[] Sections;   // section ids, in display order
+        }
 
-        private ConfigEntry<bool> _extrasTabCfg;
+        private static readonly FeatureCategory[] FeatureCategories =
+        {
+            new FeatureCategory { Id = "moderation", LocKey = "feat.cat.moderation",
+                Sections = new[] { "Moderation", "RapSheet", "Roles", "Audit", "Guard", "StaffChat", "DirectMessage" } },
+            new FeatureCategory { Id = "server", LocKey = "feat.cat.server",
+                Sections = new[] { "ServerTools", "Diagnostics", "Discord", "ClientPerf", "Extensions" } },
+            new FeatureCategory { Id = "players", LocKey = "feat.cat.players",
+                Sections = new[] { "PlayerData", "Economy", "Bounties", "DeathRules", "SkillRules", "MapReveal", "TraderStock", "Blacklist", "ItemForge" } },
+            new FeatureCategory { Id = "world", LocKey = "feat.cat.world",
+                Sections = new[] { "AreaTools", "BuildTools", "LocationFinder", "Spawners", "Containers", "TameRoster", "CreatureEditor", "MapPins", "RaidComposer" } },
+            new FeatureCategory { Id = "shortcuts", LocKey = "feat.cat.shortcuts",
+                Sections = new[] { "Macros", "Workflow" } },
+        };
+
+        private ConfigEntry<bool> _extrasTabCfg;   // config key kept as EnableExtrasTab (2.5.x files stay valid)
         private readonly List<FeatureSection> _featureSections = new List<FeatureSection>();
         private bool _featuresInited;
 
-        // Extras tab index sits after the fixed tabs; the switch in DrawWindow routes it via default:.
+        // Tools tab index sits after the fixed tabs; the switch in DrawWindow routes it via default:.
         private static int FeatureTabIndex => TabKeys.Length;
 
-        // Chip selection follows the Items/Player-tab snapshot discipline: the live field flips on the
-        // event pass, the Layout snapshot is what every pass of the same frame draws from.
-        private string _extrasChip;
-        private string _extrasChipLayout;
+        // Selection follows the Items/Player-tab snapshot discipline: the live fields flip on the event pass,
+        // the Layout snapshots are what every pass of the same frame draws from. The chip is remembered per
+        // category so switching categories and back lands on the section the admin was using.
+        private string _featureCat;
+        private string _featureCatLayout;
+        private readonly Dictionary<string, string> _featureChip = new Dictionary<string, string>(StringComparer.Ordinal);
+        private string _featureChipLayout;
         private bool _featureTabVisibleLayout;
-        private List<FeatureSection> _featureSectionsLayout;   // enabled subset, pinned per frame
-
-        // Same trio for the Tools tab (round-2 sections). Kept as parallel fields rather than arrays so the
-        // Extras tab's state and every existing reference to it stay byte-for-byte what waves 1-7 shipped.
-        private static int ToolsTabIndex => TabKeys.Length + 1;
-        private string _toolsChip;
-        private string _toolsChipLayout;
-        private bool _toolsTabVisibleLayout;
-        private List<FeatureSection> _toolsSectionsLayout;
+        private List<FeatureCategory> _featureCatsLayout;        // categories with at least one enabled section
+        private List<FeatureSection> _featureSectionsLayout;     // enabled sections of the selected category, in order
+        private int _featureSectionRowsLayout;                   // chip rows the section row wraps into (drives the body height)
+        private Vector2 _featureBodyScroll;
 
         // ---- lifecycle hooks (called from the main file) ----
 
@@ -55,7 +73,7 @@ namespace AdminPanel
             if (_featuresInited) return;
             _featuresInited = true;
             _extrasTabCfg = Config.Bind("Features", "EnableExtrasTab", true,
-                "Master switch for the Extras tab that hosts all feature modules. Off = the panel looks and behaves exactly as before.");
+                "Master switch for the Tools tab that hosts all 32 optional modules (categories: Moderation, Server, Players, World, Shortcuts). Off = the panel shows only the eight base tabs.");
 
             // Waves register their sections + init their own config/patches. Unimplemented waves no-op.
             //
@@ -82,10 +100,23 @@ namespace AdminPanel
         private void WaveInitFailed(string wave, Exception e) =>
             Logger.LogWarning($"Feature wave {wave} failed to initialise (its sections are unavailable; the rest of the panel is unaffected): {e}");
 
+        // 2.5.5 admin gate closed (or never opened) for this server: anything a feature module keeps running
+        // OUTSIDE the panel body — the palette overlay + its hotkey, macros, free camera — stops here, in the
+        // same tick the main file clears its own self-cheats. Everything else lives in the (now hidden) body.
+        private void FeaturesOnGateClosed()
+        {
+            if (!_featuresInited) return;
+            try { PalOnGateClosed(); }
+            catch (Exception e) { Logger.LogWarning($"Palette gate hook failed (ignored): {e.Message}"); }
+            try { BldOnGateClosed(); }
+            catch (Exception e) { Logger.LogWarning($"Build tools gate hook failed (ignored): {e.Message}"); }
+        }
+
         private void FeaturesResetSession()
         {
             _featureSectionsLayout = null;
-            _toolsSectionsLayout = null;
+            _featureCatsLayout = null;
+            _featureBodyScroll = Vector2.zero;
             FeaturesResetWave1();
             FeaturesResetWave2();
             FeaturesResetWave3();
@@ -144,23 +175,12 @@ namespace AdminPanel
             _featureSections.Add(s);
         }
 
-        // 660 keeps the 8 fixed tabs clickable; each feature tab (Extras, Tools) needs one more 90 px slot.
-        // Not layout-affecting per-pass (it clamps the window rect, not a control), so live computation is
-        // safe here.
-        private float MinPanelWidth() =>
-            660f + (FeatureTabVisible() ? 90f : 0f) + (ToolsTabVisible() ? 90f : 0f);
-
-        private bool HasSectionsOnTab(int tab)
-        {
-            foreach (var s in _featureSections) if (s.Tab == tab) return true;
-            return false;
-        }
+        // 660 keeps the 8 fixed tabs clickable; the Tools tab needs one more 90 px slot. Not layout-affecting
+        // per-pass (it clamps the window rect, not a control), so live computation is safe here.
+        private float MinPanelWidth() => 660f + (FeatureTabVisible() ? 90f : 0f);
 
         private bool FeatureTabVisible() =>
-            _featuresInited && _extrasTabCfg.Value && HasSectionsOnTab(0);
-
-        private bool ToolsTabVisible() =>
-            _featuresInited && _extrasTabCfg.Value && HasSectionsOnTab(ToolsTab);
+            _featuresInited && _extrasTabCfg.Value && _featureSections.Count > 0;
 
         // The master switch alone, for wave ticks that must fall silent when the operator turned the Extras
         // tab off — a tick has no chip and does not care about the registered-section count FeatureTabVisible
@@ -171,21 +191,10 @@ namespace AdminPanel
         // never change between the Layout and Repaint passes of one frame.
         private void DrawFeatureTabButton()
         {
-            if (Event.current.type == EventType.Layout)
-            {
-                _featureTabVisibleLayout = FeatureTabVisible();
-                _toolsTabVisibleLayout = ToolsTabVisible();
-            }
-            if (_featureTabVisibleLayout)
-            {
-                var pressed = GUILayout.Toggle(_tab == FeatureTabIndex, Loc.T("tab.extras"), _tabStyle);
-                if (pressed && _tab != FeatureTabIndex) { _tab = FeatureTabIndex; _openDropdown = null; _rebindTarget = 0; }
-            }
-            if (_toolsTabVisibleLayout)
-            {
-                var pressed = GUILayout.Toggle(_tab == ToolsTabIndex, Loc.T("tab.tools"), _tabStyle);
-                if (pressed && _tab != ToolsTabIndex) { _tab = ToolsTabIndex; _openDropdown = null; _rebindTarget = 0; }
-            }
+            if (Event.current.type == EventType.Layout) _featureTabVisibleLayout = FeatureTabVisible();
+            if (!_featureTabVisibleLayout) return;
+            var pressed = GUILayout.Toggle(_tab == FeatureTabIndex, Loc.T("tab.tools"), _tabStyle);
+            if (pressed && _tab != FeatureTabIndex) { _tab = FeatureTabIndex; _openDropdown = null; _rebindTarget = 0; }
         }
 
         // The Extras button vanishes the moment the master switch goes off, but _tab is what DrawWindow's
@@ -196,82 +205,146 @@ namespace AdminPanel
         // gates the button on, so the button and the body can never disagree about whether the tab exists.
         private void FeatureClampTab()
         {
-            if (_tab < FeatureTabIndex) return;
-            var visible = _tab == FeatureTabIndex ? _featureTabVisibleLayout
-                        : _tab == ToolsTabIndex && _toolsTabVisibleLayout;
-            if (visible) return;
+            if (_tab < FeatureTabIndex || _featureTabVisibleLayout) return;
             _tab = 0;
             _openDropdown = null;
             _rebindTarget = 0;
         }
 
-        // DrawWindow's default: case lands here for every index past the fixed tabs; the two feature tabs
-        // share one chip-row implementation and differ only in which state trio they draw from.
-        private void DrawFeaturesTab()
+        private FeatureSection FindSection(string id)
         {
-            if (_tab == ToolsTabIndex)
-                DrawFeatureChipTab(ToolsTab, _toolsTabVisibleLayout, ref _toolsChip, ref _toolsChipLayout, ref _toolsSectionsLayout);
-            else
-                DrawFeatureChipTab(0, _featureTabVisibleLayout, ref _extrasChip, ref _extrasChipLayout, ref _featureSectionsLayout);
+            foreach (var s in _featureSections) if (s.Id == id) return s;
+            return null;
         }
 
-        private void DrawFeatureChipTab(int tab, bool visibleLayout, ref string chip, ref string chipLayout,
-            ref List<FeatureSection> sectionsLayout)
+        private static bool SectionEnabled(FeatureSection s) => s.Enabled == null || s.Enabled();
+
+        // Enabled sections of one category, in the category's own order; sections registered under an id no
+        // category lists are appended to the LAST category (never dropped).
+        private List<FeatureSection> EnabledSectionsOf(FeatureCategory cat)
         {
-            // Pin the enabled-section list and chip selection per frame (sections toggle from config UI on
-            // the event pass; an unpinned list would change the chip row's control count mid-frame). The
-            // master switch is pinned through the tab row's own snapshot: with the Extras tab hidden this
-            // body must emit nothing at all, or the whole feature UI stays drawn and clickable under a tab
-            // row where no tab is selected. Reading _extrasTabCfg live instead would flip the count between
-            // the two passes of one frame.
+            var list = new List<FeatureSection>();
+            foreach (var id in cat.Sections)
+            {
+                var s = FindSection(id);
+                if (s != null && SectionEnabled(s)) list.Add(s);
+            }
+            if (ReferenceEquals(cat, FeatureCategories[FeatureCategories.Length - 1]))
+            {
+                foreach (var s in _featureSections)
+                {
+                    if (!SectionEnabled(s)) continue;
+                    var listed = false;
+                    foreach (var c in FeatureCategories) if (Array.IndexOf(c.Sections, s.Id) >= 0) { listed = true; break; }
+                    if (!listed) list.Add(s);
+                }
+            }
+            return list;
+        }
+
+        // Height reserved above the section body: the shared title/tab chrome the other tabs budget (~96 px at
+        // font 13), the category row, the section chip rows and the spacing between them. Read from the Layout
+        // snapshot so it is constant within a frame.
+        private float FeatureBodyReserve() => 96f + 34f * (1 + Mathf.Max(1, _featureSectionRowsLayout)) + 14f;
+
+        // For lists INSIDE a section. The body already scrolls as a whole, so an inner list may never be taller
+        // than the body minus whatever the section draws ABOVE the list (its own view-chip row, a card): that is
+        // `above`, in pixels at font 13. Sections whose list sits under a large form pass a bigger reserve and get
+        // a shorter box, exactly as before; the floor only stops the list from outgrowing the body.
+        internal float FeatureListView(float reserve, float above = 0f) =>
+            ListView(Mathf.Max(reserve, FeatureBodyReserve() + 28f + above));
+
+        // DrawWindow's default: case lands here for every index past the fixed tabs.
+        private void DrawFeaturesTab()
+        {
+            // Pin everything the row/body emits per frame (sections toggle from config UI on the event pass; an
+            // unpinned list would change the control count mid-frame). With the tab hidden this body must emit
+            // nothing at all, or the feature UI stays drawn under a tab row where no tab is selected.
             if (Event.current.type == EventType.Layout)
             {
-                List<FeatureSection> enabled = null;
-                if (visibleLayout)
+                List<FeatureCategory> cats = null;
+                List<FeatureSection> sections = null;
+                if (_featureTabVisibleLayout)
                 {
-                    enabled = new List<FeatureSection>();
-                    foreach (var s in _featureSections)
-                        if (s.Tab == tab && (s.Enabled == null || s.Enabled())) enabled.Add(s);
-                    if (chip == null && enabled.Count > 0) chip = enabled[0].Id;
+                    cats = new List<FeatureCategory>();
+                    foreach (var c in FeatureCategories) if (EnabledSectionsOf(c).Count > 0) cats.Add(c);
+                    if (cats.Count > 0)
+                    {
+                        var cur = cats.Find(c => c.Id == _featureCat);
+                        if (cur == null) { cur = cats[0]; _featureCat = cur.Id; }
+                        sections = EnabledSectionsOf(cur);
+                        string chip;
+                        if (!_featureChip.TryGetValue(cur.Id, out chip) || sections.Find(x => x.Id == chip) == null)
+                        {
+                            chip = sections.Count > 0 ? sections[0].Id : null;
+                            _featureChip[cur.Id] = chip;
+                        }
+                        _featureChipLayout = chip;
+                    }
                 }
-                sectionsLayout = enabled;
-                chipLayout = chip;
+                _featureCatsLayout = cats;
+                _featureCatLayout = _featureCat;
+                _featureSectionsLayout = sections;
+                _featureSectionRowsLayout = sections != null ? (sections.Count + 5) / 6 : 1;
             }
 
-            var list = sectionsLayout;
-            if (list == null) return;   // tab not visible this frame — no controls, on every pass
-            if (list.Count == 0)
+            var catList = _featureCatsLayout;
+            if (catList == null) return;   // tab not visible this frame — no controls, on every pass
+            if (catList.Count == 0)
             {
                 GUILayout.Label(Loc.T("feat.none"), _hintStyle);
                 return;
             }
 
-            // Chip row, 6-wide wrap — mirrors the Player tab's subcategory chips.
+            // Category row — the Player tab's subcategory style, one row.
+            GUILayout.BeginHorizontal();
+            foreach (var c in catList)
+            {
+                var wasOn = _featureCatLayout == c.Id;
+                if (GUILayout.Toggle(wasOn, Loc.T(c.LocKey), _catStyle) && !wasOn)
+                {
+                    _featureCat = c.Id;
+                    _featureBodyScroll = Vector2.zero;
+                }
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6);
+
+            // Section row, 6-wide wrap. Act only on an off->on FLIP: an untouched Toggle returns the value it was
+            // drawn with, so the chip that is already selected reports true on every pass — and because it is
+            // drawn later in this same loop than the chip the user just clicked, a plain "if (on)" would let it
+            // overwrite the new selection and snap straight back.
+            var list = _featureSectionsLayout;
             var perRow = 0;
             GUILayout.BeginHorizontal();
             foreach (var s in list)
             {
                 if (perRow == 6) { GUILayout.EndHorizontal(); GUILayout.BeginHorizontal(); perRow = 0; }
-                // Act only on an off->on FLIP. An untouched Toggle returns the value it was drawn with, so
-                // the chip that is already selected reports true on every pass — and because it is drawn
-                // later in this same loop than the chip the user just clicked, a plain "if (on)" would let
-                // it overwrite the new selection and snap straight back. Symptom: you can move forward
-                // through the chips but never back to an earlier one. The base panel hit this exact bug in
-                // the What's New / Bug Report toggle; same rule applies here.
-                var wasOn = chipLayout == s.Id;
+                var wasOn = _featureChipLayout == s.Id;
                 var on = GUILayout.Toggle(wasOn, Loc.T(s.LocKey), _chipStyleOrButton(), GUILayout.MinWidth(90));
-                if (on && !wasOn) chip = s.Id;
+                if (on && !wasOn)
+                {
+                    _featureChip[_featureCatLayout] = s.Id;
+                    _featureBodyScroll = Vector2.zero;
+                }
                 perRow++;
             }
             GUILayout.EndHorizontal();
-            GUILayout.Space(10);
+            GUILayout.Space(8);
 
-            foreach (var s in list)
+            // One body scroll view for every section: the bottom edge is the same on every chip, sections with
+            // no list of their own no longer run off the window, and long forms stay reachable.
+            _featureBodyScroll = GUILayout.BeginScrollView(_featureBodyScroll, GUILayout.Height(ListView(FeatureBodyReserve())));
+            try
             {
-                if (s.Id != chipLayout) continue;
-                s.Draw();
-                break;
+                foreach (var s in list)
+                {
+                    if (s.Id != _featureChipLayout) continue;
+                    s.Draw();
+                    break;
+                }
             }
+            finally { GUILayout.EndScrollView(); }
         }
 
         // The Items/Player chips use _buttonStyle as their toggle style; reuse it so chips skin identically.

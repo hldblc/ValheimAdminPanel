@@ -421,7 +421,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _chestScroll = GUILayout.BeginScrollView(_chestScroll,
-                    GUILayout.Height(Mathf.Min(ListView(560f), d.Rows.Count * 26f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(560f), d.Rows.Count * 26f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];
@@ -515,7 +515,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _chestSearchScroll = GUILayout.BeginScrollView(_chestSearchScroll,
-                    GUILayout.Height(Mathf.Min(ListView(560f), d.Rows.Count * 26f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(560f), d.Rows.Count * 26f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];

@@ -310,7 +310,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            _wfScroll = GUILayout.BeginScrollView(_wfScroll, GUILayout.Height(ListView(230f)));
+            _wfScroll = GUILayout.BeginScrollView(_wfScroll, GUILayout.Height(FeatureListView(230f, 150f)));
             switch (_wfSubLayout)
             {
                 case 0: WfDrawSlotEditor(slots); break;
@@ -761,7 +761,7 @@ namespace AdminPanel
         private void WfDrawHelp()
         {
             BeginCard(Loc.T("ux2.help_section"));
-            _wfHelpScroll = GUILayout.BeginScrollView(_wfHelpScroll, GUILayout.Height(Mathf.Min(460f, ListView(330f))));
+            _wfHelpScroll = GUILayout.BeginScrollView(_wfHelpScroll, GUILayout.Height(Mathf.Min(460f, FeatureListView(330f))));
 
             GUILayout.Label(Loc.T("ux2.help_tabs_title"), _headerStyle);
             GUILayout.Label(Loc.T("ux2.help_tab_items"), _proseStyle);

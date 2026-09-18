@@ -527,7 +527,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
             GUILayout.Space(6);
 
-            _toolScroll = GUILayout.BeginScrollView(_toolScroll, GUILayout.Height(ListView(200f)));
+            _toolScroll = GUILayout.BeginScrollView(_toolScroll, GUILayout.Height(FeatureListView(200f, 42f)));
 
             // Host note. The count decision reads the Layout snapshot, so it is fixed for the whole frame;
             // the text now describes where the data comes from rather than claiming there will not be any.

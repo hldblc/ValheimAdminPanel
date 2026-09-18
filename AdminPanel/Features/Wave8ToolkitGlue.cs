@@ -23,13 +23,13 @@ namespace AdminPanel
 
             // All four sit on the Tools tab; chip order = expected frequency of use.
             RegisterFeatureSection(new FeatureSection
-            { Id = "StaffChat", LocKey = "achat.chip", Draw = DrawStaffChatSection, Enabled = AchatSectionEnabled, Tab = ToolsTab });
+            { Id = "StaffChat", LocKey = "achat.chip", Draw = DrawStaffChatSection, Enabled = AchatSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "LocationFinder", LocKey = "locf.chip", Draw = DrawLocationFinderSection, Enabled = LocfSectionEnabled, Tab = ToolsTab });
+            { Id = "LocationFinder", LocKey = "locf.chip", Draw = DrawLocationFinderSection, Enabled = LocfSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "ItemForge", LocKey = "iattr.chip", Draw = DrawItemForgeSection, Enabled = IattrSectionEnabled, Tab = ToolsTab });
+            { Id = "ItemForge", LocKey = "iattr.chip", Draw = DrawItemForgeSection, Enabled = IattrSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "RaidComposer", LocKey = "raidc.chip", Draw = DrawRaidComposerSection, Enabled = RaidcSectionEnabled, Tab = ToolsTab });
+            { Id = "RaidComposer", LocKey = "raidc.chip", Draw = DrawRaidComposerSection, Enabled = RaidcSectionEnabled });
         }
 
         // Per-world state: server-truth payloads, their Layout snapshots, throttles, typed targets and the

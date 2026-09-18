@@ -22,11 +22,11 @@ namespace AdminPanel
 
             // Every round-2 section lives on the Tools tab. Chip order = expected frequency of use.
             RegisterFeatureSection(new FeatureSection
-            { Id = "DeathRules", LocKey = "death.chip", Draw = DrawDeathRulesSection, Enabled = DeathSectionEnabled, Tab = ToolsTab });
+            { Id = "DeathRules", LocKey = "death.chip", Draw = DrawDeathRulesSection, Enabled = DeathSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "Bounties", LocKey = "bounty.chip", Draw = DrawBountiesSection, Enabled = BountySectionEnabled, Tab = ToolsTab });
+            { Id = "Bounties", LocKey = "bounty.chip", Draw = DrawBountiesSection, Enabled = BountySectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "ClientPerf", LocKey = "pcensus.chip", Draw = DrawClientPerfSection, Enabled = PcensusSectionEnabled, Tab = ToolsTab });
+            { Id = "ClientPerf", LocKey = "pcensus.chip", Draw = DrawClientPerfSection, Enabled = PcensusSectionEnabled });
         }
 
         // Per-world state: server-truth payloads, their Layout snapshots, throttles and typed targets. All of

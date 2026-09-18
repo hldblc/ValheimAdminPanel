@@ -340,7 +340,7 @@ namespace AdminPanel
                 GUILayout.Label(chat ? Loc.T("audit.col_msg") : Loc.T("audit.col_result"), _headerStyle, GUILayout.MinWidth(120));
                 GUILayout.EndHorizontal();
 
-                _audScroll = GUILayout.BeginScrollView(_audScroll, GUILayout.Height(ListView(420f)));
+                _audScroll = GUILayout.BeginScrollView(_audScroll, GUILayout.Height(FeatureListView(420f)));
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var r = rows[i];

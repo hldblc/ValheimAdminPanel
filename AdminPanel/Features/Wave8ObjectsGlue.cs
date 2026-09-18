@@ -26,13 +26,13 @@ namespace AdminPanel
 
             // Chip order = expected frequency of use. All four live on the Tools tab.
             RegisterFeatureSection(new FeatureSection
-            { Id = "TameRoster", LocKey = "tame.chip", Draw = DrawTameRosterSection, Enabled = TameSectionEnabled, Tab = ToolsTab });
+            { Id = "TameRoster", LocKey = "tame.chip", Draw = DrawTameRosterSection, Enabled = TameSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "CreatureEditor", LocKey = "cedit.chip", Draw = DrawCreatureEditorSection, Enabled = CeditSectionEnabled, Tab = ToolsTab });
+            { Id = "CreatureEditor", LocKey = "cedit.chip", Draw = DrawCreatureEditorSection, Enabled = CeditSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "Spawners", LocKey = "nest.chip", Draw = DrawSpawnersSection, Enabled = NestSectionEnabled, Tab = ToolsTab });
+            { Id = "Spawners", LocKey = "nest.chip", Draw = DrawSpawnersSection, Enabled = NestSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "Containers", LocKey = "chest.chip", Draw = DrawContainersSection, Enabled = ChestSectionEnabled, Tab = ToolsTab });
+            { Id = "Containers", LocKey = "chest.chip", Draw = DrawContainersSection, Enabled = ChestSectionEnabled });
         }
 
         // Per-world state: server-truth payloads, their Layout snapshots, aimed targets, throttles and the

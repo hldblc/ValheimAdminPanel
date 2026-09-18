@@ -331,7 +331,7 @@ namespace AdminPanel
             var p = _diagPerfLayout;
             // Two stacked cards can exceed a short window, and neither of them owns an inner list, so one
             // outer scroll is the right shape here (the log/self-test views scroll their lists instead).
-            _diagPerfScroll = GUILayout.BeginScrollView(_diagPerfScroll, GUILayout.Height(ListView(160f)));
+            _diagPerfScroll = GUILayout.BeginScrollView(_diagPerfScroll, GUILayout.Height(FeatureListView(160f, 44f)));
             BeginCard(Loc.T("diag.perf_section"));
 
             GUILayout.BeginHorizontal();
@@ -452,7 +452,7 @@ namespace AdminPanel
             {
                 // Newest last, exactly as tailed. Cell style clips instead of wrapping, and the labels size
                 // to their text, so a long line scrolls horizontally rather than reflowing the whole list.
-                _diagLogScroll = GUILayout.BeginScrollView(_diagLogScroll, GUILayout.Height(ListView(330f)));
+                _diagLogScroll = GUILayout.BeginScrollView(_diagLogScroll, GUILayout.Height(FeatureListView(330f)));
                 for (var i = 0; i < lines.Count; i++)
                     GUILayout.Label(lines[i] ?? "", _dimCellStyle);
                 GUILayout.EndScrollView();
@@ -501,7 +501,7 @@ namespace AdminPanel
                     else if (checks[i].Status == 2) fail++;
                 }
 
-                _diagTestScroll = GUILayout.BeginScrollView(_diagTestScroll, GUILayout.Height(ListView(360f)));
+                _diagTestScroll = GUILayout.BeginScrollView(_diagTestScroll, GUILayout.Height(FeatureListView(360f)));
                 for (var i = 0; i < checks.Count; i++)
                 {
                     var c = checks[i];

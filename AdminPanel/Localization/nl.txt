@@ -2088,3 +2088,17 @@ pcensus.legend=Gemarkeerd: gemiddelde FPS onder {0}, of een companion-versie die
 bounty.currency_default=munten
 nest.axis_x=X
 nest.axis_z=Z
+# ---- 2.5.5 admin gate ----
+chrome.gate_title=Admincontrole
+chrome.not_admin=⚠ Je bent geen admin op deze server: je ID staat niet in zijn adminlist.txt. Het paneel is hier uitgeschakeld. Vraag de servereigenaar om je toe te voegen en druk dan op Opnieuw controleren.
+chrome.no_companion=⚠ Deze server draait AdminPanelCompanion.dll niet, dus elke actie zou stilletjes worden weggegooid. Het paneel is hier uitgeschakeld. De eigenaar moet BEIDE modbestanden op de server installeren en hem herstarten.
+chrome.checking=Contact maken met de companion van de server… (tot 15 s)
+chrome.recheck=Opnieuw controleren
+chrome.gate_hint=Paneel v{0} · servercompanion: {1}
+chrome.companion_no_admin_flag=⚠ Servercompanion v{0} dateert van vóór de admincontrole; de adminlist-kopie van de server wordt gebruikt. Werk de companion bij.
+# ---- 2.5.5 tools categories ----
+feat.cat.moderation=Moderatie
+feat.cat.server=Server
+feat.cat.players=Spelers
+feat.cat.world=Wereld
+feat.cat.shortcuts=Snelkoppelingen

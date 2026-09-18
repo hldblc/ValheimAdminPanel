@@ -2088,3 +2088,17 @@ pcensus.legend=Markerat: genomsnittlig FPS under {0}, eller en companion-version
 bounty.currency_default=mynt
 nest.axis_x=X
 nest.axis_z=Z
+# ---- 2.5.5 admin gate ----
+chrome.gate_title=Adminkontroll
+chrome.not_admin=⚠ Du är inte admin på den här servern: ditt ID finns inte i dess adminlist.txt. Panelen är avstängd här. Be serverägaren lägga till dig och tryck sedan på Kontrollera igen.
+chrome.no_companion=⚠ Den här servern kör inte AdminPanelCompanion.dll, så varje åtgärd skulle tyst kastas bort. Panelen är avstängd här. Ägaren måste installera BÅDA modfilerna på servern och starta om den.
+chrome.checking=Kontaktar serverns companion… (upp till 15 s)
+chrome.recheck=Kontrollera igen
+chrome.gate_hint=Panel v{0} · serverns companion: {1}
+chrome.companion_no_admin_flag=⚠ Serverns companion v{0} är äldre än adminkontrollen; serverns kopia av adminlistan används i stället. Uppdatera companion.
+# ---- 2.5.5 tools categories ----
+feat.cat.moderation=Moderering
+feat.cat.server=Server
+feat.cat.players=Spelare
+feat.cat.world=Värld
+feat.cat.shortcuts=Genvägar

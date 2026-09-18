@@ -287,7 +287,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _tameScroll = GUILayout.BeginScrollView(_tameScroll,
-                    GUILayout.Height(Mathf.Min(ListView(520f), d.Rows.Count * 28f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(520f), d.Rows.Count * 28f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];

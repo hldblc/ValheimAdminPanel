@@ -232,7 +232,7 @@ namespace AdminPanel
             else
             {
                 _roleScroll = GUILayout.BeginScrollView(_roleScroll,
-                    GUILayout.Height(Mathf.Min(ListView(430f), assigns.Count * 30f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(430f), assigns.Count * 30f + 16f)));
                 for (var i = 0; i < assigns.Count; i++)
                 {
                     var a = assigns[i];

@@ -215,7 +215,7 @@ namespace AdminPanel
                 GUILayout.Label(Loc.T(emptyKey), _hintStyle);
                 return;
             }
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(Mathf.Min(ListView(420f) * 0.5f, rows.Count * 28f + 16f)));
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(Mathf.Min(FeatureListView(420f) * 0.5f, rows.Count * 28f + 16f)));
             for (var i = 0; i < rows.Count; i++)
             {
                 var r = rows[i];

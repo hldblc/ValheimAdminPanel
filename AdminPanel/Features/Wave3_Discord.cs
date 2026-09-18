@@ -176,7 +176,7 @@ namespace AdminPanel
 
             DiscRequestState();
 
-            _discScroll = GUILayout.BeginScrollView(_discScroll, GUILayout.Height(ListView(150f)));
+            _discScroll = GUILayout.BeginScrollView(_discScroll, GUILayout.Height(FeatureListView(150f)));
 
             DiscDrawStatusCard();
             DiscDrawTestCard();

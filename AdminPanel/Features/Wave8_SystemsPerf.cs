@@ -189,7 +189,7 @@ namespace AdminPanel
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
 
-                _pcensusScroll = GUILayout.BeginScrollView(_pcensusScroll, GUILayout.Height(ListView(330f)));
+                _pcensusScroll = GUILayout.BeginScrollView(_pcensusScroll, GUILayout.Height(FeatureListView(330f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];

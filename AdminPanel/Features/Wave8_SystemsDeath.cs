@@ -268,7 +268,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _deathScroll = GUILayout.BeginScrollView(_deathScroll,
-                    GUILayout.Height(Mathf.Min(ListView(430f), d.Rows.Count * 30f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(430f), d.Rows.Count * 30f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];

@@ -11,8 +11,8 @@ Press **F7** and run your realm from one window: spawn anything, teleport anywhe
 
 ## At a glance
 
-- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and 32 optional server modules.
-- **Server-validated.** Every action that touches the world or another player is checked on the server against `adminlist.txt`. Non-admins get buttons that do nothing.
+- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and a Tools tab with 32 optional server modules in five categories.
+- **Admins only.** The panel checks your `adminlist.txt` status on every server you join. If you are not an admin there, or the server has no companion, the window shows a notice instead of the tabs. Server actions are validated again server-side by the companion.
 - **Single-player and dedicated servers.** In single-player you are the host and automatically an admin.
 - **Mod-aware.** Items and creatures from other installed mods show up automatically.
 - **Nine languages**, in-game hotkey rebinding, persistent settings.
@@ -28,6 +28,8 @@ Press **F7** and run your realm from one window: spawn anything, teleport anywhe
 
 Both DLLs must be the **same version** on the client and the server. The Server tab tells you if they are not.
 
+Once the server is running, its `BepInEx/LogOutput.log` must contain `Loading [AdminPanelCompanion <version>]` followed by a `Bind probe: ... 0 failed` line. If it does not, the companion is not installed where BepInEx looks (`BepInEx/plugins/` of the instance players join), the zip was uploaded without being extracted, or the server was not fully stopped and started after the upload.
+
 ## The tabs
 
 | Tab | What you get |
@@ -40,27 +42,27 @@ Both DLLs must be the **same version** on the client and the server. The Server 
 | 👥 **Players** | Live roster: teleport to, summon, spectate, heal, ping, lightning strike, live inventory viewer, kick / ban, per-player admin notes. |
 | 📊 **Server** | Stats read from the server itself: ZDO count, per-peer ping, last-save and next-autosave clocks, the server's plugin roster, admin and ban lists, join / leave log, force save, offline ban / unban by ID. |
 | ⚙ **Settings** | Language, font and size, panel opacity, logo header, camera lock, hotkey rebinding. All in-game, all persistent. |
-| 🧰 **Extras** | 32 optional modules for dedicated-server admins, one chip each. See below. |
+| 🧰 **Tools** | 32 optional modules for dedicated-server admins, grouped into Moderation, Server, Players, World and Shortcuts. See below. |
 
-## Extras: 32 server modules
+## Tools: 32 server modules
 
-Every module is a chip you switch on in the Extras tab. **Everything that changes server behaviour is off by default** and needs the companion on the server.
+Every module is a chip in the Tools tab: pick a category, then a section. **Everything that changes server behaviour is off by default** and needs the companion on the server. Every section can be hidden in the config file (section `Features`).
 
-| Area | Modules |
+| Category | Sections |
 | --- | --- |
-| **Moderation & accountability** | Moderation (warn, mute, freeze, jail, watchlist, temp-ban, lockdown), audit trail, rap sheets, tiered admin roles, direct messages, staff chat, guard (anti-cheat flags, client-mod reports, dry-run mode) |
-| **Server operations** | Server tools (MOTD, scheduled restarts, backups and staged restore), diagnostics and performance, Discord webhooks, client performance census |
-| **Players & economy** | Player data and offline queues, economy and shops, trader stock editor, bounty board, death rules, skill gain rules |
-| **World & objects** | Area tools and protection zones, build tools (piece editor, blueprints, terrain reset, free camera), location finder, spawner and nest manager, chest inspector, tame roster, creature editor, map pins, map reveal |
-| **Rules & content** | Recipe and build blacklist, item forge, raid composer, macros and workflows, extensions SDK |
+| **Moderation** | Moderation (warn, mute, freeze, jail, watchlist, temp-ban, lockdown), Rap Sheet, Roles (tiered admin roles), Audit (audit trail), Guard (anti-cheat rules: fly, speed, health, noclip, damage cap; client-mod reports; dry-run mode), Staff Chat, Direct Message |
+| **Server** | Server Tools (MOTD, scheduled restarts, backups and staged restore), Diagnostics (performance, log tail, self-test), Discord (webhooks), Client Performance (census), Extensions (SDK) |
+| **Players** | Player Data (vault, offline queue, death log, rescue, reset), Economy (shops, ledger), Bounties, Death Rules, Skill Rules, Map Reveal, Trader Stock, Blacklist, Item Forge |
+| **World** | Area Tools (protection zones, ownership transfer, mass remove), Build Tools (piece editor, blueprints, terrain reset, free camera), Locations (finder), Spawners, Containers (chest inspector), Tames (roster), Creature Editor, Map Pins, Raid Composer |
+| **Shortcuts** | Macros (command palette and macros), Workflow (batch actions, quick-action bar) |
 
 ## How the security works
 
-This is a client mod, so the panel window opens for anyone who installs the DLL. No client mod can prevent that. What the companion protects is **your server**.
+Two layers, and it helps to know what each one does.
 
-- Every action that touches the world or another player (spawn, give, teleport, kick, ban, heal, inventory, broadcasts, world events, skills, and every Extras module) is sent to the companion as a request and validated **server-side** against `adminlist.txt`, using the game's own admin rules.
-- The companion re-stamps the true sender ID, so forged or spoofed requests are dropped and written to the audit log.
-- Self-only toggles (god mode, fly, no stamina) run on the player's own client and are not server-validated. That is true of every Valheim client mod, because the game trusts clients for their own character. Pair with a server-side anticheat if you need to stop that too.
+- **The panel's admin gate (client side, since 2.5.5).** When you join a server the panel asks the companion whether your ID is in that server's `adminlist.txt` (the game itself also hands every client a copy of that list, which the panel uses until the companion answers). If you are not an admin there, or the server has no companion, the whole window is replaced by a notice with a Re-check button; no tab, tool or self-only cheat is reachable. The companion writes one line to the server log per connection when a non-admin opens the panel. This gate is honesty for normal players. A modified client can remove it, which is why the second layer exists.
+- **The companion (server side).** Every request that goes through the server (spawn, give, teleport, kick, ban, heal, inventory, broadcasts, world events, skills, and the Tools modules) is validated **server-side** against `adminlist.txt` with the game's own admin rules, and the companion re-stamps the true sender ID so forged requests are dropped and written to the audit log. Without the companion on the server, nothing is enforced and every server action is silently dropped. The companion also drops the game's own inbound "AdminList" / "PlayerList" RPCs on the server, which a modified client could otherwise use to rewrite the server's in-memory admin list (a vanilla gap, present with or without this mod).
+- **What only the gate covers.** Self-only toggles (god mode, fly, no stamina, one-hit) and the tools that edit objects the game lets any client edit (World-tab kill / tame / clear tools, global keys, the Build Tools piece editor and terrain reset, the Creature Editor, the Item Forge) run on the admin's own client. Valheim trusts clients for those, as it does for every client mod. They sit behind the admin gate, not behind the companion. Pair with a server-side anticheat if you need to stop a modified client from doing what the game already allows it to do.
 
 ## Languages
 
@@ -80,9 +82,15 @@ Want another language? Drop a `<code>.txt` into `BepInEx/plugins/AdminPanel_Loca
 
 **I am in adminlist.txt but server actions say I am not an admin.** Update to 2.5.3 or later. Older companions only matched the bare SteamID64 and rejected the `Steam_` and `V_` forms that hosting panels write.
 
+**The panel says "You are not an admin on this server".** Your ID is not in that server's `adminlist.txt` in any form the game accepts. Ask the owner to add it (one ID per line) and press Re-check; a companion restart is not needed. If you are the owner and you are sure the ID is there, check the server log for `Loading [AdminPanelCompanion` and for the line the companion writes when a non-admin opens the panel.
+
+**The panel says "This server does not run AdminPanelCompanion.dll".** No companion answered within 15 seconds. Install both files on the server, in `BepInEx/plugins/` of the instance players join, then do a full stop and start.
+
+**Everyone who installs the mod gets the panel on my server.** They get the window, not the powers. Since 2.5.5 non-admins see only the notice; before 2.5.5 they saw the tabs while every server action was denied. Either way, install the companion on the server, that is what enforces `adminlist.txt`.
+
 **Do I need the companion in single-player?** Yes, both DLLs. You are the host there, so no adminlist entry is needed.
 
-**Extras shows "no reply from the companion".** The server has no companion, an older one, or you are not an admin there. The Server tab shows which.
+**A Tools section shows "no reply from the companion".** The server has no companion, an older one, or you are not an admin there. The Server tab shows which.
 
 ## Screenshots
 

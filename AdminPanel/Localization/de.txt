@@ -2088,3 +2088,17 @@ pcensus.legend=Hervorgehoben: durchschnittliche FPS unter {0} oder eine Companio
 bounty.currency_default=Münzen
 nest.axis_x=X
 nest.axis_z=Z
+# ---- 2.5.5 admin gate ----
+chrome.gate_title=Admin-Prüfung
+chrome.not_admin=⚠ Du bist auf diesem Server kein Admin: deine ID steht nicht in seiner adminlist.txt. Das Panel ist hier deaktiviert. Bitte den Serverbesitzer, dich einzutragen, und drücke dann Erneut prüfen.
+chrome.no_companion=⚠ Auf diesem Server läuft keine AdminPanelCompanion.dll, jede Aktion würde stillschweigend verworfen. Das Panel ist hier deaktiviert. Der Besitzer muss BEIDE Mod-Dateien auf dem Server installieren und ihn neu starten.
+chrome.checking=Kontaktiere den Companion des Servers… (bis zu 15 s)
+chrome.recheck=Erneut prüfen
+chrome.gate_hint=Panel v{0} · Server-Companion: {1}
+chrome.companion_no_admin_flag=⚠ Server-Companion v{0} ist älter als die Admin-Prüfung; stattdessen wird die Adminlisten-Kopie des Servers verwendet. Aktualisiere den Companion.
+# ---- 2.5.5 tools categories ----
+feat.cat.moderation=Moderation
+feat.cat.server=Server
+feat.cat.players=Spieler
+feat.cat.world=Welt
+feat.cat.shortcuts=Kurzbefehle

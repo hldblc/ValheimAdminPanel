@@ -1253,9 +1253,23 @@ namespace AdminPanel
 
         // ==================== tick: hotkey, deferred work, macro runner ====================
 
+        // The palette is reachable by its own hotkey and runs commands (kill-all, god, fly, ...) without the panel
+        // body, so the admin gate has to be enforced here as well as in the main window.
+        internal void PalOnGateClosed()
+        {
+            if (!_palInited) return;
+            if (_palOpen) PalCloseNow();
+            _palOpenRequested = false;
+            _palPendingRun = null;
+            _palPendingJump = 0;
+            _palPendingJumpArg = null;
+            if (_palQueue != null) PalStopMacro(false);
+        }
+
         internal void PalTick()
         {
             if (!_palInited) return;
+            if (!PanelGateOk) { PalOnGateClosed(); return; }   // not an admin here / no companion: no palette at all
 
             // Hotkey. Disabled by default (KeyCode.None) and suppressed while the Settings tab listens for a
             // rebind, exactly like the panel's own hotkeys.
@@ -1486,7 +1500,7 @@ namespace AdminPanel
                 _palRunTotalLayout = _palRunTotal;
             }
 
-            _palSectionScroll = GUILayout.BeginScrollView(_palSectionScroll, GUILayout.Height(ListView(150f)));
+            _palSectionScroll = GUILayout.BeginScrollView(_palSectionScroll, GUILayout.Height(FeatureListView(150f)));
             PalDrawPaletteCard();
             PalDrawMacroListCard();
             PalDrawMacroEditorCard();

@@ -25,15 +25,15 @@ namespace AdminPanel
 
             // All five live on the Tools tab; chip order = expected frequency of use.
             RegisterFeatureSection(new FeatureSection
-            { Id = "MapPins", LocKey = "mpin.chip", Draw = DrawMapPinsSection, Enabled = MpinSectionEnabled, Tab = ToolsTab });
+            { Id = "MapPins", LocKey = "mpin.chip", Draw = DrawMapPinsSection, Enabled = MpinSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "MapReveal", LocKey = "mapr.chip", Draw = DrawMapRevealSection, Enabled = MaprSectionEnabled, Tab = ToolsTab });
+            { Id = "MapReveal", LocKey = "mapr.chip", Draw = DrawMapRevealSection, Enabled = MaprSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "TraderStock", LocKey = "trader.chip", Draw = DrawTraderStockSection, Enabled = TrSectionEnabled, Tab = ToolsTab });
+            { Id = "TraderStock", LocKey = "trader.chip", Draw = DrawTraderStockSection, Enabled = TrSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "Blacklist", LocKey = "blk.chip", Draw = DrawBlacklistSection, Enabled = BlkSectionEnabled, Tab = ToolsTab });
+            { Id = "Blacklist", LocKey = "blk.chip", Draw = DrawBlacklistSection, Enabled = BlkSectionEnabled });
             RegisterFeatureSection(new FeatureSection
-            { Id = "SkillRules", LocKey = "skillr.chip", Draw = DrawSkillRulesSection, Enabled = SkrSectionEnabled, Tab = ToolsTab });
+            { Id = "SkillRules", LocKey = "skillr.chip", Draw = DrawSkillRulesSection, Enabled = SkrSectionEnabled });
         }
 
         // Per-world state: server-truth tables, their Layout snapshots, throttles and typed targets. All of

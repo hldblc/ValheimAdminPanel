@@ -17,11 +17,11 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.4";
+        public const string PluginVersion = "2.5.5";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
-        internal const string CompiledForGameVersion = "1.0.12";
+        internal const string CompiledForGameVersion = "1.0.14";
 
         internal static AdminPanelPlugin Instance;
 
@@ -322,6 +322,22 @@ namespace AdminPanel
         private float _versionReqFirst;             // when the first request went out (drives the no-reply timeout)
         private volatile CompanionHealth _srvHealth; // companion's AP_HealthData / in-process HealthSummary (null = none yet)
         private float _nextHostHealthRead;          // listen-host reflection read throttle (≥5s; float.MaxValue = give up)
+
+        // ==================== Admin gate (2.5.5) ====================
+        // Who may use the panel on THIS server. Decided once per frame on the Layout pass (never mid-frame), from
+        // two sources: the adminlist copy the game itself hands every client at connect (ZNet.SendAdminList →
+        // GetAdminList(), the same list the vanilla player list uses for its kick/ban buttons), and — authoritative
+        // when present — the "admin=0|1" key a 2.5.5+ companion appends to AP_HealthData (computed server-side by
+        // the very SenderIsAdmin every AP_Srv* handler applies). A host is always Ok. Anything but Ok/OldCompanion
+        // replaces the whole window body with a notice: no tab, button, toggle or hotkey path is reachable, and
+        // the self-only cheats are cleared. This is honesty, not security — authority stays with the companion.
+        private enum Gate { Pending, Ok, NotAdmin, NoCompanion, OldCompanion }
+        private Gate _gate = Gate.Pending;
+        private Gate _gateLayout = Gate.Pending;    // Layout-pass snapshot: the body layout must not change mid-frame
+        private bool _gateWasOk;                    // last applied state, for the transition hooks below
+        private bool _gateClosedApplied;            // ClearLocalCheats ran for this server's closed verdict (once per session)
+        private bool _hintCached;                   // LocalAdminHint result, re-evaluated at most once per second
+        private float _nextHintEval;                // (the adminlist copy only changes when a peer connects)
         private const string ReleasesApi ="https://api.github.com/repos/hldblc/ValheimAdminPanel/releases/latest";
         private const string ReleasesPage = "https://github.com/hldblc/ValheimAdminPanel/releases/latest";
         // Baked-in so reports work out of the box; server owners can point BugReport.WebhookUrl elsewhere.
@@ -332,6 +348,15 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.5.5: the panel now checks whether YOU are an admin on the server you are on. If your id is not in " +
+            "the server's adminlist.txt, or the server has no companion, the window shows a notice instead of the " +
+            "tabs (self-only cheats included) and a Re-check button. Admins see no change. The companion tells the " +
+            "server log once per connection when a non-admin opens the panel. The Extras and Tools tabs are ONE Tools tab " +
+            "with five categories (Moderation, Server, Players, World, Shortcuts) and a shared body that scrolls the " +
+            "same way on every section. Guard gained a 'damage' rule that drops oversized hits at the server before " +
+            "they reach other players. The companion blocks the game's inbound AdminList RPC, which let any modified " +
+            "client rewrite a server's admin list. Both DLLs rebuilt for Valheim 1.0.14. " +
+            "BOTH DLLs are 2.5.5 - server owners: update AdminPanelCompanion.dll and restart.\n\n" +
             "• 2.5.4: the companion self-update module was removed. Thunderstore requires mods to leave " +
             "updating to mod managers, and this was the one piece that could download and replace a DLL " +
             "on the server. Nothing in either DLL downloads or replaces files now; the notice that a newer " +
@@ -423,9 +448,12 @@ namespace AdminPanel
         {
             [HarmonyPatch(typeof(Player), "UseStamina")]
             [HarmonyPrefix]
+            // Both prefixes also require the admin gate to be open: the static flags survive logout by design,
+            // so without this an admin's no-stamina/one-hit would stay live during the first seconds on a new
+            // server (Pending) where they may not be an admin at all.
             private static bool NoStaminaPrefix(Player __instance)
             {
-                return !(NoStaminaFlag && __instance == Player.m_localPlayer);
+                return !(NoStaminaFlag && __instance == Player.m_localPlayer && Instance != null && Instance.GateAllowsCheats);
             }
 
             [HarmonyPatch(typeof(Character), "Damage")]
@@ -433,6 +461,7 @@ namespace AdminPanel
             private static void OneHitPrefix(Character __instance, HitData hit)
             {
                 if (!OneHitKillFlag || hit == null || Player.m_localPlayer == null) return;
+                if (Instance == null || !Instance.GateAllowsCheats) return;
                 if (__instance == null || __instance == Player.m_localPlayer) return;
                 try
                 {
@@ -922,10 +951,23 @@ namespace AdminPanel
             }
         }
 
-        // Server companion's reply to the AP_SrvVersion handshake.
+        // Server companion's reply to the AP_SrvVersion handshake. Since 2.5.5 the admin gate hangs off these
+        // replies, so on a remote client they must come from the connected server peer (a forged reply could
+        // otherwise paint a green gate — it would still grant nothing server-side, but the notice should be
+        // honest). A listen host has no server peer: its reply is dispatched in-process and is accepted as is.
+        private static bool CompanionReplyAllowed(long sender)
+        {
+            var znet = ZNet.instance;
+            if (znet == null) return false;
+            if (!znet.IsServer()) return SenderIsServerReply(sender);
+            // Host: the companion answers in-process with the host's own session id; a remote peer can never
+            // present it because the companion's RouteRpcSanitizer re-stamps every socket-delivered packet.
+            return ZDOMan.instance != null && sender == ZDOMan.GetSessionID();
+        }
+
         private static void OnVersionData(long sender, string version)
         {
-            if (Instance != null) Instance._srvCompVersion = version;
+            if (Instance != null && CompanionReplyAllowed(sender)) Instance._srvCompVersion = version;
         }
 
         // ==================== Companion runtime health (AP_HealthData) ====================
@@ -940,6 +982,7 @@ namespace AdminPanel
         {
             public string Game = "", Built = "", Steam = "", Probe = "skipped", Names = "";
             public int Checked, Failed;
+            public int Admin = -1;   // 2.5.5+ companion: 1 = asker is in adminlist.txt, 0 = not; -1 = key absent (older companion)
         }
 
         private static CompanionHealth ParseHealth(string payload)
@@ -962,6 +1005,7 @@ namespace AdminPanel
                     case "checked": int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out h.Checked); break;
                     case "failed": int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out h.Failed); break;
                     case "names": h.Names = val; break;
+                    case "admin": h.Admin = val == "1" ? 1 : val == "0" ? 0 : -1; break;
                 }
             }
             return h;
@@ -970,7 +1014,7 @@ namespace AdminPanel
         private static void OnHealthData(long sender, string payload)
         {
             var self = Instance;
-            if (self == null) return;
+            if (self == null || !CompanionReplyAllowed(sender)) return;
             try { self._srvHealth = ParseHealth(payload); }
             catch (Exception e) { self.Logger.LogWarning($"AP_HealthData parse failed (ignored): {e.Message}"); }
         }
@@ -1202,7 +1246,12 @@ namespace AdminPanel
                              (_creatureIndex == null && ZNetScene.instance != null)))
                 RefreshCaches();
 
+            // Admin gate: recomputed every frame outside OnGUI (OnGUI only snapshots it on its Layout pass).
+            // Transitions run here so they never flip layout state mid-frame.
+            ApplyGateTransition(ComputeGate());
+
             // map-point teleport: full map open + hover a spot + press the map-teleport key
+            if (_gate == Gate.Ok || _gate == Gate.OldCompanion)
             if (_rebindTarget == 0 && Input.GetKeyDown(_mapTpKey.Value) && LocalPlayer != null &&
                 Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large)
             {
@@ -1217,10 +1266,16 @@ namespace AdminPanel
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es != null && !es.enabled) es.enabled = true;
 
-            // Companion version handshake: ask the server's companion for its version while the panel is
-            // open and we have no answer. Hard-throttled to one request per 30s — if the server companion
-            // is old (no AP_SrvVersion handler) there is simply no reply, never a loop.
-            if (_visible && _srvCompVersion == null && ZNet.instance != null && Time.time >= _nextVersionReq)
+            // Companion version handshake: ask the server's companion for its version. The FIRST request goes
+            // out as soon as the player is in-world (the admin gate needs the verdict before the palette or
+            // map-teleport hotkey can work, and the user may never open the window); re-asks only while the
+            // panel is open. Hard-throttled to one request per 30s — if the server companion is old (no
+            // AP_SrvVersion handler) there is simply no reply, never a loop. _versionReqFirst (the no-reply
+            // clock) is stamped only when a request can actually leave: a host dispatches in-process, a
+            // remote client needs its server peer — pressing F7 on the loading screen must not start it.
+            if (_srvCompVersion == null && ZNet.instance != null && Time.time >= _nextVersionReq
+                && (_visible || _versionReqFirst == 0f) && LocalPlayer != null
+                && (ZNet.instance.IsServer() || ServerUid() != 0L))
             {
                 _nextVersionReq = Time.time + 30f;
                 if (_versionReqFirst == 0f) _versionReqFirst = Time.time;
@@ -1252,7 +1307,7 @@ namespace AdminPanel
 
             // re-apply persistent buffs when the local Player instance changes (death/respawn/teleport)
             var lp = Player.m_localPlayer;
-            if (lp != null && lp != _appliedTo)
+            if (lp != null && lp != _appliedTo && GateAllowsCheats)
             {
                 ReapplyPlayerState(lp);
                 _appliedTo = lp;
@@ -1321,12 +1376,15 @@ namespace AdminPanel
             _skillTargetId = 0; _skillMsg = "";
             _srvCompVersion = null; _versionReqFirst = 0f; _nextVersionReq = 0f;
             _srvHealth = null; _nextHostHealthRead = 0f;   // health is per-server too (the next server may be a different build)
+            _gate = Gate.Pending; _gateLayout = Gate.Pending; _gateWasOk = false;   // admin status is per-server
+            _gateClosedApplied = false; _hintCached = false; _nextHintEval = 0f;
             // Server-truth is per-server: without this, logging out of server A and hosting (or joining B)
             // would render A's stale admin/ban lists — with live Unban buttons — as if current.
             _srvInfo = null; _accessLists = null; _accessListTotals = null; _srvJoinLog = null;
             _nextInfoReq = 0f; _nextListsReq = 0f; _nextJoinLogReq = 0f;
             _appliedTo = null;
             _baseWalk = -1f;                        // force a fresh base-stat capture on the next player
+            _baseRun = 0f; _baseSwim = 0f; _baseJump = 0f; _baseWeight = 0f; _basePickup = 0f;   // captured values belong to the old player
             FeaturesResetSession();                 // feature modules clear their per-world state here too
         }
 
@@ -2165,6 +2223,158 @@ namespace AdminPanel
                 : Loc.T("srv.truth_pending", PluginVersion);
         }
 
+        // ==================== Admin gate: decision + transitions ====================
+        private bool GateAllowsCheats => _gate == Gate.Ok || _gate == Gate.OldCompanion;
+        internal bool PanelGateOk => GateAllowsCheats;   // read by feature modules (palette hotkey/macros)
+
+        // The game's own answer to "is the local player an admin here", widened to the id forms adminlist.txt may
+        // hold. ZNet.LocalPlayerIsAdminOrHost() matches only PlatformUserID.ToString() ("Steam_<id>"); the server's
+        // ListContainsId also accepts the bare id and the "V_<id>" display form hosting panels write, so compare the
+        // numeric part after the last '_' on both sides as well. The list arrives with the peer-info handshake,
+        // before the player spawns, so it is complete by the time the panel can open. Never throws.
+        private static bool LocalAdminHint()
+        {
+            var znet = ZNet.instance;
+            if (znet == null) return false;
+            try
+            {
+                if (znet.IsServer() || znet.LocalPlayerIsAdminOrHost()) return true;
+                // UserInfo.UserId is a PlatformUserID from the game's Splatform assembly, which this project does
+                // not reference; its ToString() ("Steam_<id>") is all that is needed, so read the field by reflection.
+                var user = UserInfo.GetLocalUser();
+                if (_localUserIdField == null) _localUserIdField = typeof(UserInfo).GetField("UserId");
+                var mine = user != null && _localUserIdField != null ? _localUserIdField.GetValue(user)?.ToString() : null;
+                var bare = BareUserId(mine);
+                if (string.IsNullOrEmpty(bare)) return false;
+                var list = znet.GetAdminList();
+                if (list == null) return false;
+                foreach (var entry in list)
+                    if (string.Equals(BareUserId(entry), bare, StringComparison.Ordinal)) return true;
+            }
+            catch (Exception) { /* a missing API means "unknown", never a crash */ }
+            return false;
+        }
+
+        private static System.Reflection.FieldInfo _localUserIdField;
+
+        private static string BareUserId(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            id = id.Trim();
+            var us = id.LastIndexOf('_');
+            return us >= 0 && us < id.Length - 1 ? id.Substring(us + 1) : id;
+        }
+
+        // Priority: host → companion verdict → vanilla list. "No reply" only becomes NoCompanion after the same
+        // 15 s the silent-companion warning uses, and only while the vanilla list still says admin — a player the
+        // list does not know is told so at once (a 2.5.5+ companion may still overrule that with admin=1, e.g. for
+        // an id form only the server can resolve, and the gate flips to Ok when it arrives).
+        private Gate ComputeGate()
+        {
+            var znet = ZNet.instance;
+            if (znet == null) return Gate.Pending;
+            if (znet.IsServer()) return Gate.Ok;
+            // Death replaces the Player object: m_localPlayer is null for the whole respawn wait. That is no
+            // information about admin status, so the last verdict is held (the first spawn starts from the
+            // Pending that ResetSessionState left).
+            if (LocalPlayer == null) return _gate;
+            var health = _srvHealth;
+            if (health != null && health.Admin >= 0) return health.Admin == 1 ? Gate.Ok : Gate.NotAdmin;
+            if (Time.time >= _nextHintEval)
+            {
+                _nextHintEval = Time.time + 1f;
+                _hintCached = LocalAdminHint();
+            }
+            var hint = _hintCached;
+            if (_srvCompVersion != null) return hint ? Gate.OldCompanion : Gate.NotAdmin;   // answered, but predates the admin key
+            if (!hint) return Gate.NotAdmin;
+            if (_versionReqFirst > 0f && Time.time - _versionReqFirst > 15f) return Gate.NoCompanion;
+            return Gate.Pending;
+        }
+
+        // Pending is "no verdict yet" and never changes anything. A closed verdict (NotAdmin / NoCompanion)
+        // clears the self-only cheats ONCE per server session — including the static Harmony flags that
+        // deliberately survive logout (ResetSessionState) so an admin's toggles come back on the next server
+        // where the gate opens. Reaching Ok re-arms ReapplyPlayerState for the current player.
+        private void ApplyGateTransition(Gate next)
+        {
+            _gate = next;
+            if (next == Gate.Pending) return;
+            var closed = next == Gate.NotAdmin || next == Gate.NoCompanion;
+            if (closed && !_gateClosedApplied)
+            {
+                _gateClosedApplied = true;
+                ClearLocalCheats();
+            }
+            var ok = GateAllowsCheats;
+            if (ok == _gateWasOk) return;
+            _gateWasOk = ok;
+            if (ok)
+            {
+                _appliedTo = null;              // let ReapplyPlayerState (re)capture base stats and apply the toggles
+                _gateClosedApplied = false;     // a later closed verdict on this server clears again
+            }
+        }
+
+        // Undo every self-only cheat this panel can set, on the live player, and reset the toggles so a later
+        // Ok state starts clean. Mirrors the Player tab's own "off" branches; safe with no player.
+        private void ClearLocalCheats()
+        {
+            var p = LocalPlayer;
+            try
+            {
+                // Only undo on the Player instance this panel actually modified: the captured bases are only
+                // valid for that one, and a fresh player (new server, respawn) never had anything applied.
+                if (p != null && ReferenceEquals(p, _appliedTo))
+                {
+                    if (_god) p.SetGodMode(false);
+                    if (_ghost) p.SetGhostMode(false);
+                    if (_noCost) p.SetNoPlacementCost(false);
+                    if (_fly && p.InDebugFlyMode()) p.ToggleDebugFly();
+                    if (_infiniteWeight && _baseWeight > 0f) p.m_maxCarryWeight = _baseWeight;
+                    if (_speedMult > 1.001f && _baseWalk > 0f)
+                    {
+                        p.m_walkSpeed = _baseWalk; p.m_runSpeed = _baseRun; p.m_swimSpeed = _baseSwim;
+                    }
+                    if (_jumpMult > 1.001f && _baseJump > 0f) p.m_jumpForce = _baseJump;
+                    if (_pickupRange > 2.001f && _basePickup > 0f) p.m_autoPickupRange = _basePickup;
+                }
+            }
+            catch (Exception e) { Logger.LogWarning($"Clearing local cheats failed (ignored): {e.Message}"); }
+            _god = false; _ghost = false; _fly = false; _noCost = false;
+            _noStamina = false; NoStaminaFlag = false;
+            _oneHitKill = false; OneHitKillFlag = false;
+            _infiniteWeight = false; _speedMult = 1f; _jumpMult = 1f; _pickupRange = 2f;
+            FeaturesOnGateClosed();   // feature modules: close the palette, stop macros
+        }
+
+        // The notice that replaces the window body while the gate is closed. Always the same control count for a
+        // given gate value (the value is a Layout-pass snapshot), so IMGUI never sees a mid-frame change.
+        private void DrawGateNotice(Gate g)
+        {
+            BeginCard(Loc.T("chrome.gate_title"));
+            string text;
+            switch (g)
+            {
+                case Gate.NotAdmin: text = Loc.T("chrome.not_admin"); break;
+                case Gate.NoCompanion: text = Loc.T("chrome.no_companion"); break;
+                default: text = Loc.T("chrome.checking"); break;
+            }
+            GUILayout.Label(text, _proseStyle);
+            GUILayout.Space(8);
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(Loc.T("chrome.recheck"), _buttonStyle, GUILayout.MinWidth(120)))
+            {
+                // Forget this server's answers and ask again on the next Update tick.
+                _srvCompVersion = null; _srvHealth = null;
+                _versionReqFirst = 0f; _nextVersionReq = 0f; _nextHostHealthRead = 0f; _nextHintEval = 0f;
+            }
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Label(Loc.T("chrome.gate_hint", PluginVersion, _srvCompVersion ?? Loc.T("srv.no_reply")), _hintStyle);
+            EndCard();
+        }
+
         // Text for the Server tab's "Panel self-check" line (the client-side bind probe, Features\BindProbe.cs).
         private static string BindProbeStateText()
         {
@@ -2283,8 +2493,13 @@ namespace AdminPanel
         // The reserves were tuned at font size 13; bigger fonts grow the title/tab rows, so compensate here
         // centrally instead of at every call site.
         private float ListView(float reserve) =>
-            Mathf.Clamp(_windowRect.height - reserve - LogoHeaderHeight()
+            Mathf.Clamp(_windowRect.height - reserve - LogoHeaderHeight() - GateNoticeReserve()
                         - Mathf.Max(0, _fontSizeLive - 13) * 3f, 160f, 4000f);
+
+        // While the gate is closed the notice card sits above the (Settings-only) content: card chrome, two to
+        // three prose lines, the Re-check row and the hint line. Tuned at font size 13 like the other reserves.
+        private float GateNoticeReserve() =>
+            _gateLayout == Gate.Ok || _gateLayout == Gate.OldCompanion ? 0f : 175f + Mathf.Max(0, _fontSizeLive - 13) * 6f;
 
         private void DrawWindow(int id)
         {
@@ -2318,6 +2533,7 @@ namespace AdminPanel
                 _rebindTargetLayout = _rebindTarget;
                 _updateBannerLayout = _updateAvailable;   // arrives from a worker thread — pin it per frame
                 _versionWarnLayout = CompanionWarning();  // recomputed once per frame, shown consistently across passes
+                _gateLayout = _gate;                      // admin gate, decided in Update — pinned for this frame
                 // One roster build per frame, shared by every tab. OtherPlayers() runs GetPlayerList()+LINQ and
                 // allocates a List; several tabs called it independently, each on both the Layout and Repaint
                 // pass. Building it here also guarantees the two passes see an identical roster, which matters
@@ -2342,7 +2558,27 @@ namespace AdminPanel
             }
             if (_versionWarnLayout != null)
                 GUILayout.Label(_versionWarnLayout, _proseStyle);
+            if (_gateLayout == Gate.OldCompanion)
+                GUILayout.Label(Loc.T("chrome.companion_no_admin_flag", _srvCompVersion ?? "?"), _proseStyle);
 
+            // Gate closed: the notice IS the body. Settings stays reachable (hotkey rebind, language), nothing
+            // else. Same frame structure as the open body (tab row → content → grip/drag below), so the resize
+            // grip and the drag strip keep working and ListView's reserve accounts for the notice card.
+            if (_gateLayout != Gate.Ok && _gateLayout != Gate.OldCompanion)
+            {
+                DrawGateNotice(_gateLayout);
+                GUILayout.Space(8);
+                var showSettings = GUILayout.Toggle(_tab == 7, Loc.T(TabKeys[7]), _tabStyle);
+                if (showSettings && _tab != 7) { _tab = 7; _openDropdown = null; _rebindTarget = 0; }
+                GUILayout.Space(14);
+                if (_tab == 7)
+                {
+                    try { DrawSettingsTab(); }
+                    catch (Exception ex) { Logger.LogError($"AdminPanel settings draw error: {ex.Message}"); }
+                }
+            }
+            else
+            {
             GUILayout.BeginHorizontal();
             for (var i = 0; i < TabKeys.Length; i++)
             {
@@ -2372,6 +2608,7 @@ namespace AdminPanel
                 }
             }
             catch (Exception ex) { Logger.LogError($"AdminPanel tab {_tab} draw error: {ex.Message}"); }
+            }
 
             // Resize grip in the bottom-right corner. mousePosition inside a GUILayout.Window is relative to the
             // window's top-left, so using it directly for width/height is correct.

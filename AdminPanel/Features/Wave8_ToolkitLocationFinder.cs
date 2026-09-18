@@ -360,7 +360,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _locfRowsScroll = GUILayout.BeginScrollView(_locfRowsScroll,
-                    GUILayout.Height(Mathf.Min(ListView(560f), rows.Count * 28f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(560f), rows.Count * 28f + 16f)));
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var r = rows[i];

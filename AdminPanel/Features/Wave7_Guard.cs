@@ -198,7 +198,7 @@ namespace AdminPanel
 
             GrdRequestState();
 
-            _grdScroll = GUILayout.BeginScrollView(_grdScroll, GUILayout.Height(ListView(150f)));
+            _grdScroll = GUILayout.BeginScrollView(_grdScroll, GUILayout.Height(FeatureListView(150f)));
 
             GrdDrawStatusCard();
             GrdDrawFlagsCard();

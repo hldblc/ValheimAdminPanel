@@ -443,7 +443,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
             GUILayout.Space(6);
 
-            _pdatScroll = GUILayout.BeginScrollView(_pdatScroll, GUILayout.Height(ListView(200f)));
+            _pdatScroll = GUILayout.BeginScrollView(_pdatScroll, GUILayout.Height(FeatureListView(200f, 42f)));
 
             // Host-only note. _pdatHostLayout is a Layout snapshot and nothing else writes it, so this label
             // is present or absent for the WHOLE frame - Repaint always sees the count Layout reserved.

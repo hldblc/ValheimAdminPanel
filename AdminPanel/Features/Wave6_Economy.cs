@@ -474,7 +474,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
             GUILayout.Space(6);
 
-            _ecoScroll = GUILayout.BeginScrollView(_ecoScroll, GUILayout.Height(ListView(200f)));
+            _ecoScroll = GUILayout.BeginScrollView(_ecoScroll, GUILayout.Height(FeatureListView(200f, 42f)));
 
             // One optional line, and the decision comes from the Layout snapshot - never from live state -
             // so the control count is identical on both passes of a frame.
@@ -1055,7 +1055,7 @@ namespace AdminPanel
             // Inner scroll inside the section scroll: its height is capped so the outer scroll stays
             // passive (no double scrollbar) even with the full 200-line export.
             _ecoPackScroll = GUILayout.BeginScrollView(_ecoPackScroll,
-                GUILayout.Height(Mathf.Min(240f, ListView(360f))));
+                GUILayout.Height(Mathf.Min(240f, FeatureListView(360f))));
             if (d != null)
                 for (var i = 0; i < d.Lines.Count; i++)
                     GUILayout.Label(d.Lines[i] ?? "", i % 2 == 0 ? _cellStyle : _dimCellStyle, GUILayout.MinWidth(360));

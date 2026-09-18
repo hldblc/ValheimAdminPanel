@@ -550,7 +550,7 @@ namespace AdminPanel
             GUILayout.EndHorizontal();
             GUILayout.Space(6);
 
-            _areaScroll = GUILayout.BeginScrollView(_areaScroll, GUILayout.Height(ListView(200f)));
+            _areaScroll = GUILayout.BeginScrollView(_areaScroll, GUILayout.Height(FeatureListView(200f, 42f)));
 
             // Host-only note. _areaHostLayout is a Layout snapshot and nothing else writes it, so this label
             // is present or absent for the WHOLE frame - Repaint always sees the count Layout reserved.

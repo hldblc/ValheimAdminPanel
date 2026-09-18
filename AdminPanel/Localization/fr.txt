@@ -2088,3 +2088,17 @@ pcensus.legend=En surbrillance : FPS moyens sous {0}, ou une version du companio
 bounty.currency_default=pièces
 nest.axis_x=X
 nest.axis_z=Z
+# ---- 2.5.5 admin gate ----
+chrome.gate_title=Vérification admin
+chrome.not_admin=⚠ Tu n'es pas admin sur ce serveur : ton ID n'est pas dans son adminlist.txt. Le panneau est désactivé ici. Demande au propriétaire du serveur de t'ajouter, puis appuie sur Revérifier.
+chrome.no_companion=⚠ Ce serveur n'exécute pas AdminPanelCompanion.dll : chaque action serait ignorée en silence. Le panneau est désactivé ici. Le propriétaire doit installer LES DEUX fichiers du mod sur le serveur et le redémarrer.
+chrome.checking=Contact du companion du serveur… (jusqu'à 15 s)
+chrome.recheck=Revérifier
+chrome.gate_hint=Panneau v{0} · companion du serveur : {1}
+chrome.companion_no_admin_flag=⚠ Le companion du serveur v{0} est antérieur à la vérification admin ; la copie de l'adminlist du serveur est utilisée à la place. Mets à jour le companion.
+# ---- 2.5.5 tools categories ----
+feat.cat.moderation=Modération
+feat.cat.server=Serveur
+feat.cat.players=Joueurs
+feat.cat.world=Monde
+feat.cat.shortcuts=Raccourcis

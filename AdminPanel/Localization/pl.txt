@@ -2088,3 +2088,17 @@ pcensus.legend=Wyróżnione: średnie FPS poniżej {0} lub wersja companiona inn
 bounty.currency_default=monety
 nest.axis_x=X
 nest.axis_z=Z
+# ---- 2.5.5 admin gate ----
+chrome.gate_title=Sprawdzenie admina
+chrome.not_admin=⚠ Nie jesteś adminem na tym serwerze: twojego ID nie ma w jego adminlist.txt. Panel jest tu wyłączony. Poproś właściciela serwera o dodanie cię, a potem naciśnij Sprawdź ponownie.
+chrome.no_companion=⚠ Ten serwer nie uruchamia AdminPanelCompanion.dll, więc każda akcja zostałaby po cichu odrzucona. Panel jest tu wyłączony. Właściciel musi zainstalować OBA pliki moda na serwerze i zrestartować go.
+chrome.checking=Łączenie z companionem serwera… (do 15 s)
+chrome.recheck=Sprawdź ponownie
+chrome.gate_hint=Panel v{0} · companion serwera: {1}
+chrome.companion_no_admin_flag=⚠ Companion serwera v{0} jest starszy niż sprawdzenie admina; zamiast tego używana jest kopia adminlisty serwera. Zaktualizuj companiona.
+# ---- 2.5.5 tools categories ----
+feat.cat.moderation=Moderacja
+feat.cat.server=Serwer
+feat.cat.players=Gracze
+feat.cat.world=Świat
+feat.cat.shortcuts=Skróty

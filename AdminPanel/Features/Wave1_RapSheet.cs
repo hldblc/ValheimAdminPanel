@@ -234,7 +234,7 @@ namespace AdminPanel
                 else
                 {
                     _rapChatScroll = GUILayout.BeginScrollView(_rapChatScroll,
-                        GUILayout.Height(Mathf.Min(ListView(430f), d.Chat.Count * 26f + 16f)));
+                        GUILayout.Height(Mathf.Min(FeatureListView(430f), d.Chat.Count * 26f + 16f)));
                     for (var i = 0; i < d.Chat.Count; i++)
                     {
                         GUILayout.BeginHorizontal(i % 2 == 0 ? _rowEven : _rowOdd);

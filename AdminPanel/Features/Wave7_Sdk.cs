@@ -533,7 +533,7 @@ namespace AdminPanel
                 _sdkCmdRowsLayout = SdkBuildCmdRows();
             }
 
-            _sdkScroll = GUILayout.BeginScrollView(_sdkScroll, GUILayout.Height(ListView(150f)));
+            _sdkScroll = GUILayout.BeginScrollView(_sdkScroll, GUILayout.Height(FeatureListView(150f)));
 
             SdkDrawDryRunCard();
             SdkDrawApiCard();

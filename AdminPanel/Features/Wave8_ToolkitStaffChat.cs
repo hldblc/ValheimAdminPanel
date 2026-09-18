@@ -218,7 +218,7 @@ namespace AdminPanel
             else
             {
                 _achatScroll = GUILayout.BeginScrollView(_achatScroll,
-                    GUILayout.Height(Mathf.Min(ListView(360f), lines.Count * 26f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(360f), lines.Count * 26f + 16f)));
                 for (var i = 0; i < lines.Count; i++)
                 {
                     var l = lines[i];

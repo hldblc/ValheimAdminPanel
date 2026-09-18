@@ -268,7 +268,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _bountyScroll = GUILayout.BeginScrollView(_bountyScroll,
-                    GUILayout.Height(Mathf.Min(ListView(470f), d.Rows.Count * 30f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(470f), d.Rows.Count * 30f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];

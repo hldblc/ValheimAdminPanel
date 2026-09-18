@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.5.5
+
+**BOTH DLLs are 2.5.5** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.14.
+
+- **The panel now knows whether you are an admin on the server you are on.** Until now the window opened with every
+  tab for anyone who installed the client DLL; on a server with the companion their server actions were denied
+  silently, and on a server without it nothing was denied at all, so "everyone has admin" is what owners saw. Now the
+  companion answers the version handshake with your `adminlist.txt` verdict (same rules as every server action), and
+  the panel uses the adminlist copy the game hands every client until that answer arrives. Not an admin, or no
+  companion within 15 s: the whole window body is a notice with a Re-check button. Nothing else is reachable, the
+  self-only cheats included (god, fly, ghost, free build, no stamina, one-hit, weight, speed, jump, pickup), the
+  command palette and its hotkey, macros and the free camera. Admins see no change; a listen host is always an admin.
+- **Server log line per non-admin.** The companion logs `peer <id> (<name> / <steamid>) opened the Admin Panel but is
+  not in adminlist.txt` once per connection, and no longer writes a `DENIED admin action` line for the handshake itself.
+- **Reply spoofing closed.** On a remote client the version and health replies are accepted only from the connected
+  server peer, like every other server-truth reply; a host accepts only its own in-process companion.
+- **The server's adminlist can no longer be rewritten over the network.** The game registers its "AdminList",
+  "PlayerList" and "HistoricalPlayerList" RPCs on every connection, server side included, and on the server the
+  admin list it fills is the live `adminlist.txt` copy. A modified client could invoke "AdminList" with its own id
+  and be an admin for the game and for this companion until the file changed on disk. The companion now drops all
+  three on the server and logs the sender once. (Vanilla behaviour, present without this mod.)
+- **One Tools tab, five categories.** The Extras and Tools tabs (16 chips each, wrapping into three rows) are one
+  Tools tab: a category row (Moderation, Server, Players, World, Shortcuts), then the sections of that category, then
+  the section body. The body is one scroll view with the same bottom edge for every section, so sections without a
+  list of their own (Direct Message, Creature Editor, Map Reveal, Skill Rules, Item Forge, Raid Composer) no longer
+  run off the window and lists inside a section can never be taller than the body. The last chip is remembered per
+  category. Config keys are unchanged (`EnableExtrasTab`, `Show*Section`).
+- **Guard rule 'damage' (on by default when EnableAntiCheat is on).** The companion relays every hit sent to a character
+  someone else owns; a hit whose damage total exceeds `AcDamageCap` (default 10000) is now dropped before it reaches the
+  target and the sender is flagged. This is the one rule that prevents rather than reports: one-hit-kill cheats never
+  land on other players, their tames, or creatures simulated near someone else. Hits on creatures the cheater's own
+  client simulates never pass through the server (vanilla design) and stay invisible to it.
+- **Handshake at spawn.** The companion version / admin handshake now goes out as soon as the player is in-world, not
+  on the first F7, so the command palette and map-teleport hotkeys work for admins who never open the window, and a
+  missing companion is known by the time the panel is first opened. Pressing F7 on the loading screen no longer
+  starts the 15 s no-reply clock early.
+- **README rewritten around what each layer protects.** The old text said every world or player action was validated
+  server-side. That is true of everything that goes through the companion, and not of the client-side tools (World-tab
+  kill / tame / clear, global keys, piece editor, terrain reset, Creature Editor, Item Forge), which the game lets any
+  client do and which now sit behind the admin gate. The FAQ covers the two new notices and the "everyone gets the
+  panel" question, and the quick start tells server owners which log lines prove the companion is loaded.
+- Reported from an AMP-hosted server whose log showed the companion was never loaded (the zip was in place, the
+  plugin was not). Thanks for the log; it is what made both halves of this visible.
+
 ## 2.5.4
 
 **BOTH DLLs are 2.5.4** — server owners: update `AdminPanelCompanion.dll` on the server and restart.

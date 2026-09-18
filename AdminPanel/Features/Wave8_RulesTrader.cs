@@ -293,7 +293,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _trScroll = GUILayout.BeginScrollView(_trScroll,
-                    GUILayout.Height(Mathf.Min(ListView(380f), rows.Count * 28f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(380f), rows.Count * 28f + 16f)));
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var r = rows[i];

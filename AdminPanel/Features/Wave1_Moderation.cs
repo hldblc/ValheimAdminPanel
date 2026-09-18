@@ -216,7 +216,7 @@ namespace AdminPanel
 
             ModRequestState();
 
-            _modScroll = GUILayout.BeginScrollView(_modScroll, GUILayout.Height(ListView(150f)));
+            _modScroll = GUILayout.BeginScrollView(_modScroll, GUILayout.Height(FeatureListView(150f)));
 
             // Said once, at the top, so the individual cards below do not each have to explain themselves.
             // One label either way - only the KEY swaps, so the control count is identical on both passes.

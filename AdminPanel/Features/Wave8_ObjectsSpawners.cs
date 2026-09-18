@@ -253,7 +253,7 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
 
                 _nestScroll = GUILayout.BeginScrollView(_nestScroll,
-                    GUILayout.Height(Mathf.Min(ListView(430f), d.Rows.Count * 28f + 16f)));
+                    GUILayout.Height(Mathf.Min(FeatureListView(430f), d.Rows.Count * 28f + 16f)));
                 for (var i = 0; i < d.Rows.Count; i++)
                 {
                     var r = d.Rows[i];
