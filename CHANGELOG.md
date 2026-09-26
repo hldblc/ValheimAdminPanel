@@ -1,5 +1,53 @@
 # Changelog
 
+## 2.5.6
+
+**BOTH DLLs are 2.5.6** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.16.
+
+Everything that gives something to another player was reviewed after a Discord report ("I pressed 10 of each skill on
+another player, they see no change").
+
+- **"All skills +10 / All skills 100 / Reset skills" follow the Apply-to player.** They only ever changed *your*
+  skills, whoever was picked: your numbers moved, so it looked like it had worked, and Reset wiped your own. The
+  Apply-to picker now sits at the top of the Skills card and drives every button in it. On another player, "100" and
+  "Reset" take two clicks: there is no way back to the levels they overwrite. The private note arrives once.
+- **The skill list shows the picked player's real levels.** Skills live in that player's own save; the list showed
+  yours under their name. It now asks their client and refreshes after every change (needs companion 2.5.6 on their
+  side and on the server; raising skills works from 2.2.0).
+- **Dead or loading players can no longer be targeted - that hit everybody.** While a player is on the respawn screen or
+  still loading in, the game sends their roster entry without a character id. The panel read that as id 0, and 0 means
+  "every player" to the game's routing: Summon on a dead player summoned the whole server, Heal healed everyone, the
+  inventory request made every client answer, and the command palette's `give <item> @<player>` handed the item to
+  everyone. Their row now reads "dead or loading in", pickers skip them, and the companion refuses id 0 on every relay
+  whatever a client sends - Kick and Ban included, where id 0 matched a player still sitting at the password prompt.
+  The server also refuses a player who died a moment ago (it hears of a death before your roster does), where a gift
+  used to vanish.
+- **A picked player who dies stays picked.** The skill, status-effect, Item Forge, Direct Message, Map Reveal and bounty
+  pickers snapped back to "Me" the moment the pick died, so the next click landed on you. They now show "(respawning)"
+  or "(left)" and refuse until the player is back. Cycling no longer gets stuck on a dead player (Items give target,
+  rescue, freeze and vault pickers included).
+- **"To me" gives go to you.** The panel found "you" by matching your character name in the roster: in the first
+  seconds after spawning that returned id 0 (everybody got the item), and a player sharing your name could get it
+  instead. It now uses your own session id.
+- **TP to, Watch, Map and lightning on players who hide their map position.** The game sends positions only for players
+  who share theirs on the map; everyone else arrived as (0, 0), so these buttons went to the world centre (and the
+  lightning struck the spawn area). The panel now asks the server, which always knows. Map shows a hidden position on
+  your own map instead of pinging it to everyone, and the roster says "hidden" instead of (0, 0).
+- **No more duplicated items into a full bag.** Give, Item Forge, vault restores, offline-queue grants and shop
+  deliveries dropped the whole stack at the player's feet when the bag was full, although part of it had just been
+  merged into existing stacks: a player with partial stacks got more than was given, or paid for. Only the part that
+  did not fit goes on the ground now, with all its attributes (quality, variant, crafter, NG+ level).
+- **Given items carry the world's NG+ level**, like every item the game creates. At level 0 they had less damage and
+  armor than crafted gear on New Game+ worlds and never stacked with the player's own items.
+- **Summon, Heal and direct messages reach players without the mod.** They now use the game's own teleport, heal and
+  message RPCs (and Summon keeps the player's facing). Items, skills, status effects and inventory still need the
+  companion on the player's client: the server now checks that first and tells you when it is missing or not confirmed
+  yet, instead of sending into the void. It asks the client again each time, so a player who was slow to load in is
+  recognised on the next try.
+- **The inventory viewer only accepts the inspected player's answer.** Any other client could paint rows into it, and
+  its Remove buttons act on those rows.
+- Rebuilt and reflection-swept for Valheim 1.0.16; no API drift.
+
 ## 2.5.5
 
 **BOTH DLLs are 2.5.5** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.14.

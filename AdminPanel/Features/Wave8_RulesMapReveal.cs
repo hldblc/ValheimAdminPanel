@@ -36,6 +36,7 @@ namespace AdminPanel
         private void MaprSend(int mode)
         {
             if (!RulesReachable(true)) return;
+            if (!TargetReady(_maprTargetId)) return;   // a picked player who died or left is refused, never swapped for "me"
             if (Time.time < _maprNextReq) return;   // throttle-first
             _maprNextReq = Time.time + 2f;
 
@@ -50,7 +51,7 @@ namespace AdminPanel
             pkg.Write(radius);
             SrvRpc("AP_SrvMapReveal", pkg);
             Message(Loc.T(mode == 0 ? "mapr.msg_sent_all" : mode == 1 ? "mapr.msg_sent_radius" : "mapr.msg_sent_reset",
-                TargetLabel(ref _maprTargetId)));
+                TargetLabel(_maprTargetId)));
         }
 
         internal void DrawMapRevealSection()
@@ -60,7 +61,7 @@ namespace AdminPanel
             // Target row: label + name + cycle button, constant count (only the name text swaps).
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("mapr.target"), _labelStyle, GUILayout.MinWidth(90));
-            GUILayout.Label(TargetLabel(ref _maprTargetId), _headerStyle, GUILayout.MinWidth(140));
+            GUILayout.Label(TargetLabel(_maprTargetId), _headerStyle, GUILayout.MinWidth(140));
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(Loc.T("mapr.cycle"), _buttonStyle, GUILayout.MinWidth(110))) CycleTarget(ref _maprTargetId);
             GUILayout.EndHorizontal();

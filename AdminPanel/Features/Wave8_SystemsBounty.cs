@@ -171,6 +171,7 @@ namespace AdminPanel
         private void BountyAction(string id, int op, long targetUid)
         {
             if (string.IsNullOrEmpty(id) || !SysReachable()) return;
+            if (op == 2 && !TargetReady(targetUid)) return;   // a collector who died or left is refused, never swapped for "me"
             var pkg = new ZPackage();
             pkg.Write(1);
             pkg.Write(id);
@@ -179,7 +180,7 @@ namespace AdminPanel
             SrvRpc("AP_SrvBountyAction", pkg);
             if (op == 0) Message(Loc.T("bounty.msg_closed", id));
             else if (op == 1) Message(Loc.T("bounty.msg_deleted", id));
-            else Message(Loc.T("bounty.msg_collect", TargetLabel(ref _bountyCollectTarget), id));
+            else Message(Loc.T("bounty.msg_collect", TargetLabel(_bountyCollectTarget), id));
         }
 
         // ==================== draw ====================
@@ -245,7 +246,7 @@ namespace AdminPanel
             // ---- collect target (deliver bounties): label + cycle, control count constant ----
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("bounty.collect_target"), _labelStyle, GUILayout.MinWidth(90));
-            GUILayout.Label(TargetLabel(ref _bountyCollectTarget), _headerStyle, GUILayout.MinWidth(140));
+            GUILayout.Label(TargetLabel(_bountyCollectTarget), _headerStyle, GUILayout.MinWidth(140));
             if (GUILayout.Button(Loc.T("bounty.cycle"), _buttonStyle, GUILayout.MinWidth(80))) CycleTarget(ref _bountyCollectTarget);
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();

@@ -311,6 +311,8 @@ namespace AdminPanel
             if (!string.IsNullOrEmpty(wanted))
             {
                 if (!PalFindPlayer(wanted, out var info)) { Message(Loc.T("ux.err_no_player_named", wanted)); return false; }
+                // Dead or loading: the row has no uid yet, and 0 would hand the item to every player.
+                if (!IsSpawned(info)) { Message(Loc.T("common.target_not_ready", info.m_name)); return false; }
                 target = PeerIdOf(info);
                 targetName = info.m_name;
             }
@@ -379,8 +381,8 @@ namespace AdminPanel
             }
 
             if (!PalFindPlayer(joined, out var info)) { Message(Loc.T("ux.err_no_player_named", joined)); return false; }
-            LocalPlayer.TeleportTo(info.m_position + Vector3.up, LocalPlayer.transform.rotation, true);
-            Message(Loc.T("ux.msg_tp", info.m_name));
+            // The roster only carries positions players chose to share; ActOnPlayerPos asks the server otherwise.
+            ActOnPlayerPos(info, PosAction.TpTo);
             return true;
         }
 
@@ -402,11 +404,13 @@ namespace AdminPanel
             {
                 me.Heal(me.GetMaxHealth());
                 me.AddStamina(me.GetMaxStamina());
-                foreach (var p in OtherPlayers()) SrvRpc("AP_SrvHeal", PeerIdOf(p));
+                foreach (var p in OtherPlayers())
+                    if (IsSpawned(p)) SrvRpc("AP_SrvHeal", PeerIdOf(p));   // an unspawned row reads as uid 0 = everybody
                 Message(Loc.T("ux.msg_heal_all"));
                 return true;
             }
             if (!PalFindPlayer(who, out var info)) { Message(Loc.T("ux.err_no_player_named", who)); return false; }
+            if (!IsSpawned(info)) { Message(Loc.T("common.target_not_ready", info.m_name)); return false; }
             SrvRpc("AP_SrvHeal", PeerIdOf(info));
             Message(Loc.T("ux.msg_heal", info.m_name));
             return true;
@@ -807,7 +811,9 @@ namespace AdminPanel
                     Group = PalGroupPlayer,
                     Kind = PalKindArg,
                     Label = n,
-                    Detail = string.Format(CultureInfo.InvariantCulture, "{0:0}, {1:0}", p.m_position.x, p.m_position.z),
+                    Detail = p.m_publicPosition
+                        ? string.Format(CultureInfo.InvariantCulture, "{0:0}, {1:0}", p.m_position.x, p.m_position.z)
+                        : Loc.T("players.pos_hidden"),   // unshared positions arrive as (0, 0)
                     Payload = atPrefix ? "@" + token : token
                 });
                 added++;
@@ -928,7 +934,9 @@ namespace AdminPanel
                     Group = PalGroupPlayer,
                     Kind = PalKindJumpPlayers,
                     Label = n,
-                    Detail = string.Format(CultureInfo.InvariantCulture, "{0:0}, {1:0}", p.m_position.x, p.m_position.z),
+                    Detail = p.m_publicPosition
+                        ? string.Format(CultureInfo.InvariantCulture, "{0:0}, {1:0}", p.m_position.x, p.m_position.z)
+                        : Loc.T("players.pos_hidden"),   // unshared positions arrive as (0, 0)
                     Payload = n
                 });
                 players++;

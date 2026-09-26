@@ -596,17 +596,24 @@ namespace AdminPanel
             if (others != null)
                 foreach (var p in others)
                     if (PeerIdOf(p) == _modFreezeTargetId) return p.m_name;
-            return Loc.T("common.nobody");   // target left the game; the send helper still rejects on id 0
+            return AwayLabel(_modFreezeTargetId, others);   // dead, or left the game: say which, not "nobody"
         }
 
         private void ModCycleFreezeTarget(List<ZNet.PlayerInfo> others)
         {
             if (others == null || others.Count == 0) { _modFreezeTargetId = 0L; return; }
             var idx = -1;
-            for (var i = 0; i < others.Count; i++)
-                if (PeerIdOf(others[i]) == _modFreezeTargetId) { idx = i; break; }
-            idx = (idx + 1) % others.Count;   // -1 (nobody) advances to the first entry
-            _modFreezeTargetId = PeerIdOf(others[idx]);
+            if (_modFreezeTargetId != 0L)   // 0 would match a dead row (its uid reads 0 too)
+                for (var i = 0; i < others.Count; i++)
+                    if (PeerIdOf(others[i]) == _modFreezeTargetId) { idx = i; break; }
+            // Next SPAWNED player, wrapping (-1 = nobody starts at the first entry). A dead or loading row reads
+            // as uid 0 - this picker's "nobody" - so stepping onto one stranded the cycle there.
+            for (var step = 1; step <= others.Count; step++)
+            {
+                var p = others[(idx + step) % others.Count];
+                if (IsSpawned(p)) { _modFreezeTargetId = PeerIdOf(p); return; }
+            }
+            _modFreezeTargetId = 0L;
         }
 
         private static string ModTrim(string s)

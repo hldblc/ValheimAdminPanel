@@ -47,7 +47,7 @@ namespace AdminPanel
             GUILayout.Label(Loc.T("dm.target"), _labelStyle, GUILayout.MinWidth(90));
             GUILayout.Label(_dmTargetId == 0
                     ? Loc.T(DmSolo() ? "dm.no_target_solo" : "dm.no_target")
-                    : TargetLabel(ref _dmTargetId),
+                    : TargetLabel(_dmTargetId),
                 _headerStyle);
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(Loc.T("dm.cycle"), _buttonStyle, GUILayout.MinWidth(110)))
@@ -71,10 +71,10 @@ namespace AdminPanel
                 // "Choose a player first" is wrong when there is nobody to choose; say which it is.
                 if (_dmTargetId == 0) Message(Loc.T(DmSolo() ? "dm.none_online" : "dm.pick_first"));
                 else if (string.IsNullOrEmpty(_dmText?.Trim())) Message(Loc.T("dm.empty"));
-                else
+                else if (TargetReady(_dmTargetId))   // a dead player's client has no one to show the message to
                 {
                     SrvRpc("AP_SrvMsg", _dmTargetId, _dmText.Trim());
-                    Message(Loc.T("dm.sent", TargetLabel(ref _dmTargetId)));
+                    Message(Loc.T("dm.sent", TargetLabel(_dmTargetId)));
                     _dmText = "";
                 }
             }

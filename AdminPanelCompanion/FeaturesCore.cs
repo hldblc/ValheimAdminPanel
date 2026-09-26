@@ -56,6 +56,11 @@ namespace AdminPanelCompanion
                 "AP_SrvApplySE", "AP_SrvSkipNight", "AP_SrvSaveWorld", "AP_SrvBanId",
             })
                 AuditedRpcs[name.GetStableHashCode()] = name;
+            // 2.5.6: locating a player reveals a position they may hide from the map, so it leaves an audit row.
+            // Both restricted roles already teleport, and "TP to" is what it serves. (AP_SrvSkillReq is left out
+            // on purpose: it fires on a timer while the skill browser is open, like the server-truth polls.)
+            RegisterAuditedRpc("AP_SrvPlayerPos", "moderator");
+            RegisterAuditedRpc("AP_SrvPlayerPos", "builder");
 
             try { Harmony.CreateAndPatchAll(typeof(AdminActionChokepoint)); }
             catch (Exception e) { Logger.LogWarning($"Admin-action chokepoint patch failed (audit/roles unavailable): {e.Message}"); }

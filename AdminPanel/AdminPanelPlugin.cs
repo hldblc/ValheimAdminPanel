@@ -17,11 +17,11 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.5";
+        public const string PluginVersion = "2.5.6";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
-        internal const string CompiledForGameVersion = "1.0.14";
+        internal const string CompiledForGameVersion = "1.0.16";
 
         internal static AdminPanelPlugin Instance;
 
@@ -59,6 +59,9 @@ namespace AdminPanel
         private int _itemQuality = 1;
         private long _giveTargetId;   // stable id of the selected give target (0 = nobody); survives roster changes
         private List<ZNet.PlayerInfo> _othersSnapshot;   // OtherPlayers() built once per frame (Layout) in DrawWindow, shared by all tabs
+        // Last name seen for each peer uid this session. A dead player's roster row loses its uid, so a picker
+        // holding that uid needs this to still say WHO it is waiting for. Cleared with the session.
+        private readonly Dictionary<long, string> _uidNames = new Dictionary<long, string>();
         private List<string> _globalKeysLayout;          // ZoneSystem global keys, snapshotted per frame (World tab draws a row each)
         private int _itemSort;   // index into ItemSortModes
         private List<ItemEntry> _itemWindowList; // virtualization window snapshot (Layout->Repaint consistency)
@@ -348,6 +351,15 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.5.6: giving things to OTHER players, fixed. The \"All skills +10 / 100 / Reset\" buttons now " +
+            "follow the Apply-to player (they only ever changed YOUR skills), and the skill list shows that player's " +
+            "real levels; on another player, \"100\" and \"Reset\" take two clicks. A player who is dead or still " +
+            "loading can no longer be targeted - that sent Summon, Heal and " +
+            "Inventory to EVERY player on the server, and a picked player who died snapped the pick back to you. " +
+            "\"TP to\", Watch, Map and lightning work on players who hide their map position (they went to the world " +
+            "centre). A gift into a full bag no longer duplicates items, and given items carry the world's NG+ level. " +
+            "Summon, Heal and direct messages now reach players without the mod. Rebuilt for Valheim 1.0.16. " +
+            "BOTH DLLs are 2.5.6 - server owners: update AdminPanelCompanion.dll and restart.\n\n" +
             "• 2.5.5: the panel now checks whether YOU are an admin on the server you are on. If your id is not in " +
             "the server's adminlist.txt, or the server has no companion, the window shows a notice instead of the " +
             "tabs (self-only cheats included) and a Re-check button. Admins see no change. The companion tells the " +
@@ -741,6 +753,8 @@ namespace AdminPanel
                 StringComparer.OrdinalIgnoreCase);
             _playerNotes = ParseKv(_playerNotesCfg.Value);
             Harmony.CreateAndPatchAll(typeof(RpcRegistration));
+            try { Harmony.CreateAndPatchAll(typeof(PlayerTargetRpcRegistration)); }
+            catch (Exception e) { Logger.LogWarning($"Player-target reply registration failed (remote skill levels and hidden-position lookups unavailable): {e.Message}"); }
             Harmony.CreateAndPatchAll(typeof(CheatPatches));
             try { Harmony.CreateAndPatchAll(typeof(CursorPatch)); }
             catch (Exception e) { Logger.LogWarning($"Cursor patch failed (panel still works): {e.Message}"); }
@@ -1173,12 +1187,16 @@ namespace AdminPanel
         {
             var self = Instance;
             if (self == null) return;
-            // NOTE: AP_InvData's `sender` is the INSPECTED player's peer id (the server relays it preserving the
-            // original sender), NOT the server — so we must NOT reject on sender. The count bound + try/catch below
-            // fully neutralize a malformed/hostile packet (it can at worst show bogus rows in the viewer, never crash).
+            // AP_InvData's `sender` is the INSPECTED player's peer id (the server relays it preserving the original
+            // sender, which the companion's RouteRpcSanitizer has already re-stamped), NOT the server. So the gate
+            // is "from the player we asked": the Remove buttons act on these rows, and without the gate any client
+            // could paint its own list into the viewer (or, before 2.5.6, every client answered a uid-0 request
+            // and the last reply won under the clicked player's name).
+            if (self._inspectTargetId == 0L || sender != self._inspectTargetId) return;
+            // The count bound + try/catch below neutralize a malformed packet (it can never crash the dispatch).
             try
             {
-                var playerName = pkg.ReadString();
+                pkg.ReadString();   // the target's own name for itself; the viewer keeps the roster name it asked
                 var count = pkg.ReadInt();
                 if (count < 0 || count > 512) return;   // reject an implausible/hostile item count
                 var list = new List<(string, int, int)>();
@@ -1189,7 +1207,6 @@ namespace AdminPanel
                     var quality = pkg.ReadInt();
                     list.Add((name, stack, quality));
                 }
-                self._inspectPlayerName = playerName;
                 self._inspectInventory = list;
                 self._inspectPending = false;
             }
@@ -1204,13 +1221,15 @@ namespace AdminPanel
             return peer != null ? peer.m_uid : 0L;
         }
 
+        // This session's own peer uid: the id the client sent in its handshake (ZNet.GetUID() ==
+        // ZDOMan.GetSessionID(), ZNet.cs:945), which is what the server keys the peer by and what routed RPCs
+        // address. It used to be looked up by NAME in the roster, which returned 0 until the roster carried our
+        // character id - and 0 is ZRoutedRpc.Everybody, so "to me" right after spawning gave the item to every
+        // player - and returned another player's uid when someone shared our name.
         private long SelfUid()
         {
-            if (ZNet.instance == null || LocalPlayer == null) return 0L;
-            var myName = LocalPlayer.GetPlayerName();
-            foreach (var p in ZNet.instance.GetPlayerList())
-                if (p.m_name == myName) return PeerIdOf(p);
-            return 0L;
+            if (ZNet.instance == null || ZDOMan.instance == null || LocalPlayer == null) return 0L;
+            return ZDOMan.GetSessionID();
         }
 
         // ==================== Lifecycle ====================
@@ -1249,6 +1268,7 @@ namespace AdminPanel
             // Admin gate: recomputed every frame outside OnGUI (OnGUI only snapshots it on its Layout pass).
             // Transitions run here so they never flip layout state mid-frame.
             ApplyGateTransition(ComputeGate());
+            TickPlayerTargets();   // times out a server position lookup that got no answer (PlayerTargets.cs)
 
             // map-point teleport: full map open + hover a spot + press the map-teleport key
             if (_gate == Gate.Ok || _gate == Gate.OldCompanion)
@@ -1367,13 +1387,15 @@ namespace AdminPanel
             _subCatsCache = null; _subCatsKey = null;
             _itemWindowList = null; _creWindowList = null;
             _othersSnapshot = null;
+            _uidNames.Clear();                      // peer uids are per connection
             _recentItems.Clear(); _recentVersion++;  // entries hold dead ItemDrop/Sprite refs from the old world
             _giveTargetId = 0;
             _openDropdown = null; _openDropdownLayout = null;
             _sideMode = SideMode.None;
             _inspectPlayerName = null; _inspectInventory = null; _inspectPending = false; _inspectTargetId = 0;
             _joinLog.Clear(); _lastSeenPlayers.Clear(); _seenPlayersInit = false;
-            _skillTargetId = 0; _skillMsg = "";
+            _skillTargetId = 0; _skillMsg = ""; _seTargetId = 0;
+            ResetPlayerTargets();                   // remote skill levels + pending position lookup (PlayerTargets.cs)
             _srvCompVersion = null; _versionReqFirst = 0f; _nextVersionReq = 0f;
             _srvHealth = null; _nextHostHealthRead = 0f;   // health is per-server too (the next server may be a different build)
             _gate = Gate.Pending; _gateLayout = Gate.Pending; _gateWasOk = false;   // admin status is per-server
@@ -2539,6 +2561,8 @@ namespace AdminPanel
                 // pass. Building it here also guarantees the two passes see an identical roster, which matters
                 // because tabs emit one control row per player.
                 _othersSnapshot = OtherPlayers();
+                foreach (var p in _othersSnapshot)
+                    if (IsSpawned(p)) _uidNames[PeerIdOf(p)] = p.m_name;
                 // Same reasoning: GetGlobalKeys() allocates and the World tab draws one row per key.
                 _globalKeysLayout = ZoneSystem.instance != null
                     ? new List<string>(ZoneSystem.instance.GetGlobalKeys())
@@ -2649,7 +2673,31 @@ namespace AdminPanel
         {
             if (ZNet.instance == null) return new List<ZNet.PlayerInfo>();
             var myName = LocalPlayer != null ? LocalPlayer.GetPlayerName() : "";
-            return ZNet.instance.GetPlayerList().Where(p => p.m_name != myName).ToList();
+            var me = SelfUid();
+            var roster = ZNet.instance.GetPlayerList();
+            if (me == 0L) return roster.Where(p => p.m_name != myName).ToList();
+            // Self is recognised by uid; the name only covers our own row while the roster has not caught up with
+            // our spawn yet (no row carries our uid). Once it has, a same-named row without a character id is
+            // another player who is dead - matching by name alone hid every player who shares ours.
+            var listed = roster.Exists(p => PeerIdOf(p) == me);
+            return roster
+                .Where(p => PeerIdOf(p) != me && (listed || !(PeerIdOf(p) == 0L && p.m_name == myName)))
+                .ToList();
+        }
+
+        // A roster row without a character id belongs to a player who is dead (Game._RequestRespawn clears it
+        // until the respawn) or still loading in. Its uid reads as 0, which ZRoutedRpc treats as "everybody",
+        // and every executor needs a live Player anyway - so such rows are never a target.
+        private static bool IsSpawned(ZNet.PlayerInfo p) => PeerIdOf(p) != 0L;
+
+        // Same rule as OtherPlayers: our uid, or - only while no row carries it yet - our name on a row without one.
+        private bool IsSelfRow(ZNet.PlayerInfo p)
+        {
+            if (LocalPlayer == null || ZNet.instance == null) return false;
+            var me = SelfUid();
+            if (me != 0L && PeerIdOf(p) == me) return true;
+            if (PeerIdOf(p) != 0L || p.m_name != LocalPlayer.GetPlayerName()) return false;
+            return me == 0L || !ZNet.instance.GetPlayerList().Exists(q => PeerIdOf(q) == me);
         }
 
         // The give target is stored by stable peer id, not by list position, so it stays pinned to the intended
@@ -2663,14 +2711,28 @@ namespace AdminPanel
         private string GiveTargetName(List<ZNet.PlayerInfo> others)
         {
             var idx = GiveTargetIndex(others);
-            return idx < 0 ? Loc.T("common.nobody") : others[idx].m_name;
+            if (idx >= 0) return others[idx].m_name;
+            return _giveTargetId == 0L ? Loc.T("common.nobody") : AwayLabel(_giveTargetId, others);
         }
 
+        // Steps to the next SPAWNED player (wrapping). Unspawned rows are skipped: their uid reads as 0, the
+        // picker's "nobody", so a cycle that stepped onto a dead player could never get past them.
         private void CycleGiveTarget(List<ZNet.PlayerInfo> others)
         {
-            if (others.Count == 0) { _giveTargetId = 0L; return; }
-            var idx = (GiveTargetIndex(others) + 1) % others.Count;   // -1 (nobody) advances to the first entry
-            _giveTargetId = PeerIdOf(others[idx]);
+            var start = GiveTargetIndex(others);   // -1 (nobody, or a pick who is away) starts at the first entry
+            for (var step = 1; step <= others.Count; step++)
+            {
+                var p = others[(start + step) % others.Count];
+                if (IsSpawned(p)) { _giveTargetId = PeerIdOf(p); return; }
+            }
+            _giveTargetId = 0L;
+        }
+
+        // The admin's message when a give / kit / forge button is pressed without a live target.
+        private void GiveTargetMissing(List<ZNet.PlayerInfo> others)
+        {
+            if (_giveTargetId != 0L) Message(Loc.T("common.target_not_ready", AwayLabel(_giveTargetId, others)));
+            else Message(Loc.T("items.msg_no_target"));
         }
 
         private Vector3 SpawnPos(float distance = 3f)
@@ -2711,6 +2773,8 @@ namespace AdminPanel
 
         private void SendServerGive(long targetUid, string prefabName, int amount, int quality)
         {
+            // Never uid 0: ZRoutedRpc reads it as "everybody", so the relay would hand the item to every player.
+            if (targetUid == 0L) { Message(Loc.T("common.not_connected_srv")); return; }
             var pkg = new ZPackage();
             pkg.Write(targetUid);
             pkg.Write(prefabName);
@@ -3002,6 +3066,7 @@ namespace AdminPanel
                     {
                         var gi = GiveTargetIndex(others);
                         if (gi >= 0) GiveKit(kit, PeerIdOf(others[gi]));
+                        else GiveTargetMissing(others);
                     }
                     GUILayout.EndHorizontal();
                 }
@@ -3121,7 +3186,7 @@ namespace AdminPanel
                     if (!bagSafe) Message(Loc.T("items.msg_no_icon_give", e.Display));
                     else if (gi >= 0)
                     { SendServerGive(PeerIdOf(others[gi]), e.Prefab, amount, quality); MarkRecent(e); Message(Loc.T("items.msg_sent", amount, e.Display, others[gi].m_name)); }
-                    else Message(Loc.T("items.msg_no_target"));
+                    else GiveTargetMissing(others);
                 }
                 GUILayout.EndHorizontal();
             }
@@ -3505,39 +3570,61 @@ namespace AdminPanel
 
             if (_playerSubCatLayout == 3) {
             BeginCard(Loc.T("player.skills"));
+            // The Apply-to pick drives EVERY button in this card, the three "all skills" buttons included, so
+            // it sits on top. Snapshotted before its own button: a click that changes the pick must not add or
+            // remove the note/status rows below within the same pass.
+            var remoteSkills = _skillTargetId != 0;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Loc.T("player.apply_to"), _labelStyle, GUILayout.MinWidth(105));
+            if (GUILayout.Button(SkillTargetLabel(), _buttonStyle, GUILayout.MinWidth(160))) CycleSkillTarget();
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(Loc.T("player.skills_plus10"), _buttonStyle)) ChangeSkills(10);
-            if (GUILayout.Button(Loc.T("player.skills_100"), _buttonStyle)) SetSkills(100);
-            if (GUILayout.Button(Loc.T("player.skills_reset"), _buttonStyle)) SetSkills(0);
+            // On another player, "100" and "Reset" overwrite levels there is no way back to - two clicks, like the
+            // other irreversible buttons (one control either way, so the Layout/Repaint count is unchanged).
+            if (remoteSkills ? ConfirmButton("skills:all100", Loc.T("player.skills_100")) : GUILayout.Button(Loc.T("player.skills_100"), _buttonStyle))
+                SetSkills(100);
+            if (remoteSkills ? ConfirmButton("skills:reset", Loc.T("player.skills_reset")) : GUILayout.Button(Loc.T("player.skills_reset"), _buttonStyle))
+                SetSkills(0);
             GUILayout.EndHorizontal();
+            if (remoteSkills)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(Loc.T("player.private_note"), _labelStyle, GUILayout.MinWidth(105));
+                _skillMsg = GUILayout.TextField(_skillMsg, _textFieldStyle, GUILayout.Width(280));
+                GUILayout.EndHorizontal();
+                GUILayout.Label(Loc.T("player.private_note_hint"), _hintStyle);
+            }
 
             _showSkills = GUILayout.Toggle(_showSkills, " " + Loc.T("player.show_skills"), _toggleStyle);
             if (_showSkills)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(Loc.T("player.apply_to"), _labelStyle, GUILayout.MinWidth(105));
-                if (GUILayout.Button(SkillTargetLabel(), _buttonStyle, GUILayout.MinWidth(160))) CycleSkillTarget();
                 GUILayout.Label(Loc.T("player.custom"), _labelStyle, GUILayout.MinWidth(55));
                 _skillCustom = GUILayout.TextField(_skillCustom, _textFieldStyle, GUILayout.Width(60));
+                GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
-                if (_skillTargetId != 0)
+                // A remote target's levels live in THEIR save, so the list shows what their client reported
+                // (AP_SkillData), never the admin's own numbers under the target's name.
+                if (remoteSkills)
                 {
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label(Loc.T("player.private_note"), _labelStyle, GUILayout.MinWidth(105));
-                    _skillMsg = GUILayout.TextField(_skillMsg, _textFieldStyle, GUILayout.Width(280));
-                    GUILayout.EndHorizontal();
-                    GUILayout.Label(Loc.T("player.private_note_hint"), _hintStyle);
+                    RequestRemoteSkills();
+                    GUILayout.Label(RemoteSkillsStatus(), _hintStyle);
                 }
                 var skills = player.GetSkills();
                 // Fill the window instead of a fixed 220px stub. Reserve covers the outer Player scroll's
-                // base (130) plus this card's header + the "All skills" buttons row + the browser toggle +
-                // the "Apply to / Custom" row, so the OUTER scroll stays passive (no double scrollbar).
-                _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(ListView(280f)));
+                // base (130) plus this card's header, the Apply-to row, the "All skills" buttons row, the
+                // browser toggle and the Custom row - and, for a remote target, the note row, its hint and the
+                // levels status line - so the OUTER scroll stays passive (no double scrollbar).
+                _skillScroll = GUILayout.BeginScrollView(_skillScroll, GUILayout.Height(ListView(remoteSkills ? 370f : 300f)));
                 foreach (var type in AllSkillTypes)
                 {
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(type.ToString(), _cellStyle, GUILayout.Width(130));
-                    GUILayout.Label(Loc.T("player.level_short", skills.GetSkillLevel(type).ToString("0.#")), _headerStyle, GUILayout.MinWidth(60));
+                    var level = remoteSkills ? RemoteSkillLevel(type) : skills.GetSkillLevel(type).ToString("0.#");
+                    GUILayout.Label(Loc.T("player.level_short", level), _headerStyle, GUILayout.MinWidth(60));
                     GUILayout.FlexibleSpace();
                     if (GUILayout.Button("−10", _buttonStyle, GUILayout.MinWidth(44))) RaiseSkill(type, -10);
                     if (GUILayout.Button("−1", _buttonStyle, GUILayout.MinWidth(36))) RaiseSkill(type, -1);
@@ -3571,7 +3658,7 @@ namespace AdminPanel
                 // Same Me → player → … cycle as the skill browser; effects run on the target's own client
                 // via the server (AP_SrvApplySE), so remote targets need companion 2.3.0 on their side.
                 GUILayout.Label(Loc.T("player.apply_to"), _labelStyle, GUILayout.MinWidth(70));
-                if (GUILayout.Button(TargetLabel(ref _seTargetId), _buttonStyle, GUILayout.MinWidth(160)))
+                if (GUILayout.Button(TargetLabel(_seTargetId), _buttonStyle, GUILayout.MinWidth(160)))
                     CycleTarget(ref _seTargetId);
                 GUILayout.EndHorizontal();
                 // The relay is fire-and-forget (same as skills): a target on companion <2.3.0 silently drops
@@ -3613,10 +3700,10 @@ namespace AdminPanel
                                 player.GetSEMan().AddStatusEffect(entry.Hash, true);
                                 Message(Loc.T("player.msg_applied", entry.Display));
                             }
-                            else
+                            else if (TargetReady(_seTargetId))
                             {
                                 SrvRpc("AP_SrvApplySE", _seTargetId, entry.Hash);
-                                Message(Loc.T("player.msg_applied_to", entry.Display, TargetLabel(ref _seTargetId)));
+                                Message(Loc.T("player.msg_applied_to", entry.Display, TargetLabel(_seTargetId)));
                             }
                         }
                         GUILayout.EndHorizontal();
@@ -3637,47 +3724,100 @@ namespace AdminPanel
                 LocalPlayer.GetSkills().CheatRaiseSkill(type.ToString(), amount, false);
                 Message(Loc.T("player.msg_skill_self", type, amount.ToString("0.#")));
             }
-            else
+            else if (TargetReady(_skillTargetId))
             {
-                var pkg = new ZPackage();
-                pkg.Write(_skillTargetId);
-                pkg.Write(type.ToString());
-                pkg.Write(amount);
-                pkg.Write(_skillMsg ?? "");
-                SrvRpc("AP_SrvSkillRaise", pkg);
+                SendSkillRaise(_skillTargetId, type.ToString(), amount, _skillMsg ?? "");
                 Message(Loc.T("player.msg_skill_target", type, amount.ToString("0.#"), SkillTargetLabel()));
             }
         }
 
-        // Shared target-picker helpers: the skill browser and the status-effect browser both aim at
-        // "Me or any online player", stored as a stable peer id (0 = self) so the pick survives roster
-        // churn. A cycle button sidesteps the dropdown's Layout/Repaint control-count bookkeeping for a
-        // list that changes as players join/leave.
-        private string TargetLabel(ref long targetId)
+        private void SendSkillRaise(long targetUid, string skill, float amount, string note)
         {
-            if (targetId == 0) return Loc.T("common.me");
-            foreach (var p in OtherPlayers())
-                if (PeerIdOf(p) == targetId) return p.m_name;
-            targetId = 0;   // target left the game — snap back to self
-            return Loc.T("common.me");
+            var pkg = new ZPackage();
+            pkg.Write(targetUid);
+            pkg.Write(skill);
+            pkg.Write(amount);
+            pkg.Write(note);
+            SrvRpc("AP_SrvSkillRaise", pkg);
         }
 
+        // Shared target-picker helpers: the skill browser, the status-effect browser, direct messages and the
+        // item forge all aim at "Me or any online player", stored as a stable peer id (0 = self) so the pick
+        // survives roster churn. A cycle button sidesteps the dropdown's Layout/Repaint control-count
+        // bookkeeping for a list that changes as players join/leave.
+        //
+        // A pick who dies or leaves KEEPS the pick: the label says so and TargetReady refuses until they are
+        // back. It used to snap back to "Me" the moment the target's roster row lost its character id (every
+        // death does that), so the admin's next click - a skill raise, an effect, a forged item - landed on
+        // the admin instead of the player the admin still believed was selected.
+        private string TargetLabel(long targetId)
+        {
+            if (targetId == 0) return Loc.T("common.me");
+            var others = _othersSnapshot ?? OtherPlayers();
+            foreach (var p in others)
+                if (PeerIdOf(p) == targetId) return p.m_name;
+            return AwayLabel(targetId, others);
+        }
+
+        // Me -> every SPAWNED player in roster order -> Me. Dead or loading players are skipped: their uid
+        // reads as 0, which is "Me" here, so a cycle that stepped onto one could never get past it.
         private void CycleTarget(ref long targetId)
         {
-            var others = OtherPlayers();
-            if (others.Count == 0) { targetId = 0; return; }
-            if (targetId == 0) { targetId = PeerIdOf(others[0]); return; }
-            for (var i = 0; i < others.Count; i++)
-                if (PeerIdOf(others[i]) == targetId)
-                { targetId = i + 1 < others.Count ? PeerIdOf(others[i + 1]) : 0; return; }
+            var others = _othersSnapshot ?? OtherPlayers();
+            var start = -1;
+            if (targetId != 0)
+                for (var i = 0; i < others.Count; i++)
+                    if (PeerIdOf(others[i]) == targetId) { start = i; break; }
+            for (var i = start + 1; i < others.Count; i++)
+                if (IsSpawned(others[i])) { targetId = PeerIdOf(others[i]); return; }
             targetId = 0;
         }
 
-        private string SkillTargetLabel() => TargetLabel(ref _skillTargetId);
+        // "Name (respawning)" while the player is still connected without a character, "Name (left)" once they
+        // are gone. The name comes from _uidNames because an unspawned row no longer carries the uid.
+        private string AwayLabel(long targetId, List<ZNet.PlayerInfo> others)
+        {
+            if (!_uidNames.TryGetValue(targetId, out var name)) return Loc.T("common.target_left", "?");
+            foreach (var p in others)
+                if (!IsSpawned(p) && p.m_name == name) return Loc.T("common.target_respawning", name);
+            return Loc.T("common.target_left", name);
+        }
+
+        // May an action be sent to targetId right now? Self always; a player only while their roster row carries
+        // that uid (alive and loaded in). Otherwise the admin is told why - an action aimed at a player who is
+        // not there is refused, never redirected.
+        private bool TargetReady(long targetId)
+        {
+            if (targetId == 0 || IsLive(targetId)) return true;
+            Message(Loc.T("common.target_not_ready", AwayLabel(targetId, _othersSnapshot ?? OtherPlayers())));
+            return false;
+        }
+
+        // Is this uid a spawned player in the roster right now? (Unspawned rows carry uid 0, never a match.)
+        private bool IsLive(long uid)
+        {
+            if (uid == 0L) return false;
+            foreach (var p in _othersSnapshot ?? OtherPlayers())
+                if (PeerIdOf(p) == uid) return true;
+            return false;
+        }
+
+        private string SkillTargetLabel() => TargetLabel(_skillTargetId);
         private void CycleSkillTarget() => CycleTarget(ref _skillTargetId);
 
+        // The three "all skills" buttons follow the Apply-to pick like the per-skill rows. They used to act on
+        // the local player whatever was picked, so "All skills +10" with another player selected raised the
+        // ADMIN's skills (the admin saw the numbers move and believed the target's had), and "Reset skills"
+        // wiped the admin's own.
         private void ChangeSkills(float delta)
         {
+            if (_skillTargetId != 0)
+            {
+                if (!TargetReady(_skillTargetId)) return;
+                RaiseAllRemote(delta);
+                Message(Loc.T("player.msg_skills_changed_target", delta, SkillTargetLabel()));
+                return;
+            }
             foreach (Skills.SkillType type in Enum.GetValues(typeof(Skills.SkillType)))
             {
                 if (type == Skills.SkillType.None || type == Skills.SkillType.All) continue;
@@ -3686,8 +3826,29 @@ namespace AdminPanel
             Message(Loc.T("player.msg_skills_changed", delta));
         }
 
+        // One AP_SrvSkillRaise per skill - the relay every companion since 2.2.9 already understands, so the
+        // target needs no newer DLL for this to work. The private note rides only the LAST packet (one per skill
+        // would pop a center message per skill). It is shown by the same executor that applies the raise, so a
+        // player whose raises are refused (no companion on their side) never reads a note about skills they did
+        // not get - which a separate direct message would have delivered regardless.
+        private void RaiseAllRemote(float delta)
+        {
+            var note = _skillMsg?.Trim() ?? "";
+            for (var i = 0; i < AllSkillTypes.Length; i++)
+                SendSkillRaise(_skillTargetId, AllSkillTypes[i].ToString(), delta, i == AllSkillTypes.Length - 1 ? note : "");
+        }
+
         private void SetSkills(float value)
         {
+            if (_skillTargetId != 0)
+            {
+                if (!TargetReady(_skillTargetId)) return;
+                // The remote relay is relative, but the game clamps every skill to [0, 100]
+                // (Skills.CheatRaiseSkill), so -100 / +100 land exactly on the only two values offered here.
+                RaiseAllRemote(value > 0f ? 100f : -100f);
+                Message(Loc.T("player.msg_skills_set_target", value, SkillTargetLabel()));
+                return;
+            }
             var skills = LocalPlayer.GetSkills();
             foreach (Skills.SkillType type in Enum.GetValues(typeof(Skills.SkillType)))
             {
@@ -3775,10 +3936,7 @@ namespace AdminPanel
             if (tpOthers.Count == 0) GUILayout.Label(Loc.T("world.no_others"), _dimLabelStyle);
             else foreach (var p in tpOthers)
                 if (GUILayout.Button(p.m_name, _buttonStyle))
-                {
-                    LocalPlayer.TeleportTo(p.m_position + Vector3.up, LocalPlayer.transform.rotation, true);
-                    Message(Loc.T("world.msg_tp_to", p.m_name));
-                }
+                    ActOnPlayerPos(p, PosAction.TpTo);   // the roster only carries positions players chose to share
             GUILayout.EndHorizontal();
 
             // Sacrificial stones (boss summon altars) — the game's own name for these locations
@@ -4045,7 +4203,8 @@ namespace AdminPanel
             }
             if (GUILayout.Button(Loc.T("players.summon_all"), _buttonStyle, GUILayout.MinWidth(95)))
             {
-                foreach (var p in OtherPlayers()) SummonPlayer(p);
+                foreach (var p in OtherPlayers())
+                    if (IsSpawned(p)) SummonPlayer(p);
                 Message(Loc.T("players.msg_summon_all"));
             }
             GUILayout.EndHorizontal();
@@ -4055,52 +4214,43 @@ namespace AdminPanel
             _playersScroll = GUILayout.BeginScrollView(_playersScroll, GUILayout.Height(Mathf.Min(250f, ListView(330f))));
             foreach (var info in ZNet.instance.GetPlayerList())
             {
-                var isSelf = LocalPlayer != null && info.m_name == LocalPlayer.GetPlayerName();
+                var isSelf = IsSelfRow(info);
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(info.m_name + (isSelf ? " " + Loc.T("players.you_suffix") : ""), _cellStyle, GUILayout.Width(140));
-                GUILayout.Label($"({info.m_position.x:0}, {info.m_position.z:0})", _cellStyle, GUILayout.Width(100));
-                if (!isSelf)
+                // Only players who share their map position are sent with one; everyone else arrives as (0, 0),
+                // which is the world centre, not where they are.
+                GUILayout.Label(info.m_publicPosition ? $"({info.m_position.x:0}, {info.m_position.z:0})" : Loc.T("players.pos_hidden"),
+                    _cellStyle, GUILayout.Width(100));
+                if (!isSelf && !IsSpawned(info))
+                {
+                    // Dead or still loading in: the row carries no uid to address (it would read as 0 =
+                    // "everybody") and there is no character on their side to receive anything yet.
+                    GUILayout.Label(Loc.T("players.respawning"), _dimCellStyle);
+                }
+                else if (!isSelf)
                 {
                     if (GUILayout.Button(Loc.T("players.tp_to"), _buttonStyle, GUILayout.MinWidth(50)))
-                    { LocalPlayer.TeleportTo(info.m_position + Vector3.up, LocalPlayer.transform.rotation, true); Message(Loc.T("world.msg_tp_to", info.m_name)); }
+                        ActOnPlayerPos(info, PosAction.TpTo);
                     if (GUILayout.Button(Loc.T("players.summon"), _buttonStyle, GUILayout.MinWidth(65))) SummonPlayer(info);
                     if (GUILayout.Button(Loc.T("players.watch"), _buttonStyle, GUILayout.MinWidth(55)))
-                    {
-                        if (!_ghost) { _ghost = true; LocalPlayer.SetGhostMode(true); }
-                        if (!_fly) { _fly = true; Player.m_debugMode = true; LocalPlayer.ToggleDebugFly(); }
-                        LocalPlayer.TeleportTo(info.m_position + Vector3.up * 8f, LocalPlayer.transform.rotation, true);
-                        Message(Loc.T("players.msg_watching", info.m_name));
-                    }
+                        ActOnPlayerPos(info, PosAction.Watch);
                     if (GUILayout.Button(Loc.T("players.heal"), _buttonStyle, GUILayout.MinWidth(45)))
                     { SrvRpc("AP_SrvHeal", PeerIdOf(info)); Message(Loc.T("players.msg_healing", info.m_name)); }
                     if (GUILayout.Button(Loc.T("players.map"), _buttonStyle, GUILayout.MinWidth(45)))
-                    { Chat.instance?.SendPing(info.m_position); Message(Loc.T("players.msg_pinged", info.m_name)); }
+                        ActOnPlayerPos(info, PosAction.Map);
                     if (GUILayout.Button("⚡", _buttonStyle, GUILayout.MinWidth(30)))
-                    { SendServerSpawn(1, "lightning", info.m_position, 1, 1, false); Message(Loc.T("players.msg_lightning", info.m_name)); }
+                        ActOnPlayerPos(info, PosAction.Smite);
                     if (GUILayout.Button(Loc.T("players.inventory"), _buttonStyle, GUILayout.MinWidth(75)))
-                    {
-                        _inspectPlayerName = info.m_name;
-                        _inspectTargetId = PeerIdOf(info);
-                        _inspectInventory = null;
-                        _inspectPending = true;
-                        _inspectRequestTime = Time.time;
-                        SrvRpc("AP_SrvReqInv", PeerIdOf(info));
-                    }
+                        RequestInventory(info.m_name, PeerIdOf(info));
                     if (GUILayout.Button(Loc.T("players.kick"), _buttonStyle, GUILayout.MinWidth(45)))
                     { SrvRpc("AP_SrvKick", PeerIdOf(info)); Message(Loc.T("players.msg_kicked", info.m_name)); }
                     // Per-player id: arming Ban on one row must not arm it on another.
                     if (ConfirmButton("ban:" + PeerIdOf(info), Loc.T("players.ban"), GUILayout.MinWidth(42)))
                     { SrvRpc("AP_SrvBan", PeerIdOf(info)); Message(Loc.T("players.msg_banned", info.m_name)); }
                 }
+                // Own row: SelfUid, not the row's id - right after spawning the roster may not carry it yet.
                 else if (GUILayout.Button(Loc.T("players.inventory"), _buttonStyle, GUILayout.MinWidth(75)))
-                {
-                    _inspectPlayerName = info.m_name;
-                    _inspectTargetId = PeerIdOf(info);
-                    _inspectInventory = null;
-                    _inspectPending = true;
-                    _inspectRequestTime = Time.time;
-                    SrvRpc("AP_SrvReqInv", PeerIdOf(info));
-                }
+                    RequestInventory(info.m_name, SelfUid());
                 GUILayout.EndHorizontal();
 
                 // note line
@@ -4152,6 +4302,8 @@ namespace AdminPanel
         private void RemoveFromInspected(string itemName, int amount)
         {
             if (_inspectTargetId == 0 || amount <= 0) return;
+            // The viewer outlives its subject: a player who died or left since cannot have anything removed.
+            if (_inspectTargetId != SelfUid() && !TargetReady(_inspectTargetId)) return;
             var pkg = new ZPackage();
             pkg.Write(_inspectTargetId);
             pkg.Write(itemName);
@@ -4160,8 +4312,21 @@ namespace AdminPanel
             Message(Loc.T("players.msg_removing", amount, itemName, _inspectPlayerName));
         }
 
+        private void RequestInventory(string name, long uid)
+        {
+            if (uid == 0L) { Message(Loc.T("common.not_connected_srv")); return; }   // 0 would ask EVERY client
+            _inspectPlayerName = name;
+            _inspectTargetId = uid;
+            _inspectInventory = null;
+            _inspectPending = true;
+            _inspectRequestTime = Time.time;
+            SrvRpc("AP_SrvReqInv", uid);
+        }
+
         private void SummonPlayer(ZNet.PlayerInfo info)
         {
+            // An unspawned row reads as uid 0 - "everybody" - which summoned the whole server.
+            if (!IsSpawned(info)) { Message(Loc.T("common.target_not_ready", info.m_name)); return; }
             var pkg = new ZPackage();
             pkg.Write(PeerIdOf(info));
             pkg.Write(LocalPlayer.transform.position + LocalPlayer.transform.forward * 2f);

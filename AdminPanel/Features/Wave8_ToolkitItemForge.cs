@@ -148,6 +148,7 @@ namespace AdminPanel
             if (prefab.Length == 0) { Message(Loc.T("iattr.msg_no_prefab")); return; }
             if (!TkRequireReachable()) return;
             if (Time.time < _iattrNextGive) return;
+            if (!TargetReady(_iattrTargetId)) return;   // a pick who died or left is refused - the item must not fall back to "me"
             _iattrNextGive = Time.time + 1f;
             // 0 = me. The server needs a real uid either way; on a host SelfUid() is the session id the
             // local-dispatch path recognises.
@@ -168,7 +169,7 @@ namespace AdminPanel
             pkg.Write(Mathf.Clamp(Mathf.RoundToInt(_iattrVariant), 0, 31));
             pkg.Write(crafter);
             SrvRpc("AP_SrvGiveEx", pkg);
-            Message(Loc.T("iattr.msg_sent", amount, prefab, TargetLabel(ref _iattrTargetId)));
+            Message(Loc.T("iattr.msg_sent", amount, prefab, TargetLabel(_iattrTargetId)));
         }
 
         // ---- (b) aimed item drop ----
@@ -347,7 +348,7 @@ namespace AdminPanel
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("iattr.target"), _labelStyle, GUILayout.MinWidth(90));
-            GUILayout.Label(TargetLabel(ref _iattrTargetId), _headerStyle);
+            GUILayout.Label(TargetLabel(_iattrTargetId), _headerStyle);
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(Loc.T("iattr.cycle"), _buttonStyle, GUILayout.MinWidth(110))) CycleTarget(ref _iattrTargetId);
             GUILayout.EndHorizontal();

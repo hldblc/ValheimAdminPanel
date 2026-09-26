@@ -567,7 +567,7 @@ namespace AdminPanel
             if (GUILayout.Button(Loc.T("pdat.snap"), _buttonStyle, GUILayout.MinWidth(100)))
             {
                 if (_pdatSnapTargetId == 0L) Message(Loc.T("pdat.msg_no_target"));
-                else
+                else if (TargetReady(_pdatSnapTargetId))   // a dead or departed player has no inventory to capture
                 {
                     var pkg = new ZPackage();
                     pkg.Write(_pdatSnapTargetId);
@@ -877,7 +877,7 @@ namespace AdminPanel
             if (GUILayout.Button(Loc.T("pdat.rescue"), _buttonStyle, GUILayout.MinWidth(100)))
             {
                 if (_pdatRescueTargetId == 0L) Message(Loc.T("pdat.msg_no_target"));
-                else
+                else if (TargetReady(_pdatRescueTargetId))   // a dead player has no character to move; a departed one is gone
                 {
                     var pkg = new ZPackage();
                     pkg.Write(_pdatRescueTargetId);
@@ -1029,17 +1029,23 @@ namespace AdminPanel
             if (others != null)
                 foreach (var p in others)
                     if (PeerIdOf(p) == _pdatSnapTargetId) return p.m_name;
-            return Loc.T("common.nobody");   // target left the game; the send path still rejects on id 0
+            return AwayLabel(_pdatSnapTargetId, others);   // dead, or left the game: say which, not "nobody"
         }
 
         private void PdatCycleSnapTarget(List<ZNet.PlayerInfo> others)
         {
             if (others == null || others.Count == 0) { _pdatSnapTargetId = 0L; return; }
             var idx = -1;
-            for (var i = 0; i < others.Count; i++)
-                if (PeerIdOf(others[i]) == _pdatSnapTargetId) { idx = i; break; }
-            idx = (idx + 1) % others.Count;   // -1 (nobody) advances to the first entry
-            _pdatSnapTargetId = PeerIdOf(others[idx]);
+            if (_pdatSnapTargetId != 0L)   // 0 would match a dead row (its uid reads 0 too)
+                for (var i = 0; i < others.Count; i++)
+                    if (PeerIdOf(others[i]) == _pdatSnapTargetId) { idx = i; break; }
+            // Next SPAWNED player, wrapping (-1 = nobody starts at the first entry); see PdatCycleRescueTarget.
+            for (var step = 1; step <= others.Count; step++)
+            {
+                var p = others[(idx + step) % others.Count];
+                if (IsSpawned(p)) { _pdatSnapTargetId = PeerIdOf(p); return; }
+            }
+            _pdatSnapTargetId = 0L;
         }
 
         private string PdatRescueTargetName(List<ZNet.PlayerInfo> others)
@@ -1048,17 +1054,24 @@ namespace AdminPanel
             if (others != null)
                 foreach (var p in others)
                     if (PeerIdOf(p) == _pdatRescueTargetId) return p.m_name;
-            return Loc.T("common.nobody");   // target left the game; the send path still rejects on id 0
+            return AwayLabel(_pdatRescueTargetId, others);   // dead, or left the game: say which, not "nobody"
         }
 
         private void PdatCycleRescueTarget(List<ZNet.PlayerInfo> others)
         {
             if (others == null || others.Count == 0) { _pdatRescueTargetId = 0L; return; }
             var idx = -1;
-            for (var i = 0; i < others.Count; i++)
-                if (PeerIdOf(others[i]) == _pdatRescueTargetId) { idx = i; break; }
-            idx = (idx + 1) % others.Count;   // -1 (nobody) advances to the first entry
-            _pdatRescueTargetId = PeerIdOf(others[idx]);
+            if (_pdatRescueTargetId != 0L)   // 0 would match a dead row (its uid reads 0 too)
+                for (var i = 0; i < others.Count; i++)
+                    if (PeerIdOf(others[i]) == _pdatRescueTargetId) { idx = i; break; }
+            // Next SPAWNED player, wrapping (-1 = nobody starts at the first entry). A dead or loading row reads
+            // as uid 0 - this picker's "nobody" - so stepping onto one stranded the cycle there.
+            for (var step = 1; step <= others.Count; step++)
+            {
+                var p = others[(idx + step) % others.Count];
+                if (IsSpawned(p)) { _pdatRescueTargetId = PeerIdOf(p); return; }
+            }
+            _pdatRescueTargetId = 0L;
         }
 
         // The mode int IS the wire value, so it must stay inside 0-2 whatever a future edit does to the cycle.

@@ -81,6 +81,13 @@ namespace AdminPanelCompanion
                     CompanionPlugin.NotifySender(sender, "Item forge: that player is not online.");
                     return;
                 }
+                // Dead or still loading (the server hears of a death before the admin's roster does): the item
+                // would reach a client with no Player and vanish while this reply claimed it was forged.
+                if (ZNet.instance.GetPeer(target).m_characterID.IsNone())
+                {
+                    CompanionPlugin.NotifySender(sender, "Item forge: that player has no character right now (dead or still loading).");
+                    return;
+                }
                 var has = Wave34Core.HasMod(target);
                 if (has != true)
                 {
@@ -155,26 +162,11 @@ namespace AdminPanelCompanion
                     var data = drop.m_itemData.Clone();
                     data.m_dropPrefab = prefab;
                     data.m_stack = stack;
+                    data.m_worldLevel = Game.m_worldLevel;   // like every new vanilla item (see CompanionPlugin.OnGiveItem)
                     Apply(data, quality, durability, variant, crafter);
-                    if (!player.GetInventory().AddItem(data))
-                    {
-                        // Full inventory: drop the item at the player's feet with the SAME attributes and
-                        // write them to its ZDO right away, or the drop's own Load() on the next revision
-                        // would put the defaults back.
-                        var go = UnityEngine.Object.Instantiate(prefab, player.transform.position + Vector3.up, Quaternion.identity);
-                        var d = go.GetComponent<ItemDrop>();
-                        if (d != null)
-                        {
-                            d.m_itemData.m_stack = stack;
-                            Apply(d.m_itemData, quality, durability, variant, crafter);
-                            var nview = go.GetComponent<ZNetView>();
-                            if (nview != null && nview.IsValid())
-                            {
-                                try { ItemDrop.SaveToZDO(d.m_itemData, nview.GetZDO()); }
-                                catch (Exception) { }
-                            }
-                        }
-                    }
+                    // Full inventory: only the part AddItem could not place goes on the ground, with every forged
+                    // attribute - ItemDrop.DropItem clones them and saves the drop's ZDO itself (see AddOrDrop).
+                    CompanionPlugin.AddOrDrop(player, data);
                 }
                 player.Message(MessageHud.MessageType.Center, $"An admin granted you {amount}x {prefabName}!");
             }

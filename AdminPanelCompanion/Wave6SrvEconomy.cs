@@ -1539,20 +1539,21 @@ namespace AdminPanelCompanion
                 data.m_dropPrefab = prefab;
                 data.m_stack = stack;
                 data.m_quality = Mathf.Clamp(1, 1, data.m_shared.m_maxQuality);
+                data.m_worldLevel = Game.m_worldLevel;   // like every new vanilla item (see CompanionPlugin.OnGiveItem)
                 data.m_durability = data.GetMaxDurability();
                 if (player.GetInventory().AddItem(data)) { placed += stack; continue; }
 
-                // Bag full: drop at the player's feet rather than losing the purchase.
+                // Bag full: AddItem merged what it could into partial stacks and cut data.m_stack down to the rest
+                // (CompanionPlugin.AddOrDrop has the full story). Only that rest goes on the ground - dropping the
+                // whole stack handed a buyer with partial stacks in a full bag MORE than they paid for.
+                placed += stack - data.m_stack;
                 try
                 {
-                    var go = UnityEngine.Object.Instantiate(prefab, player.transform.position + Vector3.up, Quaternion.identity);
-                    var d = go.GetComponent<ItemDrop>();
-                    if (d != null)
+                    if (data.m_stack > 0)
                     {
-                        d.m_itemData.m_stack = stack;
-                        d.m_itemData.m_quality = Mathf.Clamp(1, 1, d.m_itemData.m_shared.m_maxQuality);
+                        ItemDrop.DropItem(data, data.m_stack, player.transform.position + Vector3.up, Quaternion.identity);
+                        placed += data.m_stack;
                     }
-                    placed += stack;
                 }
                 catch (Exception e) { error = "inventory full and the drop failed: " + e.Message; break; }
             }

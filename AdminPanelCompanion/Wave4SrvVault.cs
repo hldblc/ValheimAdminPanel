@@ -1283,7 +1283,10 @@ namespace AdminPanelCompanion
                 body.Write(false);  // equipped
                 body.Write(0);      // gridX
                 body.Write(0);      // gridY
-                body.Write(0);      // worldLevel
+                // A NEW item carries the world's NG+ level, as vanilla sets it on every new item (the server
+                // tracks it from the WorldLevel global key, ZoneSystem.UpdateWorldRates). 0 made queued grants
+                // weaker than crafted gear on an NG+ world. ApplyPayload applies any value above 0.
+                body.Write(Game.m_worldLevel);
                 body.Write(0);      // custom data entries
             }
             records = n;
@@ -1669,18 +1672,15 @@ namespace AdminPanelCompanion
                     catch (Exception) { }
                     if (!added)
                     {
-                        // Inventory full: drop at the player's feet, exactly like OnGiveItem's fallback, so a
-                        // restore never silently eats items.
+                        // Inventory full: drop at the player's feet so a restore never silently eats items. Only
+                        // data.m_stack - AddItem has cut it down to the part it could not place (the rest was merged
+                        // into partial stacks; dropping the original count duplicated that part), and DropItem keeps
+                        // every attribute a restore carries (crafter, variant, world level, custom data). See
+                        // CompanionPlugin.AddOrDrop.
                         try
                         {
-                            var go = UnityEngine.Object.Instantiate(prefab, player.transform.position + Vector3.up, Quaternion.identity);
-                            var d = go.GetComponent<ItemDrop>();
-                            if (d != null)
-                            {
-                                d.m_itemData.m_stack = stack;
-                                d.m_itemData.m_quality = data.m_quality;
-                                d.m_itemData.m_durability = data.m_durability;
-                            }
+                            if (data.m_stack > 0)
+                                ItemDrop.DropItem(data, data.m_stack, player.transform.position + Vector3.up, Quaternion.identity);
                         }
                         catch (Exception) { }
                     }

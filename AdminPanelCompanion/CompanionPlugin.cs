@@ -14,12 +14,12 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.5";
+        public const string PluginVersion = "2.5.6";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
         // anything — the bind probe below is what tells whether the mismatch actually broke something.
-        internal const string CompiledForGameVersion = "1.0.14";
+        internal const string CompiledForGameVersion = "1.0.16";
 
         internal static CompanionPlugin Instance;
 
@@ -232,6 +232,9 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register("AP_SrvJoinLogReq", new Action<long>(OnServerJoinLogReq));
                 ZRoutedRpc.instance.Register("AP_SrvSaveWorld", new Action<long>(OnServerSaveWorld));
                 ZRoutedRpc.instance.Register<string>("AP_SrvBanId", OnServerBanId);
+                // 2.5.6 - ask instead of guess: a target's skill table, a player's real position
+                ZRoutedRpc.instance.Register<long>("AP_SrvSkillReq", OnServerSkillReq);
+                ZRoutedRpc.instance.Register<long>("AP_SrvPlayerPos", OnServerPlayerPos);
 
                 // client-side executors (only accepted when sent by the server)
                 ZRoutedRpc.instance.Register<string, int, int, string>("AP_GiveItem", OnGiveItem);
@@ -242,6 +245,7 @@ namespace AdminPanelCompanion
                 ZRoutedRpc.instance.Register("AP_HealSelf", new Action<long>(OnHealSelf));
                 ZRoutedRpc.instance.Register<int>("AP_ApplySE", OnApplyStatusEffect);
                 ZRoutedRpc.instance.Register<string>("AP_Msg", OnMessage);
+                ZRoutedRpc.instance.Register<long>("AP_SkillReq", OnSkillReq);
             }
         }
 
@@ -347,6 +351,98 @@ namespace AdminPanelCompanion
             return isAdmin;
         }
 
+        // ---------- relay targets ----------
+        // Every relay below forwards an admin action to ONE player's client, addressed by peer uid, and two uids
+        // must never go out. 0 is ZRoutedRpc.Everybody: InvokeRoutedRPC dispatches it locally AND routes it to
+        // every peer (ZRoutedRpc.cs:130), so a panel that sent 0 - a dead player's roster row has no character id,
+        // hence uid 0, until they respawn (Game._RequestRespawn) - handed an item, a teleport or a skill raise to
+        // the WHOLE server. And a uid that is not connected, which the relay would drop without a word.
+        // The listen host is a valid target although it is never in m_peers.
+        // needsMod: the executor is a companion RPC, which a vanilla client ignores without a trace - so the target
+        //   must be KNOWN to run the companion (the Item Forge rule). Not needed for the admin's own client, which
+        //   just sent this request, nor for the listen host, which is this very process.
+        // needsCharacter: every executor but the message acts on the target's Player. The server learns of a death
+        //   at once (Game._RequestRespawn -> SetCharacterID(None) -> ZNet.RPC_CharacterID) while the admin's roster
+        //   can lag ~2 s; a grant landing in that gap vanished (the executor returns without a Player).
+        // quiet: for timer-driven requests, where a refusal every few seconds would spam the admin's screen.
+        private static bool RelayTargetOk(long sender, long targetUid, string action, bool needsMod,
+            bool needsCharacter = true, bool quiet = false)
+        {
+            const string noCharacter = "That player has no character right now (dead or still loading). Nothing was sent.";
+            if (targetUid == 0L)
+            {
+                Log($"{action}: refused a relay to peer 0 from {sender} (0 addresses every player)");
+                if (!quiet) RelayNotice(sender, targetUid, noCharacter);
+                return false;
+            }
+            if (ZNet.instance == null || ZRoutedRpc.instance == null) return false;
+            if (IsLocalHostTarget(targetUid)) return true;
+            if (ZNet.instance.IsServer() && !ZNet.instance.IsDedicated() && ZDOMan.instance != null &&
+                targetUid == ZDOMan.GetSessionID())
+            {
+                // The listen host itself, between death and respawn (no local Player).
+                if (!needsCharacter) return true;
+                if (!quiet) RelayNotice(sender, targetUid, noCharacter);
+                return false;
+            }
+            var peer = ZNet.instance.GetPeer(targetUid);
+            if (peer == null)
+            {
+                if (!quiet) RelayNotice(sender, targetUid, "That player is no longer online. Nothing was sent.");
+                return false;
+            }
+            if (needsCharacter && peer.m_characterID.IsNone())
+            {
+                if (!quiet) RelayNotice(sender, targetUid, noCharacter);
+                return false;
+            }
+            if (needsMod && targetUid != sender)
+            {
+                var has = Wave34Core.HasMod(targetUid);
+                if (has == true) return true;
+                // Ask (again) either way: "false" is the verdict after three unanswered probes in the first ~90 s,
+                // and nothing probes after that, so a modded client that took longer to load into the world would
+                // be refused for the whole session. A late answer always wins (Wave34Core.OnCapReply).
+                Reprobe(targetUid);
+                if (has == null && quiet) return true;   // a read: if they cannot answer, the panel says so itself
+                if (!quiet)
+                    RelayNotice(sender, targetUid, has == null
+                        ? $"Not sent yet: still checking whether {peer.m_playerName} runs AdminPanelCompanion.dll, which applies items, " +
+                          "skills, status effects and inventories on their side. Try again in a few seconds."
+                        : $"Not delivered: {peer.m_playerName} has not answered as running AdminPanelCompanion.dll, which applies items, " +
+                          "skills, status effects and inventories on their side. Checking again now - if they do run it, try once " +
+                          "more in a few seconds.");
+                return false;
+            }
+            return true;
+        }
+
+        // A refused "All skills" click is 24 relays in one frame: one notice and one probe per burst, not 24.
+        private static long _noticeSender, _noticeTarget, _probedTarget;
+        private static string _noticeText;
+        private static float _noticeAt, _probedAt;
+
+        private static void RelayNotice(long sender, long targetUid, string text)
+        {
+            var now = Time.realtimeSinceStartup;
+            if (sender == _noticeSender && targetUid == _noticeTarget && text == _noticeText && now - _noticeAt < 3f) return;
+            _noticeSender = sender; _noticeTarget = targetUid; _noticeText = text; _noticeAt = now;
+            NotifySender(sender, text);
+        }
+
+        private static void Reprobe(long targetUid)
+        {
+            var now = Time.realtimeSinceStartup;
+            if (targetUid == _probedTarget && now - _probedAt < 3f) return;
+            _probedTarget = targetUid; _probedAt = now;
+            try { Wave34Core.ProbePeer(targetUid); } catch (Exception) { }
+        }
+
+        // The listen-server host's own player, which a relay reaches by its session id (dispatched in-process).
+        private static bool IsLocalHostTarget(long uid) =>
+            ZNet.instance != null && ZNet.instance.IsServer() && ZDOMan.instance != null &&
+            Player.m_localPlayer != null && uid == ZDOMan.GetSessionID();
+
         // ---------- server: give / spawn / inventory ----------
         private static void OnServerGive(long sender, ZPackage pkg)
         {
@@ -362,6 +458,7 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { Log($"AP_SrvGive: malformed packet dropped ({e.Message})"); return; }
             if (string.IsNullOrEmpty(prefabName) || amount <= 0) return;
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvGive", needsMod: true)) return;
             amount = Mathf.Min(amount, 100000); // guard against a client freeze from an absurd stack loop
             Log($"Admin {sender} gives {amount}x {prefabName} (q{quality}) to peer {targetUid}");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_GiveItem", prefabName, amount, quality, crafter);
@@ -411,6 +508,7 @@ namespace AdminPanelCompanion
                     {
                         d.m_itemData.m_stack = stack;
                         d.m_itemData.m_quality = Mathf.Clamp(levelOrQuality, 1, d.m_itemData.m_shared.m_maxQuality);
+                        d.m_itemData.m_worldLevel = Game.m_worldLevel;   // as vanilla's own spawn command sets it (OnCreateNew)
                         d.m_itemData.m_durability = d.m_itemData.GetMaxDurability();
                     }
                 }
@@ -526,6 +624,8 @@ namespace AdminPanelCompanion
         private static void OnServerRequestInventory(long sender, long targetUid)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            // Target 0 made EVERY client send its inventory to this admin.
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvReqInv", needsMod: true)) return;
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_InvRequest", sender);
         }
 
@@ -790,20 +890,51 @@ namespace AdminPanelCompanion
                 pos = pkg.ReadVector3();
             }
             catch (Exception e) { Log($"AP_SrvTeleport: malformed packet dropped ({e.Message})"); return; }
+            // Target 0 summoned the whole server to the admin.
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvTeleport", needsMod: false)) return;
             Log($"Admin {sender} teleports peer {targetUid} to {pos}");
-            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_Teleport", pos);
+            // The game's own RPC_TeleportPlayer (Chat.cs:130, registered on every client, no sender check) moves a
+            // player whether or not their client runs this mod; the old AP_Teleport executor silently ignored
+            // anyone without it. Same for the notice: ShowMessage is MessageHud's, on every client.
+            // Keep the player's facing, as the old executor did: the server holds their character ZDO.
+            var character = IsLocalHostTarget(targetUid)
+                ? Player.m_localPlayer.GetZDOID()
+                : ZNet.instance.GetPeer(targetUid).m_characterID;
+            var zdo = !character.IsNone() && ZDOMan.instance != null ? ZDOMan.instance.GetZDO(character) : null;
+            var rot = zdo != null ? zdo.GetRotation() : Quaternion.identity;
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "RPC_TeleportPlayer", pos + Vector3.up, rot, true);
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "ShowMessage", (int)MessageHud.MessageType.Center, "An admin teleported you!");
         }
 
         private static void OnServerHeal(long sender, long targetUid)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_HealSelf");
+            // Target 0 healed every player on the server.
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvHeal", needsMod: false)) return;
+            // Vanilla path first, so a player without the mod is healed too: Character.RPC_Heal on their own
+            // character (registered for every character, applied by its owner - the player's client). The server
+            // knows that character's id from the peer (ZNet.RPC_CharacterID). The large amount is clamped to max
+            // health by the game, and the damage-text popup is off: it would show that raw number.
+            var character = IsLocalHostTarget(targetUid)
+                ? Player.m_localPlayer.GetZDOID()
+                : ZNet.instance.GetPeer(targetUid).m_characterID;
+            if (character.IsNone())
+            {
+                NotifySender(sender, "That player has no character right now (dead or still loading). Nothing was sent.");
+                return;
+            }
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, character, "RPC_Heal", 1000000f, false);
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "ShowMessage", (int)MessageHud.MessageType.Center, "An admin healed you!");
         }
 
         // Look up the real network host id (Steam ID) of a connected peer by its uid.
+        // uid 0 never names a player: it is what a client sends for a roster row without a character id (a dead or
+        // loading player), and vanilla keeps a brand-new connection in m_peers with m_uid still 0 until its
+        // PeerInfo passes the password check (ZNet.OnNewConnection adds it first, RPC_PeerInfo sets the uid). A
+        // peer lookup by 0 therefore found whoever sat at the password prompt - Kick/Ban hit an innocent joiner.
         private static string HostOfPeer(long uid)
         {
-            if (ZNet.instance == null) return null;
+            if (ZNet.instance == null || uid == 0L) return null;
             foreach (var peer in ZNet.instance.GetPeers())
                 if (peer.m_uid == uid)
                     return peer.m_socket != null ? peer.m_socket.GetHostName() : null;
@@ -813,7 +944,7 @@ namespace AdminPanelCompanion
         // Kick a peer by uid. Returns true if a matching peer was found and kicked.
         private static bool KickByUid(long uid)
         {
-            if (ZNet.instance == null) return false;
+            if (ZNet.instance == null || uid == 0L) return false;   // see HostOfPeer: 0 matched a pre-auth peer
             foreach (var peer in ZNet.instance.GetPeers())
             {
                 if (peer.m_uid != uid) continue;
@@ -883,7 +1014,13 @@ namespace AdminPanelCompanion
         private static void OnServerMessage(long sender, long targetUid, string text)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
-            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_Msg", text);
+            if (string.IsNullOrEmpty(text)) return;
+            // Target 0 turned a private message into a broadcast.
+            // No character needed: MessageHud shows it on the respawn screen too.
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvMsg", needsMod: false, needsCharacter: false)) return;
+            // MessageHud's ShowMessage is on every client, so a player without the mod reads it too (AP_Msg,
+            // the companion's own executor, reached only modded clients). Same "[Server] " look as AP_Msg.
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "ShowMessage", (int)MessageHud.MessageType.Center, "[Server] " + text);
         }
 
         private static void OnServerEvent(long sender, string eventName, Vector3 pos)
@@ -939,20 +1076,32 @@ namespace AdminPanelCompanion
                 data.m_dropPrefab = prefab;
                 data.m_stack = stack;
                 data.m_quality = Mathf.Clamp(quality, 1, data.m_shared.m_maxQuality);
+                // New items carry the world's NG+ level, as vanilla's own Inventory.AddItem(prefab, n) sets it: gear
+                // at level 0 on an NG+ world has less damage/armor and never stacks with the player's own items.
+                data.m_worldLevel = Game.m_worldLevel;
                 data.m_durability = data.GetMaxDurability();
                 if (!string.IsNullOrEmpty(crafter)) { data.m_crafterID = 1; data.m_crafterName = crafter; }
-                if (!player.GetInventory().AddItem(data))
-                {
-                    var go = UnityEngine.Object.Instantiate(prefab, player.transform.position + Vector3.up, Quaternion.identity);
-                    var d = go.GetComponent<ItemDrop>();
-                    if (d != null)
-                    {
-                        d.m_itemData.m_stack = stack;
-                        d.m_itemData.m_quality = Mathf.Clamp(quality, 1, d.m_itemData.m_shared.m_maxQuality);
-                    }
-                }
+                AddOrDrop(player, data);
             }
             player.Message(MessageHud.MessageType.Center, $"An admin granted you {amount}x {prefabName}!");
+        }
+
+        // Puts a stack in the player's bag and drops at their feet whatever does not fit. Shared by every grant
+        // executor (give, vault restore / offline queue, economy delivery, item forge).
+        //
+        // Inventory.AddItem(ItemData) merges into partial stacks one unit at a time; when it then finds no empty
+        // slot it cuts item.m_stack down to the part it could NOT place and returns false (Inventory.cs:112-158).
+        // So only data.m_stack belongs on the ground. Every executor used to drop the stack as it was BEFORE the
+        // call, duplicating whatever had already been merged - a nearly full bag with partial stacks of the item
+        // turned a 50-wood grant (or a paid shop purchase) into more than 50.
+        //
+        // ItemDrop.DropItem clones every field (quality, durability, variant, crafter, world level, custom data)
+        // and saves it to the new drop's ZDO; the old fallback instantiated a bare prefab and hand-copied two.
+        internal static void AddOrDrop(Player player, ItemDrop.ItemData data)
+        {
+            if (player.GetInventory().AddItem(data)) return;
+            if (data.m_stack <= 0 || data.m_dropPrefab == null) return;
+            ItemDrop.DropItem(data, data.m_stack, player.transform.position + Vector3.up, Quaternion.identity);
         }
 
         // ---------- server: remove items from a player's inventory (admin moderation) ----------
@@ -968,6 +1117,8 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { Log($"AP_SrvInvRemove: malformed packet dropped ({e.Message})"); return; }
             if (string.IsNullOrEmpty(itemName) || amount <= 0) return;
+            // Target 0 removed the item from EVERY player's inventory.
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvInvRemove", needsMod: true)) return;
             Log($"Admin {sender} removes {amount}x {itemName} from peer {targetUid}");
             var relay = new ZPackage();
             relay.Write(itemName);
@@ -1067,13 +1218,56 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { Log($"AP_SrvSkillRaise: malformed packet dropped ({e.Message})"); return; }
             if (string.IsNullOrEmpty(skillName)) return;
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvSkillRaise", needsMod: true)) return;
             amount = Mathf.Clamp(amount, -100f, 100f);   // one click can never exceed the whole skill range
             Log($"Admin {sender} raises {skillName} by {amount} for peer {targetUid}");
             var relay = new ZPackage();
             relay.Write(skillName);
             relay.Write(amount);
             relay.Write(note ?? "");
+            // 2.5.6: whom the target reports its new levels to (AP_SkillData). A trailing field, so a pre-2.5.6
+            // target simply never reads it and still applies the raise.
+            relay.Write(sender);
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_SkillRaise", relay);
+        }
+
+        // AP_SrvSkillReq(long target): the admin panel's skill browser asks for a remote target's levels, which
+        // live only in that player's own save. The target's client answers the admin directly (AP_SkillData,
+        // like AP_InvData). Timer-driven while the browser is open, hence quiet refusals and no audit row.
+        private static void OnServerSkillReq(long sender, long targetUid)
+        {
+            // Not an audited RPC (timer noise), so the chokepoint never applies tiered roles to it: gate it here,
+            // as whoever may RAISE skills (AP_SrvSkillRaise, role-enforced) - a builder has no business reading them.
+            if (!IsDedicatedServer || !SenderCanFeature(sender, "AP_SrvSkillRaise")) return;
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvSkillReq", needsMod: true, quiet: true)) return;
+            ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_SkillReq", sender);
+        }
+
+        // AP_SrvPlayerPos(long target) -> AP_PlayerPos v1 {int 1, long uid, bool known, Vector3 pos} to the admin.
+        // The roster the game sends to clients carries a position only for players who share theirs on the map
+        // (everyone else arrives as 0,0,0 - the world centre), but the server always has the reference position
+        // each client reports for zone loading. Audited (FeaturesInit): it reveals a hidden position.
+        private static void OnServerPlayerPos(long sender, long targetUid)
+        {
+            if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            var known = false;
+            var pos = Vector3.zero;
+            if (targetUid != 0L)
+            {
+                if (IsLocalHostTarget(targetUid)) { pos = Player.m_localPlayer.transform.position; known = true; }
+                else
+                {
+                    var peer = ZNet.instance.GetPeer(targetUid);
+                    if (peer != null) { pos = peer.m_refPos; known = true; }
+                }
+            }
+            Log($"Admin {sender} locates peer {targetUid}: {(known ? pos.ToString() : "unknown")}");
+            var pkg = new ZPackage();
+            pkg.Write(1);
+            pkg.Write(targetUid);
+            pkg.Write(known);
+            pkg.Write(pos);
+            ReplyTo(sender, "AP_PlayerPos", pkg);
         }
 
         // Status effects live with their owner exactly like skills, so the shape mirrors AP_SrvSkillRaise:
@@ -1083,6 +1277,7 @@ namespace AdminPanelCompanion
         private static void OnServerApplyStatusEffect(long sender, long targetUid, int seHash)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvApplySE", needsMod: true)) return;
             Log($"Admin {sender} applies status effect {seHash} to peer {targetUid}");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_ApplySE", seHash);
         }
@@ -1113,15 +1308,25 @@ namespace AdminPanelCompanion
             var player = Player.m_localPlayer;
             if (player == null || !SenderIsServer(sender)) return;
             string skillName; float amount; string note;
+            long replyTo = 0L;
             try
             {
                 skillName = pkg.ReadString();
                 amount = pkg.ReadSingle();
                 note = pkg.ReadString();
+                // 2.5.6 servers append the admin to report the new levels to; older ones end the packet here.
+                if (pkg.GetPos() < pkg.Size()) replyTo = pkg.ReadLong();
             }
             catch { return; }
             if (string.IsNullOrEmpty(skillName)) return;
             player.GetSkills().CheatRaiseSkill(skillName, Mathf.Clamp(amount, -100f, 100f), false);
+            if (replyTo != 0L)
+            {
+                // "All skills" is one raise per skill: answer the burst once, a moment after its last packet.
+                _skillReplyTo = replyTo;
+                if (Instance != null) { Instance.CancelInvoke(nameof(FlushSkillReply)); Instance.Invoke(nameof(FlushSkillReply), 0.25f); }
+                else SendSkillData(player, replyTo);
+            }
             // Only the admin's own note is shown, and only on THIS client (the routed RPC targets one
             // peer). Empty note = the change is completely silent — the admin decides what, if anything,
             // the player gets told. When a note is present it pops center-screen together with the
@@ -1135,11 +1340,55 @@ namespace AdminPanelCompanion
             }
         }
 
+        private static long _skillReplyTo;   // the admin a pending coalesced skill table goes to (0 = none)
+
+        private void FlushSkillReply()
+        {
+            var to = _skillReplyTo;
+            _skillReplyTo = 0L;
+            var player = Player.m_localPlayer;
+            if (to != 0L && player != null) SendSkillData(player, to);
+        }
+
+        // Runs on the TARGET player's client: the admin's skill browser asks for this player's levels.
+        private static void OnSkillReq(long sender, long replyTo)
+        {
+            var player = Player.m_localPlayer;
+            if (player == null || !SenderIsServer(sender) || replyTo == 0L) return;   // 0 would answer everybody
+            SendSkillData(player, replyTo);
+        }
+
+        // AP_SkillData v1 {int 1, string playerName, int n, n x (string skill, float level)}, straight to the admin
+        // (the server relays it with this client as the re-stamped sender, which is what the panel checks).
+        // Only the skills this player HAS, at their stored level: Skills.GetSkillLevel goes through GetSkill,
+        // which ADDS a missing skill to the save (Skills.cs:345-354), so asking for every type would have
+        // written all of them, at 0, into this player's Skills tab. The panel shows an absent skill as 0.
+        private static void SendSkillData(Player player, long replyTo)
+        {
+            var skills = player.GetSkills();
+            if (skills == null || ZRoutedRpc.instance == null) return;
+            var rows = new List<Skills.Skill>();
+            foreach (var skill in skills.GetSkillList())
+                if (skill?.m_info != null && skill.m_info.m_skill != Skills.SkillType.None && skill.m_info.m_skill != Skills.SkillType.All)
+                    rows.Add(skill);
+            var pkg = new ZPackage();
+            pkg.Write(1);
+            pkg.Write(player.GetPlayerName());
+            pkg.Write(rows.Count);
+            foreach (var skill in rows)
+            {
+                pkg.Write(skill.m_info.m_skill.ToString());
+                pkg.Write(skill.m_level);
+            }
+            ZRoutedRpc.instance.InvokeRoutedRPC(replyTo, "AP_SkillData", pkg);
+        }
+
         private static void OnInventoryRequest(long sender, long replyTo)
         {
             var player = Player.m_localPlayer;
             if (player == null) return;
             if (!SenderIsServer(sender)) return;
+            if (replyTo == 0L) return;   // 0 = everybody: this player's inventory would go to every client
 
             var pkg = new ZPackage();
             pkg.Write(player.GetPlayerName());

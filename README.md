@@ -37,7 +37,7 @@ Once the server is running, its `BepInEx/LogOutput.log` must contain `Loading [A
 | 🎁 **Items** | Every item with icons, live search and real stats (damage, armor, food values). Categories, favorites, recents. One-click gear kits from Bronze to Ashlands, bulk packs, and give straight into any player's inventory. |
 | 🐗 **Creatures** | Spawn by faction with count and star level, at your crosshair, optionally pre-tamed with a pet name. Saved presets, undo last spawn, arena mode (A vs B). |
 | ⚔ **Bosses** | One-click summons from Eikthyr to Fader, instant altar offerings, real raid events at your position. |
-| 🏃 **Player** | God mode, ghost, fly, free build, no stamina, one-hit kill. Speed, jump and pickup sliders, skill +10 / max / reset, a categorized status-effect browser. Buffs persist through death. |
+| 🏃 **Player** | God mode, ghost, fly, free build, no stamina, one-hit kill. Speed, jump and pickup sliders. Skills (+10 / max / reset, per-skill ±) and a categorized status-effect browser, for yourself or any online player. Buffs persist through death. |
 | 🌍 **World** | Time and weather control, wind for sailing, teleport bookmarks, quick-jump to boss altars, teleport to any map point (open the map, hover, press T). |
 | 👥 **Players** | Live roster: teleport to, summon, spectate, heal, ping, lightning strike, live inventory viewer, kick / ban, per-player admin notes. |
 | 📊 **Server** | Stats read from the server itself: ZDO count, per-peer ping, last-save and next-autosave clocks, the server's plugin roster, admin and ban lists, join / leave log, force save, offline ban / unban by ID. |
@@ -89,6 +89,8 @@ Want another language? Drop a `<code>.txt` into `BepInEx/plugins/AdminPanel_Loca
 **Everyone who installs the mod gets the panel on my server.** They get the window, not the powers. Since 2.5.5 non-admins see only the notice; before 2.5.5 they saw the tabs while every server action was denied. Either way, install the companion on the server, that is what enforces `adminlist.txt`.
 
 **Do I need the companion in single-player?** Yes, both DLLs. You are the host there, so no adminlist entry is needed.
+
+**I gave another player items or skills and nothing changed for them.** Items, skills, status effects and inventories live in that player's own save, so the companion on *their* client applies them: every player you give things to needs `AdminPanelCompanion.dll` too, same version as the server's. The panel tells you when the server knows a player runs without it, and the Skills list shows the picked player's real levels (2.5.6 on their side and on the server). With a 2.5.6 companion on the server, summon, heal and direct messages work without the mod on their side. A player who is dead or still loading in cannot be picked until they are back in the world.
 
 **A Tools section shows "no reply from the companion".** The server has no companion, an older one, or you are not an admin there. The Server tab shows which.
 

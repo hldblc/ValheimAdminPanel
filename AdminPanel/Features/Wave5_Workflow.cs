@@ -526,7 +526,7 @@ namespace AdminPanel
                 if (GUILayout.Button(Loc.T("ux2.tp_to"), _buttonStyle, GUILayout.MinWidth(70)))
                 {
                     if (!online) Message(Loc.T("ux2.fav_offline", name));
-                    else WfTeleportTo(info.m_position, name, PeerIdOf(info));
+                    else WfTeleportTo(info, name);
                 }
                 if (GUILayout.Button(Loc.T("ux2.summon"), _buttonStyle, GUILayout.MinWidth(80)))
                 {
@@ -638,7 +638,7 @@ namespace AdminPanel
                 if (GUILayout.Button(Loc.T("ux2.tp_to"), _buttonStyle, GUILayout.MinWidth(70)))
                 {
                     if (!online) Message(Loc.T("ux2.fav_offline", t.Name));
-                    else WfTeleportTo(info.m_position, t.Name, PeerIdOf(info));
+                    else WfTeleportTo(info, t.Name);
                 }
                 if (GUILayout.Button(Loc.T("ux2.summon"), _buttonStyle, GUILayout.MinWidth(80)))
                 {
@@ -695,7 +695,8 @@ namespace AdminPanel
                     if (now) _wfSelection.Add(uid);
                     else _wfSelection.Remove(uid);
                 }
-                GUILayout.Label($"({p.m_position.x:0}, {p.m_position.z:0})", _cellStyle, GUILayout.Width(110));
+                GUILayout.Label(p.m_publicPosition ? $"({p.m_position.x:0}, {p.m_position.z:0})" : Loc.T("players.pos_hidden"),
+                    _cellStyle, GUILayout.Width(110));   // unshared positions arrive as (0, 0)
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button(Loc.T("ux2.fav_toggle"), _buttonStyle, GUILayout.MinWidth(60)))
                     WfSetFavPlayer(p.m_name, true);
@@ -804,17 +805,19 @@ namespace AdminPanel
 
         // Every player-facing action funnels through these three so the recent ring gets populated even when
         // nothing else in the mod calls WfNoteTarget.
-        private void WfTeleportTo(Vector3 pos, string name, long uid)
+        // Through ActOnPlayerPos: the roster only carries positions players chose to share, so a hidden one
+        // is asked of the server instead of teleporting to the (0, 0) the roster reports.
+        private void WfTeleportTo(ZNet.PlayerInfo info, string name)
         {
             if (LocalPlayer == null) { Message(Loc.T("players.not_connected")); return; }
-            LocalPlayer.TeleportTo(pos + Vector3.up, LocalPlayer.transform.rotation, true);
-            WfNoteTarget(name, uid);
-            Message(Loc.T("ux2.msg_tp_to", name));
+            ActOnPlayerPos(info, PosAction.TpTo);
+            WfNoteTarget(name, PeerIdOf(info));
         }
 
         private void WfSummon(long uid, string name, bool inFront)
         {
             if (LocalPlayer == null) { Message(Loc.T("players.not_connected")); return; }
+            if (uid == 0L) { Message(Loc.T("common.target_not_ready", name)); return; }   // dead or loading in
             WfSendTeleport(uid, inFront
                 ? LocalPlayer.transform.position + LocalPlayer.transform.forward * 2f
                 : LocalPlayer.transform.position + Vector3.up * 0.5f);
@@ -824,7 +827,7 @@ namespace AdminPanel
 
         private void WfHeal(long uid, string name)
         {
-            if (uid == 0L) return;
+            if (uid == 0L) { Message(Loc.T("common.target_not_ready", name)); return; }   // dead or loading in
             SrvRpc("AP_SrvHeal", uid);
             WfNoteTarget(name, uid);
             Message(Loc.T("ux2.msg_healed", name));
