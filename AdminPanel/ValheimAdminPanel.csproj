@@ -27,7 +27,7 @@
     <ValheimLiveManaged>C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed</ValheimLiveManaged>
     <ValheimManaged Condition="'$(ValheimManaged)' == '' And Exists('$(ValheimLiveManaged)\assembly_valheim.dll')">$(ValheimLiveManaged)</ValheimManaged>
     <ValheimRefsSource Condition="'$(ValheimRefsSource)' == '' And '$(ValheimManaged)' != ''">live</ValheimRefsSource>
-    <ValheimManaged Condition="'$(ValheimManaged)' == ''">C:\Users\HEPHAESTUS\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
+    <ValheimManaged Condition="'$(ValheimManaged)' == ''">C:\Users\HEPHAESTUS\Projects\Valheim\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
     <ValheimRefsSource Condition="'$(ValheimRefsSource)' == ''">steamcmd</ValheimRefsSource>
     <ValheimAssemblyPath>$(ValheimManaged)\assembly_valheim.dll</ValheimAssemblyPath>
     <!-- Steam build id of app 892970 (Valheim client) this code was verified against; same value as
@@ -41,7 +41,7 @@
     <ValheimAppManifest>C:\Program Files (x86)\Steam\steamapps\appmanifest_892970.acf</ValheimAppManifest>
     <ValheimInstalledSteamBuild Condition="'$(ValheimRefsSource)' == 'live' And Exists('$(ValheimAppManifest)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(ValheimAppManifest)')), '&quot;buildid&quot;\s+&quot;(\d+)&quot;').Groups[1].Value)</ValheimInstalledSteamBuild>
     <ValheimInstalledSteamBuild Condition="'$(ValheimInstalledSteamBuild)' == ''">unknown</ValheimInstalledSteamBuild>
-    <BepInExCore>C:\Users\HEPHAESTUS\valheim-modding\bepinex-core</BepInExCore>
+    <BepInExCore>C:\Users\HEPHAESTUS\Projects\Valheim\valheim-modding\bepinex-core</BepInExCore>
   </PropertyGroup>
 
   <ItemGroup>

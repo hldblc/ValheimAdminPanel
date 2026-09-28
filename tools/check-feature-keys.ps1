@@ -15,8 +15,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$FeatureDir  = 'C:\Users\HEPHAESTUS\ValheimAdminPanel\Features'
-$EnPath      = 'C:\Users\HEPHAESTUS\ValheimAdminPanel\Localization\en.txt'
+$FeatureDir  = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Features'
+$EnPath      = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Localization\en.txt'
 
 # Prefixes owned by the feature modules are DERIVED from the code, not hardcoded: a hand-maintained list
 # silently under-reports the moment a new wave picks a prefix nobody added to it (which is exactly what

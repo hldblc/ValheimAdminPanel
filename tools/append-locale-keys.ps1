@@ -28,8 +28,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$LocaleDir = 'C:\Users\HEPHAESTUS\ValheimAdminPanel\Localization'
-$Validator = 'C:\Users\HEPHAESTUS\ValheimAdminPanel\tools\check-locales.ps1'
+$LocaleDir = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Localization'
+$Validator = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\tools\check-locales.ps1'
 
 # field name in the JSON -> locale file stem
 $Map = [ordered]@{
