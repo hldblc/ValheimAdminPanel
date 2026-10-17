@@ -105,9 +105,11 @@ namespace AdminPanelCompanion
             relay.Write(durability);
             relay.Write(variant);
             relay.Write(crafter);
+            var serial = Wave9Prov.BeforeGrant(sender, target, prefab, amount, "forge");   // round 3: provenance stamp rides ahead of the grant
             try { ZRoutedRpc.instance.InvokeRoutedRPC(target, "AP_GiveItemEx", relay); }
             catch (Exception e) { CompanionPlugin.FeatureLog($"AP_GiveItemEx relay to {target} failed: {e.Message}"); return; }
 
+            Wave9Undo.Note(sender, "give", target, prefab + "|" + amount + "|" + serial, $"forged {amount}x {prefab}");   // round 3: undo timeline
             CompanionPlugin.SrvAudit(sender, "GIVE-EX",
                 $"target={target} prefab={prefab} x{amount} q{quality} dur{durability}% v{variant} crafter={crafter}");
             CompanionPlugin.FeatureLog($"Admin {sender} forges {amount}x {prefab} (q{quality} dur{durability}% v{variant} by '{crafter}') for peer {target}");

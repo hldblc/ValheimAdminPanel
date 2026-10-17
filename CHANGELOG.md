@@ -1,5 +1,98 @@
 # Changelog
 
+## 2.6.0
+
+**BOTH DLLs are 2.6.0** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Features that act on a
+player's own game (marked *client*) also need the companion on that player's client. Built for Valheim 1.0.20.
+
+**Fixed: the chest viewer and container search saw every chest as empty.** Since Valheim 1.0.12 a chest stores its
+contents as a byte array in a newer layout (109, then 110); the Tools › World › Containers section read the old base64
+layout, so every chest read as empty or "newer format", and an edit wrote data the game never reads. Chests are now read and
+written exactly as the game does, losslessly (verified on 730+ real chests).
+
+**Fixed: companion backups stopped on Valheim 1.0.20.** 1.0.20 raised the world's chunk-index format from 41 to 42
+(same layout); the companion accepted only 41, so every backup logged "missing chunk file(s)... nothing loadable to
+copy". Both formats are read now.
+
+**Fixed: symbols drawn as empty boxes.** The game's fonts have no ⚠ ⚔ ★ ⬆ → ✕ ◢ ⚡ glyphs; Windows hid that by falling
+back to a system font, while Linux and Steam Deck drew a box. All were replaced with characters the fonts have, the resize
+grip is drawn as an image, and the lightning button has a text label.
+
+New, by tab:
+- **Items: provenance stamps.** Everything the panel creates (give, kits, bulk packs, item forge, offline grants,
+  drops) carries a hidden serial and a grant-ledger row. **Tools › Moderation › Provenance** scans chests, ground items
+  and every modded client's inventory and flags duplicates, more units than a grant made, admin-made items held by
+  players who never received one, and stamps the ledger does not know. Prefabs with stamped copies are marked in the
+  Items list.
+- **Creatures: Command card.** Order the creatures around you, or the one in your crosshair, to follow a player, guard a
+  spot (with a patrol radius), stay passive or attack a player. Guard works for everyone; the other orders need the
+  companion on the client that simulates the creature.
+- **Bosses: Encounter card.** Summon a boss with an HP multiplier (optionally per extra nearby player), a damage
+  multiplier and an enrage timer. The fight is recorded (damage per player, deaths, time to kill) and the summary can be
+  posted to Discord.
+- **Player: status-effect forge.** Build an effect from parts (speed, health and stamina regen, damage dealt,
+  resistances, carry weight, duration, name), save it as a preset, apply it to yourself or any player (*client* for
+  others).
+- **World: map layers and the Locations card.** Toggle wards (with radius), portals and their links, ships and carts,
+  tames, recent deaths and lag spots on the vanilla map; the chips also float over the open map. The Locations card lists
+  dungeons and other locations with their loot state and resets one, or every one of a type looted N days ago, by
+  re-spawning it exactly as first generated (refused while a player is there or while any of its chests still holds
+  items; player builds, graves, tames, portals, ground items and natural trees or rocks next to it are never touched).
+- **Players: Progression card.** Per player: first entry into each biome, first time seen with gear of each tier, boss
+  kills they were present for. Impossible jumps are flagged into the Guard's flag list as rule "progression" (alerts
+  only, never a kick).
+- **Server: Performance and Backup compare cards.** Performance lists how many objects each player simulates next to
+  their ping, with Release / give to a nearby player. Backup compare diffs the live world (or backup A) against
+  backup B per 64 m area: pieces added and removed with their builders, chests whose contents changed, with teleport and
+  per-area restore.
+- **Settings: Diagnostics and Controller mode.** Diagnostics detects another mod swallowing the panel's mouse releases
+  (the "hover works, clicks don't" report), names the mods that draw their own GUI, has a test button, and lets the panel
+  take input first. Controller mode: D-pad/stick focus, A press, B back, bumpers switch tabs, right stick scrolls,
+  L3+R3 opens the panel, Steam on-screen keyboard for text fields; Auto turns it on when a gamepad was used last.
+- **Title bar: Undo.** Undoes your last action (two clicks: it sits next to the close button). **Tools › Shortcuts › Undo timeline** lists every reversible admin action
+  (gives, teleports, spawns, skill and effect changes, bans, piece edits) for all admins; undo one, or everything one
+  admin did in the last N minutes.
+- **Tools › World › Zones: rule zones.** Circles or rectangles with forced PvP, keep inventory, no portals, no item drops,
+  speed or healing aura, an entry message, no-build and no-damage. Entry message, healing, no-build and no-damage work for
+  everyone (no-build/no-damage are protection zones underneath); the rest are *client*.
+- **Tools › World › Bases: abandoned-base finder.** Groups player builds into bases, shows when their builders were last
+  seen, and lists bases abandoned for N days with piece count and object cost. Teleport, claim, turn into ruins, or delete
+  after a snapshot that can be restored. Ships and carts left far from any base are listed too.
+- **Tools › Server › Automation: trigger rules.** If a player joins, enters a zone, is at a boss kill, dies, types a chat
+  keyword, or a time of day arrives, then broadcast, message, give an item, apply an effect, teleport, start a raid or post
+  to Discord, with role, first-time-only and cooldown conditions, an on/off switch and a Test button.
+
+**Hardening from the code review** (three review agents over the finished code; every confirmed finding fixed):
+- Undo: each row needs the permission of the action it reverses, and undoing another admin's row needs moderator; only
+  that admin can undo their own teleport. A give is taken back only from the copies carrying that grant's serial,
+  never the player's own items. A skill change is reversed by what the game actually applied (it clamps at 0 and 100).
+  A status effect is removed only if the admin's apply added it. Rows the panel reports are validated and rate-limited,
+  and a burst of nudges to one piece is one row.
+- Bases and Backup compare: an action names the scan or comparison it was picked from and is refused after a rescan or
+  another admin's comparison (row numbers are reassigned per scan); a builder who came back since the scan stops a ruin or
+  delete; ships and carts are no longer counted as removed and re-added; "remove added" keeps chests that hold items and
+  shows what it would touch; a delete too big for one pass is refused instead of half-done; a failed snapshot restore can
+  no longer be repeated on top of itself; a claim records the previous builders.
+- Destructive world actions (base claim / ruin / delete / restore, backup restore, location reset) are owner-only under
+  tiered roles; the read-only views now work for moderators and builders.
+- Boss kills count only when the boss is really there (any client can send the game's "boss defeated" key); the
+  panel's own global-key tool no longer credits players near the world origin.
+- Encounters scale only hits on players, and also on a listen server whose host simulates the boss. Creature orders and
+  the enrage multiplier survive the simulating client's own updates.
+- Rule zones: no-build / no-damage zones larger than the protection engine's 128 m are refused instead of silently
+  shrunk; forced PvP is released when its zone is deleted.
+- Triggers: a "first time only" rule is spent only when its actions went through (a welcome kit waits for the
+  companion handshake); creating the first rule no longer fires "join" for everyone online; chat and item-giving rules
+  have a per-player minimum cooldown.
+- Chest editor: an edit is refused when the stack you saw has moved (the panel always sent the check; the server now
+  reads it).
+- Controller mode never presses a disabled button, only presses the control that was focused, and can no longer leak
+  into other mods' windows. The map layers and zone pins stay off after the panel gate closes.
+
+New config (all default to the behaviour described): `[Features] Round3ScanBudgetMs`, `EnableItemProvenance`, one `Show…`
+switch per new card/section; `[Diagnostics] InputPriorityWhenConflict`, `InputPriorityAlways`; `[Panel] ControllerMode`.
+360 new interface strings in all nine languages.
+
 ## 2.5.6
 
 **BOTH DLLs are 2.5.6** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.16.

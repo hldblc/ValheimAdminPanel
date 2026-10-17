@@ -14,12 +14,12 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.5.6";
+        public const string PluginVersion = "2.6.0";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
         // anything — the bind probe below is what tells whether the mismatch actually broke something.
-        internal const string CompiledForGameVersion = "1.0.16";
+        internal const string CompiledForGameVersion = "1.0.20";
 
         internal static CompanionPlugin Instance;
 
@@ -461,7 +461,9 @@ namespace AdminPanelCompanion
             if (!RelayTargetOk(sender, targetUid, "AP_SrvGive", needsMod: true)) return;
             amount = Mathf.Min(amount, 100000); // guard against a client freeze from an absurd stack loop
             Log($"Admin {sender} gives {amount}x {prefabName} (q{quality}) to peer {targetUid}");
+            var serial = Wave9Prov.BeforeGrant(sender, targetUid, prefabName, amount, "give");   // round 3: provenance stamp rides ahead of the grant
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_GiveItem", prefabName, amount, quality, crafter);
+            Wave9Undo.Note(sender, "give", targetUid, prefabName + "|" + amount + "|" + serial, $"gave {amount}x {prefabName}");   // round 3: undo timeline
         }
 
         private static void OnServerSpawn(long sender, ZPackage pkg)
@@ -510,6 +512,7 @@ namespace AdminPanelCompanion
                         d.m_itemData.m_quality = Mathf.Clamp(levelOrQuality, 1, d.m_itemData.m_shared.m_maxQuality);
                         d.m_itemData.m_worldLevel = Game.m_worldLevel;   // as vanilla's own spawn command sets it (OnCreateNew)
                         d.m_itemData.m_durability = d.m_itemData.GetMaxDurability();
+                        Wave9Prov.StampServerDrop(sender, d.m_itemData, prefabName);   // round 3: provenance stamp
                     }
                 }
             }
@@ -550,6 +553,7 @@ namespace AdminPanelCompanion
         private static void PushUndo(long sender, List<ZDOID> batch)
         {
             if (batch == null || batch.Count == 0) return;   // nothing spawned = nothing to step back over
+            Wave9Undo.NoteSpawn(sender, batch);   // round 3: the shared undo timeline sees every spawn batch too
             PruneUndoHistory();
 
             if (!UndoHistory.TryGetValue(sender, out var stack))
@@ -902,6 +906,7 @@ namespace AdminPanelCompanion
                 : ZNet.instance.GetPeer(targetUid).m_characterID;
             var zdo = !character.IsNone() && ZDOMan.instance != null ? ZDOMan.instance.GetZDO(character) : null;
             var rot = zdo != null ? zdo.GetRotation() : Quaternion.identity;
+            if (zdo != null) Wave9Undo.Note(sender, "tp", targetUid, Wave9.Vec(zdo.GetPosition()), "teleported a player");   // round 3: undo timeline
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "RPC_TeleportPlayer", pos + Vector3.up, rot, true);
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "ShowMessage", (int)MessageHud.MessageType.Center, "An admin teleported you!");
         }
@@ -982,6 +987,7 @@ namespace AdminPanelCompanion
             }
             var ok = KickByUid(uid);
             Log($"Admin {sender} ban peer {uid} ({host ?? "unknown"}): {(ok ? "kicked" : "peer not found")}");
+            if (!string.IsNullOrEmpty(host)) Wave9Undo.Note(sender, "ban", 0L, host, $"banned {host}");   // round 3: undo timeline
         }
 
         private static void OnServerUnban(long sender, string host)
@@ -1099,6 +1105,7 @@ namespace AdminPanelCompanion
         // and saves it to the new drop's ZDO; the old fallback instantiated a bare prefab and hand-copied two.
         internal static void AddOrDrop(Player player, ItemDrop.ItemData data)
         {
+            Wave9Prov.ApplyPending(data);   // round 3: a provenance stamp the server sent just before this grant, if any
             if (player.GetInventory().AddItem(data)) return;
             if (data.m_stack <= 0 || data.m_dropPrefab == null) return;
             ItemDrop.DropItem(data, data.m_stack, player.transform.position + Vector3.up, Quaternion.identity);
@@ -1229,6 +1236,8 @@ namespace AdminPanelCompanion
             // target simply never reads it and still applies the raise.
             relay.Write(sender);
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_SkillRaise", relay);
+            Wave9Undo.Note(sender, "skill", targetUid, skillName + "|" + amount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                $"{(amount >= 0 ? "raised" : "lowered")} {skillName} by {Mathf.Abs(amount):0.#}");   // round 3: undo timeline
         }
 
         // AP_SrvSkillReq(long target): the admin panel's skill browser asks for a remote target's levels, which
@@ -1280,6 +1289,7 @@ namespace AdminPanelCompanion
             if (!RelayTargetOk(sender, targetUid, "AP_SrvApplySE", needsMod: true)) return;
             Log($"Admin {sender} applies status effect {seHash} to peer {targetUid}");
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_ApplySE", seHash);
+            Wave9Undo.Note(sender, "effect", targetUid, seHash.ToString(System.Globalization.CultureInfo.InvariantCulture), "applied a status effect");   // round 3
         }
 
         // Runs on the TARGET player's client. Same trust model as AP_HealSelf: only the server may send it.
@@ -1287,7 +1297,9 @@ namespace AdminPanelCompanion
         {
             var player = Player.m_localPlayer;
             if (player == null || !SenderIsServer(sender)) return;
+            Wave9Undo.NoteEffectApplying(player.GetSEMan(), seHash, out var hadBefore);   // round 3: undo removes only what this added
             player.GetSEMan().AddStatusEffect(seHash, true);
+            Wave9Undo.NoteEffectApplied(seHash, hadBefore);
             // Small toast so the buff icon appearing isn't mysterious. The companion deliberately has no
             // Localization reference (client-only assembly here would add a dependency for one string), so
             // use the prefab name and skip raw "$se_..." tokens — the icon itself is the real feedback.
@@ -1319,7 +1331,9 @@ namespace AdminPanelCompanion
             }
             catch { return; }
             if (string.IsNullOrEmpty(skillName)) return;
+            var before = Wave9Undo.SkillLevelOf(player, skillName);
             player.GetSkills().CheatRaiseSkill(skillName, Mathf.Clamp(amount, -100f, 100f), false);
+            Wave9Undo.ReportSkillApplied(player, skillName, before);   // round 3: the undo timeline reverses what was APPLIED (0/100 clamp)
             if (replyTo != 0L)
             {
                 // "All skills" is one raise per skill: answer the burst once, a moment after its last packet.

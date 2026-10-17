@@ -11,7 +11,7 @@ Press **F7** and run your realm from one window: spawn anything, teleport anywhe
 
 ## At a glance
 
-- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and a Tools tab with 32 optional server modules in five categories.
+- **Nine tabs** covering items, creatures, bosses, your character, the world, other players, server status, settings, and a Tools tab with 37 optional server modules in five categories.
 - **Admins only.** The panel checks your `adminlist.txt` status on every server you join. If you are not an admin there, or the server has no companion, the window shows a notice instead of the tabs. Server actions are validated again server-side by the companion.
 - **Single-player and dedicated servers.** In single-player you are the host and automatically an admin.
 - **Mod-aware.** Items and creatures from other installed mods show up automatically.
@@ -34,27 +34,27 @@ Once the server is running, its `BepInEx/LogOutput.log` must contain `Loading [A
 
 | Tab | What you get |
 | --- | --- |
-| 🎁 **Items** | Every item with icons, live search and real stats (damage, armor, food values). Categories, favorites, recents. One-click gear kits from Bronze to Ashlands, bulk packs, and give straight into any player's inventory. |
-| 🐗 **Creatures** | Spawn by faction with count and star level, at your crosshair, optionally pre-tamed with a pet name. Saved presets, undo last spawn, arena mode (A vs B). |
-| ⚔ **Bosses** | One-click summons from Eikthyr to Fader, instant altar offerings, real raid events at your position. |
-| 🏃 **Player** | God mode, ghost, fly, free build, no stamina, one-hit kill. Speed, jump and pickup sliders. Skills (+10 / max / reset, per-skill ±) and a categorized status-effect browser, for yourself or any online player. Buffs persist through death. |
-| 🌍 **World** | Time and weather control, wind for sailing, teleport bookmarks, quick-jump to boss altars, teleport to any map point (open the map, hover, press T). |
-| 👥 **Players** | Live roster: teleport to, summon, spectate, heal, ping, lightning strike, live inventory viewer, kick / ban, per-player admin notes. |
-| 📊 **Server** | Stats read from the server itself: ZDO count, per-peer ping, last-save and next-autosave clocks, the server's plugin roster, admin and ban lists, join / leave log, force save, offline ban / unban by ID. |
-| ⚙ **Settings** | Language, font and size, panel opacity, logo header, camera lock, hotkey rebinding. All in-game, all persistent. |
-| 🧰 **Tools** | 32 optional modules for dedicated-server admins, grouped into Moderation, Server, Players, World and Shortcuts. See below. |
+| 🎁 **Items** | Every item with icons, live search and real stats (damage, armor, food values). Categories, favorites, recents. One-click gear kits from Bronze to Ashlands, bulk packs, and give straight into any player's inventory. Everything the panel creates is serial-stamped; prefabs the last provenance scan found stamped copies of are marked. |
+| 🐗 **Creatures** | Spawn by faction with count and star level, at your crosshair, optionally pre-tamed with a pet name. Saved presets, undo last spawn, arena mode (A vs B). Command card: order the creatures around you, or the one in your crosshair, to follow a player, guard a spot, stay passive or attack a player. |
+| ⚔ **Bosses** | One-click summons from Eikthyr to Fader, instant altar offerings, real raid events at your position. Encounter card: summon a boss with more HP (optionally per extra nearby player), more damage and an enrage timer; the fight is recorded (damage per player, deaths, time to kill) and the summary can go to Discord. |
+| 🏃 **Player** | God mode, ghost, fly, free build, no stamina, one-hit kill. Speed, jump and pickup sliders. Skills (+10 / max / reset, per-skill ±) and a categorized status-effect browser, for yourself or any online player, plus a forge that builds new effects from parts (speed, regen, damage, resistances, carry weight, duration). Buffs persist through death. |
+| 🌍 **World** | Time and weather control, wind for sailing, teleport bookmarks, quick-jump to boss altars, teleport to any map point (open the map, hover, press T). Admin map layers (wards with their radius, portals and links, ships, tames, recent deaths, lag spots). Locations card: dungeon loot state and regeneration. |
+| 👥 **Players** | Live roster: teleport to, summon, spectate, heal, ping, lightning strike, live inventory viewer, kick / ban, per-player admin notes. Progression timeline per player (biomes, gear tiers, boss kills) with impossible-jump flags. |
+| 📊 **Server** | Stats read from the server itself: ZDO count, per-peer ping, last-save and next-autosave clocks, the server's plugin roster, admin and ban lists, join / leave log, force save, offline ban / unban by ID. Performance card: who simulates how many objects at what ping, and hand a laggy owner's area to someone nearby. Backup compare: what changed per area between the live world and a backup, with per-area restore. |
+| ⚙ **Settings** | Language, font and size, panel opacity, logo header, camera lock, hotkey rebinding, controller mode (gamepad / Steam Deck navigation), input diagnostics (detects another mod swallowing the panel's clicks and fixes it). All in-game, all persistent. |
+| 🧰 **Tools** | 37 optional modules for dedicated-server admins, grouped into Moderation, Server, Players, World and Shortcuts. See below. |
 
-## Tools: 32 server modules
+## Tools: 37 server modules
 
 Every module is a chip in the Tools tab: pick a category, then a section. **Everything that changes server behaviour is off by default** and needs the companion on the server. Every section can be hidden in the config file (section `Features`).
 
 | Category | Sections |
 | --- | --- |
-| **Moderation** | Moderation (warn, mute, freeze, jail, watchlist, temp-ban, lockdown), Rap Sheet, Roles (tiered admin roles), Audit (audit trail), Guard (anti-cheat rules: fly, speed, health, noclip, damage cap; client-mod reports; dry-run mode), Staff Chat, Direct Message |
-| **Server** | Server Tools (MOTD, scheduled restarts, backups and staged restore), Diagnostics (performance, log tail, self-test), Discord (webhooks), Client Performance (census), Extensions (SDK) |
+| **Moderation** | Moderation (warn, mute, freeze, jail, watchlist, temp-ban, lockdown), Rap Sheet, Roles (tiered admin roles), Audit (audit trail), Guard (anti-cheat rules: fly, speed, health, noclip, damage cap; client-mod reports; dry-run mode), Staff Chat, Direct Message, Provenance (serial stamps on everything the panel creates, world-wide dupe finder) |
+| **Server** | Server Tools (MOTD, scheduled restarts, backups and staged restore), Diagnostics (performance, log tail, self-test), Discord (webhooks), Client Performance (census), Extensions (SDK), Automation (server-side trigger rules: if a player joins / enters a zone / kills a boss / dies / says a word / a time arrives, then broadcast, give, apply an effect, teleport, start a raid, post to Discord) |
 | **Players** | Player Data (vault, offline queue, death log, rescue, reset), Economy (shops, ledger), Bounties, Death Rules, Skill Rules, Map Reveal, Trader Stock, Blacklist, Item Forge |
-| **World** | Area Tools (protection zones, ownership transfer, mass remove), Build Tools (piece editor, blueprints, terrain reset, free camera), Locations (finder), Spawners, Containers (chest inspector), Tames (roster), Creature Editor, Map Pins, Raid Composer |
-| **Shortcuts** | Macros (command palette and macros), Workflow (batch actions, quick-action bar) |
+| **World** | Area Tools (protection zones, ownership transfer, mass remove), Build Tools (piece editor, blueprints, terrain reset, free camera), Locations (finder), Spawners, Containers (chest inspector), Tames (roster), Creature Editor, Map Pins, Raid Composer, Zones (rule zones: forced PvP, keep inventory, no portals, no drops, speed / healing aura, entry message, no-build), Bases (abandoned-base finder: claim, ruin, or delete with a restorable snapshot) |
+| **Shortcuts** | Macros (command palette and macros), Workflow (batch actions, quick-action bar), Undo timeline (every reversible admin action, shared by all admins; undo one, or everything one admin did in the last minutes; also the Undo button in the title bar) |
 
 ## How the security works
 

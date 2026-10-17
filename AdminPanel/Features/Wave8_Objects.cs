@@ -104,7 +104,8 @@ namespace AdminPanel
         private static string ObjStars(int level)
         {
             var stars = level - 1;
-            return stars <= 0 ? "-" : new string('★', Mathf.Clamp(stars, 1, 9));
+            // '*', not '★': no Valheim font has U+2605, so stars drew as boxes without an OS fallback font.
+            return stars <= 0 ? "-" : new string('*', Mathf.Clamp(stars, 1, 9));
         }
 
         private static float ObjParseFloat(string s, float fallback)

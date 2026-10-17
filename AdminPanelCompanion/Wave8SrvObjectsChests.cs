@@ -1,10 +1,15 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using ChestItem = AdminPanelCompanion.InvCodec.Rec;
 
 namespace AdminPanelCompanion
 {
     // ==================== Wave 8 — #16 chest viewer and container search (server side) ====================
+    // ROUND 3 CORRECTION (2026-10): since Valheim 1.0.12 the contents are a BYTE ARRAY under "items" (Container.Save,
+    // decompile-1.0.20 Container.cs:470-500), not the base64 string described below, and the blob layout is 109/110,
+    // not 106 - so this viewer saw every chest as empty. All reads/writes now go through InvCodec.ReadBlob/WriteBlob and
+    // InvCodec.Parse/Serialize (Wave9SrvInvCodec.cs), verified lossless on real 1.0.16 worlds. The text below is history.
     // A container's contents live in its ZDO as the string "items": a base64 ZPackage written by
     // Inventory.Save (Inventory.cs:720-752) and read by Inventory.Load (754-838). The engine's Inventory is
     // deliberately NOT used to decode or re-encode that blob here:
@@ -33,7 +38,9 @@ namespace AdminPanelCompanion
     //                                    string nearestPlayer, float dist), long scanMillis}
     internal static partial class Wave8Objects
     {
-        private const int BlobVersionKnown = 106;   // the layout Inventory.Save writes on this build
+        // Round 3 (2026-10): the blob codec moved to Wave9SrvInvCodec.cs (InvCodec). This file knew only layout 106,
+        // while the game has written 109 since 1.0.12 and 110 since 1.0.20, so every chest read as "newer format".
+        private const int BlobVersionKnown = InvCodec.MaxKnown;
         private const int BlobItemCap = 4096;       // sanity bound on the declared entry count
         private const int CustomDataCap = 256;
 
@@ -43,23 +50,6 @@ namespace AdminPanelCompanion
         private const int ReasonUnreadable = 3;
         private const int ReasonNewer = 4;
         private const int ReasonMissing = 5;
-
-        // One inventory entry, exactly the fields Inventory.Save persists.
-        private sealed class ChestItem
-        {
-            public string Prefab = "";
-            public int Stack = 1;
-            public float Durability = 100f;
-            public Vector2i Pos;
-            public bool Equipped;
-            public int Quality = 1;
-            public int Variant;
-            public long CrafterId;
-            public string CrafterName = "";
-            public List<KeyValuePair<string, string>> Custom;   // null = none
-            public int WorldLevel;
-            public bool PickedUp;
-        }
 
         private sealed class SearchRow
         {
@@ -79,95 +69,12 @@ namespace AdminPanelCompanion
 
         // Mirrors Inventory.Load field for field. Returns false when the blob cannot be read; `version` is
         // still set when the header was readable so the caller can tell "newer format" from "garbage".
-        private static bool ParseChestBlob(string b64, out int version, out int declared, List<ChestItem> items)
-        {
-            version = 0;
-            declared = 0;
-            items.Clear();
-            if (string.IsNullOrEmpty(b64)) return true;   // an empty string is an empty chest
-            try
-            {
-                var pkg = new ZPackage(b64);
-                version = pkg.ReadInt();
-                declared = pkg.ReadInt();
-                if (declared < 0 || declared > BlobItemCap) return false;
-                if (version > BlobVersionKnown) return false;   // unknown trailing fields would desync the parse
-                for (var i = 0; i < declared; i++)
-                {
-                    var it = new ChestItem();
-                    it.Prefab = pkg.ReadString() ?? "";
-                    it.Stack = pkg.ReadInt();
-                    it.Durability = pkg.ReadSingle();
-                    it.Pos = pkg.ReadVector2i();
-                    it.Equipped = pkg.ReadBool();
-                    if (version >= 101) it.Quality = pkg.ReadInt();
-                    if (version >= 102) it.Variant = pkg.ReadInt();
-                    if (version >= 103)
-                    {
-                        it.CrafterId = pkg.ReadLong();
-                        it.CrafterName = pkg.ReadString() ?? "";
-                    }
-                    if (version >= 104)
-                    {
-                        var n = pkg.ReadInt();
-                        if (n < 0 || n > CustomDataCap) return false;
-                        if (n > 0)
-                        {
-                            it.Custom = new List<KeyValuePair<string, string>>(n);
-                            for (var j = 0; j < n; j++)
-                            {
-                                var key = pkg.ReadString() ?? "";
-                                var val = pkg.ReadString() ?? "";
-                                it.Custom.Add(new KeyValuePair<string, string>(key, val));
-                            }
-                        }
-                    }
-                    if (version >= 105) it.WorldLevel = pkg.ReadInt();
-                    if (version >= 106) it.PickedUp = pkg.ReadBool();
-                    // Inventory.Load skips nameless entries (a prefab that was already missing when the chest
-                    // was last saved); they carry nothing worth keeping.
-                    if (it.Prefab.Length > 0) items.Add(it);
-                }
-                return true;
-            }
-            catch (Exception)
-            {
-                items.Clear();
-                return false;
-            }
-        }
+        private static bool ParseChestBlob(byte[] blob, out int version, out int declared, List<ChestItem> items) =>
+            InvCodec.Parse(blob, out version, out declared, items);
 
-        // Current-layout writer (Inventory.Save, version 106). Entries parsed from an older blob are
-        // upgraded with exactly the defaults Inventory.Load would have assigned them.
-        private static string SerializeChestBlob(List<ChestItem> items)
-        {
-            var pkg = new ZPackage();
-            pkg.Write(BlobVersionKnown);
-            pkg.Write(items.Count);
-            for (var i = 0; i < items.Count; i++)
-            {
-                var it = items[i];
-                pkg.Write(it.Prefab ?? "");
-                pkg.Write(it.Stack);
-                pkg.Write(it.Durability);
-                pkg.Write(it.Pos);
-                pkg.Write(it.Equipped);
-                pkg.Write(it.Quality);
-                pkg.Write(it.Variant);
-                pkg.Write(it.CrafterId);
-                pkg.Write(it.CrafterName ?? "");
-                var n = it.Custom != null ? it.Custom.Count : 0;
-                pkg.Write(n);
-                for (var j = 0; j < n; j++)
-                {
-                    pkg.Write(it.Custom[j].Key ?? "");
-                    pkg.Write(it.Custom[j].Value ?? "");
-                }
-                pkg.Write(it.WorldLevel);
-                pkg.Write(it.PickedUp);
-            }
-            return pkg.GetBase64();
-        }
+        // Compact-layout writer (InvCodec): keeps the version it read (109 at least), so a 1.0.16 server and a 1.0.20
+        // server each get back the layout their own Inventory.Load expects.
+        private static byte[] SerializeChestBlob(List<ChestItem> items, int version) => InvCodec.Serialize(items, version);
 
         // ==================== item metadata (ObjectDB, cached per prefab name) ====================
 
@@ -294,7 +201,7 @@ namespace AdminPanelCompanion
                 return;
             }
 
-            var blob = zdo.GetString(KeyItems, "") ?? "";
+            var blob = InvCodec.ReadBlob(zdo);
             var inUse = zdo.GetInt(KeyInUse, 0) == 1;
             int version, declared;
             var ok = ParseChestBlob(blob, out version, out declared, ChestScratch);
@@ -318,7 +225,7 @@ namespace AdminPanelCompanion
                 var it = ChestScratch[i];
                 var meta = MetaOf(it.Prefab);
                 pkg.Write(meta.Token ?? "");
-                pkg.Write(it.Prefab ?? "");
+                pkg.Write(it.Name);   // "#hash" when this server cannot resolve a modded item (it is kept, never dropped)
                 pkg.Write(it.Stack);
                 pkg.Write(it.Quality);
                 pkg.Write(it.Variant);
@@ -329,6 +236,22 @@ namespace AdminPanelCompanion
             Reply(uid, "AP_ChestData", pkg);
         }
 
+        /// <summary>
+        /// Write a container's "items" blob the way every server-side contents edit must: claim the ZDO, write, then hand it
+        /// back to its owner when that peer is still connected (else release it), and force the new contents out. On a
+        /// listen-server host whose own client has the chest loaded, the live instance claims it so its Inventory reloads.
+        /// Used by the chest editor and by the round-3 backup compare's container restore.
+        /// </summary>
+        internal static void WriteContainerBlob(ZDO zdo, byte[] blob)
+        {
+            var view = LocalView(zdo);
+            if (view != null) view.ClaimOwnership();     // listen-server host: keep the live instance in step
+            var prev = ClaimForWrite(zdo);
+            InvCodec.WriteBlob(zdo, blob);
+            if (view != null) { try { ZDOMan.instance?.ForceSendZDO(zdo.m_uid); } catch (Exception) { } }
+            else HandBack(zdo, prev);
+        }
+
         // ==================== AP_SrvChestEdit ====================
 
         private static void OnChestEdit(long sender, ZPackage pkg)
@@ -337,6 +260,7 @@ namespace AdminPanelCompanion
             if (!CompanionPlugin.SenderCanFeature(sender, "AP_SrvChestEdit")) return;
 
             int ver, op, index, count, quality; ZDOID id; string prefab;
+            string expectPrefab = ""; int expectStack = -1;
             try
             {
                 ver = pkg.ReadInt();
@@ -346,6 +270,8 @@ namespace AdminPanelCompanion
                 count = pkg.ReadInt();
                 prefab = pkg.ReadString();
                 quality = pkg.ReadInt();
+                // The row the admin SAW at `index` (panels since 2.5.0 send it; it was never checked until round 3).
+                if (pkg.GetPos() < pkg.Size()) { expectPrefab = pkg.ReadString() ?? ""; expectStack = pkg.ReadInt(); }
             }
             catch (Exception e) { CompanionPlugin.FeatureLog($"AP_SrvChestEdit: malformed packet dropped ({e.Message})"); return; }
             if (ver != Ver) return;
@@ -376,11 +302,22 @@ namespace AdminPanelCompanion
             }
             int version, declared;
             var items = ChestScratch;
-            if (!ParseChestBlob(zdo.GetString(KeyItems, "") ?? "", out version, out declared, items))
+            if (!ParseChestBlob(InvCodec.ReadBlob(zdo), out version, out declared, items))
             {
                 CompanionPlugin.NotifySender(sender, version > BlobVersionKnown
                     ? $"Refused: this container uses inventory format {version}, newer than this companion knows (up to {BlobVersionKnown}). Update the companion."
                     : "Refused: the container's item data could not be decoded, so it is left untouched.");
+                SendChestData(sender, id);
+                return;
+            }
+
+            // Index-addressed ops act on the stack the admin saw, or not at all: a player moving items between the read
+            // and the click shifts every index after the change.
+            if ((op == 0 || op == 1) && index >= 0 && index < items.Count && expectPrefab.Length > 0
+                && (items[index].Prefab != expectPrefab || (expectStack >= 0 && items[index].Stack != expectStack)))
+            {
+                CompanionPlugin.NotifySender(sender, "That container changed since you read it - here is what it holds now.");
+                items.Clear();
                 SendChestData(sender, id);
                 return;
             }
@@ -411,7 +348,7 @@ namespace AdminPanelCompanion
                     }
                     var target = items[index];
                     var meta1 = MetaOf(target.Prefab);
-                    var cap = meta1.Known ? meta1.MaxStack : Math.Max(1, count);
+                    var cap = meta1.Known ? meta1.MaxStack : Math.Max(1, target.Stack);   // unknown prefab: lower only
                     var newCount = Mathf.Clamp(count, 1, cap);
                     if (count > cap) note = $" (clamped to the max stack of {cap})";
                     detail = $"count|{target.Prefab}|{target.Stack}->{newCount}";
@@ -455,14 +392,9 @@ namespace AdminPanelCompanion
 
             try
             {
-                var b64 = SerializeChestBlob(items);
+                var blob = SerializeChestBlob(items, version);
                 items.Clear();
-                var view = LocalView(zdo);
-                if (view != null) view.ClaimOwnership();     // listen-server host: keep the live instance in step
-                var prev = ClaimForWrite(zdo);
-                zdo.Set(KeyItems, b64);
-                if (view != null) { try { man.ForceSendZDO(zdo.m_uid); } catch (Exception) { } }
-                else HandBack(zdo, prev);
+                WriteContainerBlob(zdo, blob);
             }
             catch (Exception e)
             {
@@ -552,8 +484,8 @@ namespace AdminPanelCompanion
             var info = InfoOf(hash);
             if (info == null || !info.HasContainer) return;   // cheap prefab test before any ZDO data lookup
             job.Containers++;
-            var blob = zdo.GetString(KeyItems, "");
-            if (string.IsNullOrEmpty(blob)) return;
+            var blob = InvCodec.ReadBlob(zdo);
+            if (blob == null || blob.Length == 0) return;
             int version, declared;
             if (!ParseChestBlob(blob, out version, out declared, SearchItemScratch)) return;   // unreadable: skipped
 

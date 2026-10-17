@@ -9,8 +9,10 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <DebugType>none</DebugType>
     <!-- ===== Valheim reference assemblies — INTENTIONALLY DUPLICATED in ValheimAdminPanel.csproj =====
-         The two projects sit in different directories in both layouts (siblings under C:\Users\HEPHAESTUS; AdminPanel\
-         and AdminPanelCompanion\ side by side in the git mirror), so a shared Directory.Build.props cannot reach both.
+         The two projects sit in different directories in both layouts (ValheimAdminPanel\ and AdminPanelCompanion\ side
+         by side under C:\Users\HEPHAESTUS\Projects\Valheim; AdminPanel\ and AdminPanelCompanion\ in the git mirror). A
+         shared Directory.Build.props would have to live in Projects\Valheim for the build layout, outside the repo, so
+         it would not travel with a clone; hence the duplication.
          Keep this PropertyGroup block, the AssemblyMetadata ItemGroup and the VerifyValheimRefs target byte-identical
          in the two csproj files.
 
@@ -22,25 +24,29 @@
          1.0.12 (World.m_fileName gone, ZRoutedRpc.Everybody now const). VerifyValheimRefs below therefore errors on 3,
          and on 2 when the installed Steam build differs from ValheimSteamBuild, unless -p:AllowStaleValheimRefs=true
          is passed on purpose. -->
+    <!-- Local tooling root (steamcmd bench server + bepinex-core DLLs), set ONCE here. After a folder move or on another
+         PC, override with -p:ValheimModdingRoot=<dir> or a ValheimModdingRoot environment variable (MSBuild reads env
+         vars as properties) instead of editing paths. -->
+    <ValheimModdingRoot Condition="'$(ValheimModdingRoot)' == ''">C:\Users\HEPHAESTUS\Projects\Valheim\valheim-modding</ValheimModdingRoot>
     <ValheimRefsSource Condition="'$(ValheimManaged)' != ''">override</ValheimRefsSource>
     <ValheimLiveManaged>C:\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed</ValheimLiveManaged>
     <ValheimManaged Condition="'$(ValheimManaged)' == '' And Exists('$(ValheimLiveManaged)\assembly_valheim.dll')">$(ValheimLiveManaged)</ValheimManaged>
     <ValheimRefsSource Condition="'$(ValheimRefsSource)' == '' And '$(ValheimManaged)' != ''">live</ValheimRefsSource>
-    <ValheimManaged Condition="'$(ValheimManaged)' == ''">C:\Users\HEPHAESTUS\Projects\Valheim\valheim-modding\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
+    <ValheimManaged Condition="'$(ValheimManaged)' == ''">$(ValheimModdingRoot)\steamcmd\steamapps\common\Valheim dedicated server\valheim_server_Data\Managed</ValheimManaged>
     <ValheimRefsSource Condition="'$(ValheimRefsSource)' == ''">steamcmd</ValheimRefsSource>
     <ValheimAssemblyPath>$(ValheimManaged)\assembly_valheim.dll</ValheimAssemblyPath>
-    <!-- Steam build id of app 892970 (Valheim client) this code was verified against; same value as
-         valheim-modding\decompile-1.0.12\STEAM_BUILD.txt. After every game update: rebuild BOTH DLLs, re-run the
+    <!-- Steam build id of app 892970 (Valheim client) this code was verified against; same value as STEAM_BUILD.txt in
+         the matching valheim-modding\decompile-<game version>\ folder. After every game update: rebuild BOTH DLLs, re-run the
          reflection sweep, then bump this in both csproj files together with CompiledForGameVersion in
          AdminPanelPlugin.cs and CompanionPlugin.cs. -->
-    <ValheimSteamBuild>25527674</ValheimSteamBuild>
+    <ValheimSteamBuild>25909357</ValheimSteamBuild>
     <!-- Build id actually installed at build time, read from the live Steam client's appmanifest. Only meaningful for
          the live source (override/steamcmd -> unknown). Ships in the DLL as AssemblyMetadata "ValheimSteamBuild" so the
          companion's health payload can report what it was compiled against. -->
     <ValheimAppManifest>C:\Program Files (x86)\Steam\steamapps\appmanifest_892970.acf</ValheimAppManifest>
     <ValheimInstalledSteamBuild Condition="'$(ValheimRefsSource)' == 'live' And Exists('$(ValheimAppManifest)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(ValheimAppManifest)')), '&quot;buildid&quot;\s+&quot;(\d+)&quot;').Groups[1].Value)</ValheimInstalledSteamBuild>
     <ValheimInstalledSteamBuild Condition="'$(ValheimInstalledSteamBuild)' == ''">unknown</ValheimInstalledSteamBuild>
-    <BepInExCore>C:\Users\HEPHAESTUS\Projects\Valheim\valheim-modding\bepinex-core</BepInExCore>
+    <BepInExCore Condition="'$(BepInExCore)' == ''">$(ValheimModdingRoot)\bepinex-core</BepInExCore>
   </PropertyGroup>
 
   <ItemGroup>
@@ -82,6 +88,8 @@
        @(AssemblyMetadata) into attributes; its input hash regenerates AssemblyInfo whenever the stamp changes) and
        before CoreCompile. Intentionally duplicated in ValheimAdminPanel.csproj. -->
   <Target Name="VerifyValheimRefs" BeforeTargets="GetAssemblyAttributes;CoreCompile">
+    <Error Condition="!Exists('$(BepInExCore)\BepInEx.dll') Or !Exists('$(BepInExCore)\0Harmony.dll')"
+           Text="VerifyValheimRefs: BepInEx.dll / 0Harmony.dll not found in $(BepInExCore). Point -p:ValheimModdingRoot=&lt;dir&gt; (or -p:BepInExCore=&lt;dir&gt;) at the folder that holds bepinex-core." />
     <Error Condition="!Exists('$(ValheimAssemblyPath)')"
            Text="VerifyValheimRefs: assembly_valheim.dll not found at $(ValheimAssemblyPath) (ValheimRefsSource=$(ValheimRefsSource))." />
     <Error Condition="'$(ValheimRefsSource)' == 'steamcmd' And '$(AllowStaleValheimRefs)' != 'true'"

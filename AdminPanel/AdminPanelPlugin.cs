@@ -17,11 +17,11 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.5.6";
+        public const string PluginVersion = "2.6.0";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
-        internal const string CompiledForGameVersion = "1.0.16";
+        internal const string CompiledForGameVersion = "1.0.20";
 
         internal static AdminPanelPlugin Instance;
 
@@ -351,6 +351,18 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.6.0: fifteen new features. Items the panel creates carry a hidden serial, and Tools › Moderation › " +
+            "Provenance finds duplicated or unexplained copies. New cards: Creatures › Command (follow, guard, passive, " +
+            "attack), Bosses › Encounter (HP and damage multipliers, enrage timer, fight summary to Discord), a " +
+            "status-effect forge, Performance (who simulates what), Backup compare with per-area restore, a " +
+            "Progression timeline per player, and Locations (resets looted dungeons). The map gains layers for wards, " +
+            "portals, ships, tames, deaths and lag spots. Settings adds Diagnostics (finds mods that swallow your " +
+            "clicks) and Controller mode. The title bar has Undo (two clicks) and Tools › Shortcuts an Undo timeline; " +
+            "Tools also adds rule zones, an abandoned-base finder and automation triggers. Fixed: the Containers " +
+            "viewer showed every chest as empty since Valheim 1.0.12, companion backups failed on Valheim 1.0.20, and " +
+            "symbols the game's fonts lack showed as boxes on Linux and Steam Deck. Under tiered roles, base actions, " +
+            "backup restore and location reset are owner-only. Rebuilt for Valheim 1.0.20. " +
+            "BOTH DLLs are 2.6.0 - server owners: update AdminPanelCompanion.dll and restart.\n\n" +
             "• 2.5.6: giving things to OTHER players, fixed. The \"All skills +10 / 100 / Reset\" buttons now " +
             "follow the Apply-to player (they only ever changed YOUR skills), and the skill list shows that player's " +
             "real levels; on another player, \"100\" and \"Reset\" take two clicks. A player who is dead or still " +
@@ -440,6 +452,7 @@ namespace AdminPanel
         private static readonly Color PanelBgTint = new Color(0.66f, 0.53f, 0.41f, 1f);
         private Texture2D _texWood;   // window background — kept so the opacity slider can recolor it in place
         private Texture2D _texRule;   // thin gold rule used by DrawSection dividers
+        private Texture2D _texGrip;   // resize-grip triangle (bottom-right corner of the panel)
         private Texture2D _logoTex;   // embedded logo header (null = missing/failed, panel renders without it)
         private bool _logoTried;
         private float _logoAspect = 3.63f;   // width/height; recomputed from the decoded texture
@@ -1798,6 +1811,20 @@ namespace AdminPanel
             return t;
         }
 
+        // The resize-grip triangle as a texture, not the "◢" glyph it used to be: none of Valheim's fonts
+        // (Norse, Norsebold, Averia) contain it, so it only drew where the OS supplied a fallback font and
+        // showed as a box elsewhere — the same cause as the "⚠ renders as a box" report.
+        private static Texture2D GripTex(Color c, int size = 12)
+        {
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            { hideFlags = HideFlags.HideAndDontSave, filterMode = FilterMode.Point };
+            for (var y = 0; y < size; y++)
+                for (var x = 0; x < size; x++)
+                    t.SetPixel(x, y, x >= y ? c : Color.clear);   // texture row 0 is the BOTTOM -> lower-right half
+            t.Apply();
+            return t;
+        }
+
         private void EnsureSkin()
         {
             // _texWood doubles as the canary: if the asset sweep destroyed the skin textures anyway
@@ -1806,6 +1833,7 @@ namespace AdminPanel
             MaybeDumpSkinAssets();
             _texWood = SolidTex(WoodColor(_panelAlphaLive));
             _texRule = SolidTex(new Color(0.62f, 0.46f, 0.22f, 0.45f));
+            _texGrip = GripTex(new Color(0.82f, 0.74f, 0.60f, 0.75f));   // _dimLabelStyle's parchment tone
             var woodLight = SolidTex(new Color(0.220f, 0.160f, 0.100f, 1f));
             var woodHover = SolidTex(new Color(0.310f, 0.230f, 0.130f, 1f));
             var woodActive = SolidTex(new Color(0.160f, 0.115f, 0.070f, 1f));
@@ -2453,6 +2481,7 @@ namespace AdminPanel
         // ==================== GUI root ====================
         private void OnGUI()
         {
+            Wave9OnGuiFirst();   // round 3: input-conflict detector reads the event before anything here can use it
             FeaturesOnGUI();   // feature overlays (command palette etc.) — must run even with the panel closed
             if (!_visible) return;
             EnsureSkin();
@@ -2531,7 +2560,7 @@ namespace AdminPanel
             // Close button pinned to the title-bar corner (same affordance as the side window's ✕).
             // Fixed-rect GUI.Button, not GUILayout — it lives outside the layout flow, so the control
             // count stays identical on every pass. Runs the same cleanup as the F7 close path.
-            if (GUI.Button(new Rect(_windowRect.width - 34f, 4f, 28f, 22f), "✕", _buttonStyle))
+            if (GUI.Button(new Rect(_windowRect.width - 34f, 4f, 28f, 22f), "×", _buttonStyle))
             {
                 _visible = false;
                 FlushNotes();
@@ -2545,6 +2574,8 @@ namespace AdminPanel
                 GUI.DragWindow();
                 return;
             }
+            Wave9WindowBegin();   // round 3: controller navigation records this frame's controls from here on
+            Wave9TitleBar();      // round 3: fixed-rect Undo button beside the close button (outside the layout flow)
 
             // Snapshot which dropdown is open on the Layout pass so option controls emitted on later passes of the
             // same frame match the Layout control count (a live _openDropdown flips on the click/MouseUp pass,
@@ -2584,6 +2615,7 @@ namespace AdminPanel
                 GUILayout.Label(_versionWarnLayout, _proseStyle);
             if (_gateLayout == Gate.OldCompanion)
                 GUILayout.Label(Loc.T("chrome.companion_no_admin_flag", _srvCompVersion ?? "?"), _proseStyle);
+            Wave9TopNotice();   // round 3: one-line notice when another mod swallows the panel's clicks
 
             // Gate closed: the notice IS the body. Settings stays reachable (hotkey rebind, language), nothing
             // else. Same frame structure as the open body (tab row → content → grip/drag below), so the resize
@@ -2637,7 +2669,8 @@ namespace AdminPanel
             // Resize grip in the bottom-right corner. mousePosition inside a GUILayout.Window is relative to the
             // window's top-left, so using it directly for width/height is correct.
             var grip = new Rect(_windowRect.width - 22, _windowRect.height - 22, 22, 22);
-            GUI.Label(grip, "◢", _dimLabelStyle);
+            if (Event.current.type == EventType.Repaint && _texGrip != null)
+                GUI.DrawTexture(new Rect(grip.x + 6f, grip.y + 6f, 12f, 12f), _texGrip);
             var e = Event.current;
 
             // End a resize on ANY release, not just a MouseUp delivered inside this window. GUI.Window scopes
@@ -2666,6 +2699,7 @@ namespace AdminPanel
             }
 
             GUI.DragWindow(new Rect(0, 0, 10000, 20));
+            Wave9WindowEnd();
         }
 
         // ==================== helpers ====================
@@ -3163,11 +3197,13 @@ namespace AdminPanel
             {
                 var e = filtered[i];
                 GUILayout.BeginHorizontal(i % 2 == 0 ? _rowEven : _rowOdd, GUILayout.Height(rowH - 2));
-                if (GUILayout.Button(_favorites.Contains(e.Prefab) ? "★" : "☆", _buttonStyle, GUILayout.MinWidth(30)))
+                if (GUILayout.Button(_favorites.Contains(e.Prefab) ? "*" : "+", _buttonStyle, GUILayout.MinWidth(30)))
                     ToggleFavorite(e.Prefab);
                 DrawIcon(e);
                 GUILayout.Space(6);
-                GUILayout.Label(e.Display, _cellStyle, GUILayout.Width(210));
+                var shown = e.Display;
+                Wave9ItemTag(e.Prefab, ref shown);   // round 3: provenance marker on prefabs the last scan found stamped copies of
+                GUILayout.Label(shown, _cellStyle, GUILayout.Width(210));
                 GUILayout.Label(e.Info, _dimCellStyle);   // stat summary (cached); cell style: a wrap would overpaint the fixed-height row below
                 GUILayout.FlexibleSpace();
                 var amount = Math.Max(1, _itemAmount);
@@ -3175,12 +3211,12 @@ namespace AdminPanel
                 if (GUILayout.Button(Loc.T("items.drop"), _buttonStyle, GUILayout.MinWidth(58)))
                 { SendServerSpawn(0, e.Prefab, SpawnPos(1.5f), amount, quality, false); MarkRecent(e); Message(Loc.T("items.msg_requested", amount, e.Display)); }
                 var bagSafe = HasIcon(e.Drop);
-                if (GUILayout.Button(bagSafe ? Loc.T("items.bag") : "✕", _buttonStyle, GUILayout.MinWidth(52)))
+                if (GUILayout.Button(bagSafe ? Loc.T("items.bag") : "×", _buttonStyle, GUILayout.MinWidth(52)))
                 {
                     if (bagSafe) { SendServerGive(SelfUid(), e.Prefab, amount, quality); MarkRecent(e); Message(Loc.T("items.msg_requested_bag", amount, e.Display)); }
                     else Message(Loc.T("items.msg_no_icon_drop", e.Display));
                 }
-                if (GUILayout.Button(bagSafe ? Loc.T("items.give") : "✕", _buttonStyle, GUILayout.MinWidth(58)))
+                if (GUILayout.Button(bagSafe ? Loc.T("items.give") : "×", _buttonStyle, GUILayout.MinWidth(58)))
                 {
                     var gi = GiveTargetIndex(others);
                     if (!bagSafe) Message(Loc.T("items.msg_no_icon_give", e.Display));
@@ -3320,9 +3356,14 @@ namespace AdminPanel
             }
             GUILayout.EndHorizontal();
 
+            // Round 3: the creature Command card sits under the spawn controls; it reports the height it took
+            // (pinned per frame) so the list below shrinks by exactly that much.
+            var cmdReserve = 0f;
+            Wave9CreaturesCard(ref cmdReserve);
+
             GUILayout.Space(6);
             const float rowH = 32f;
-            float viewH = ListView(360f);
+            float viewH = ListView(360f + cmdReserve);
             // Snapshot the list + virtualization window ONCE per frame, on the Layout event, and reuse it for
             // Repaint/mouse passes. BeginScrollView reassigns _creatureScroll mid-pass, so deriving the window
             // live would give Layout and Repaint different control counts (the IMGUI "control N in a group with
@@ -3376,8 +3417,13 @@ namespace AdminPanel
         }
 
         // ==================== Bosses tab ====================
+        private Vector2 _bossTabScroll;
+
         private void DrawBossesTab()
         {
+            // Round 3 put the Encounter card above the summon list, so the tab scrolls as a whole like World/Server.
+            _bossTabScroll = GUILayout.BeginScrollView(_bossTabScroll, GUILayout.Height(ListView(100f)));
+            Wave9BossesTop();
             BeginCard(Loc.T("boss.section"));
             GUILayout.Label(Loc.T("boss.hint"), _dimLabelStyle);
             // short fixed list — size to content so it doesn't balloon to fill a tall window (leaving a dead gap)
@@ -3404,6 +3450,7 @@ namespace AdminPanel
             GUILayout.Space(8);
             DrawRaidGroup("boss.raids_creature", CreatureRaids);
             EndCard();
+            GUILayout.EndScrollView();
         }
 
         // Renders one labelled group of raid buttons in a wrapped 4-per-row grid, using the friendly Label
@@ -3712,6 +3759,7 @@ namespace AdminPanel
                 GUILayout.EndScrollView();
             }
             EndCard();
+            Wave9PlayerSeCards();   // round 3: status-effect forge, beside (below) the browser
             }
 
             GUILayout.EndScrollView();
@@ -4037,6 +4085,7 @@ namespace AdminPanel
                 }
                 GUILayout.EndHorizontal();
             }
+            Wave9WorldTeleportRow();   // round 3: map layer chips (admin overlays on the vanilla map)
             EndCard();
 
             BeginCard(Loc.T("world.area_actions"));
@@ -4095,6 +4144,8 @@ namespace AdminPanel
                 GUILayout.EndHorizontal();
             }
             EndCard();
+
+            Wave9WorldCards();   // round 3: Locations card (finder + regeneration)
 
             GUILayout.EndScrollView();
         }
@@ -4187,10 +4238,14 @@ namespace AdminPanel
         }
 
         // ==================== Players tab ====================
+        private Vector2 _playersTabScroll;
+
         private void DrawPlayersTab()
         {
             if (ZNet.instance == null) { GUILayout.Label(Loc.T("players.not_connected"), _labelStyle); return; }
 
+            // Round 3 added the Progression card under the inventory viewer, so the tab scrolls as a whole.
+            _playersTabScroll = GUILayout.BeginScrollView(_playersTabScroll, GUILayout.Height(ListView(100f)));
             BeginCard(Loc.T("players.broadcast_section"));
             GUILayout.BeginHorizontal();
             GUILayout.Label(Loc.T("players.broadcast"), _labelStyle, GUILayout.MinWidth(70));
@@ -4238,7 +4293,7 @@ namespace AdminPanel
                     { SrvRpc("AP_SrvHeal", PeerIdOf(info)); Message(Loc.T("players.msg_healing", info.m_name)); }
                     if (GUILayout.Button(Loc.T("players.map"), _buttonStyle, GUILayout.MinWidth(45)))
                         ActOnPlayerPos(info, PosAction.Map);
-                    if (GUILayout.Button("⚡", _buttonStyle, GUILayout.MinWidth(30)))
+                    if (GUILayout.Button(Loc.T("players.smite"), _buttonStyle, GUILayout.MinWidth(50)))
                         ActOnPlayerPos(info, PosAction.Smite);
                     if (GUILayout.Button(Loc.T("players.inventory"), _buttonStyle, GUILayout.MinWidth(75)))
                         RequestInventory(info.m_name, PeerIdOf(info));
@@ -4297,6 +4352,9 @@ namespace AdminPanel
                 GUILayout.Label(Loc.T("players.remove_hint"), _hintStyle);
             }
             EndCard();
+
+            Wave9PlayersCards();   // round 3: progression timeline + anomaly flags
+            GUILayout.EndScrollView();
         }
 
         private void RemoveFromInspected(string itemName, int amount)
@@ -4441,6 +4499,8 @@ namespace AdminPanel
                     GUILayout.Label("  " + Loc.T("srv.list_truncated", info.PeerTotal - info.Peers.Count), _dimLabelStyle);
             }
             EndCard();
+
+            Wave9ServerCards();   // round 3: Performance (ZDO ownership / lag owners) + backup compare
 
             // ---- World save ----
             BeginCard(Loc.T("srv.save_section"));
@@ -4649,7 +4709,7 @@ namespace AdminPanel
             if (GUILayout.Toggle(wnOn, Loc.T("side.whats_new"), _catStyle) && !wnOn) _sideMode = SideMode.WhatsNew;
             if (GUILayout.Toggle(brOn, Loc.T("side.bug_report"), _catStyle) && !brOn) _sideMode = SideMode.BugReport;
             GUILayout.FlexibleSpace();
-            if (GUILayout.Button("✕", _buttonStyle, GUILayout.MinWidth(30))) _sideMode = SideMode.None;
+            if (GUILayout.Button("×", _buttonStyle, GUILayout.MinWidth(30))) _sideMode = SideMode.None;
             GUILayout.EndHorizontal();
 
             if (mode == SideMode.WhatsNew)
@@ -4995,6 +5055,7 @@ namespace AdminPanel
             if (GUILayout.Button(Loc.T("set.whats_new"), _buttonStyle, GUILayout.MinWidth(150))) _sideMode = SideMode.WhatsNew;
             if (GUILayout.Button(Loc.T("set.report_bug"), _buttonStyle, GUILayout.MinWidth(130))) _sideMode = SideMode.BugReport;
             GUILayout.EndHorizontal();
+            Wave9SettingsPanelRow();   // round 3: controller (gamepad / Steam Deck) mode switch
 
             EndCard();
 
@@ -5041,6 +5102,8 @@ namespace AdminPanel
             }
 
             EndCard();
+
+            Wave9SettingsCards();   // round 3: Diagnostics (input-conflict detector, test click)
 
             BeginCard(Loc.T("set.reset"));
             GUILayout.BeginHorizontal();

@@ -168,6 +168,9 @@ namespace AdminPanelCompanion
             }
         }
 
+        /// <summary>Round 3 (#12 trigger rules): every chat line once, after commands and mutes - (sender, text).</summary>
+        internal static event Action<long, string> ChatSeen;
+
         // Later waves register their commands here (Init-time). First registration wins so a duplicate
         // name in a later wave can never silently steal an existing command.
         internal static void RegisterChatCommand(string cmd, Action<long, string> handler)
@@ -244,6 +247,8 @@ namespace AdminPanelCompanion
                     {
                         RecordHistory(sender, speaker, text);
                         RulesNudge(sender);
+                        var seen = ChatSeen;
+                        if (seen != null) { try { seen(sender, text); } catch (Exception e) { CompanionPlugin.FeatureLog($"Chat subscriber failed: {e.Message}"); } }
                     }
                     return true;
                 }

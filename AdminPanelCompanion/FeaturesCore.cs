@@ -81,6 +81,8 @@ namespace AdminPanelCompanion
             try { FeaturesInitSrvWave8Toolkit(); } catch (Exception e) { WaveInitFailed("8 (toolkit)", e); }
             try { FeaturesInitSrvWave8Rules(); } catch (Exception e) { WaveInitFailed("8 (server rules)", e); }
             try { FeaturesInitSrvWave8Systems(); } catch (Exception e) { WaveInitFailed("8 (systems)", e); }
+            // Round 3 (2026-10): one group (FeaturesWave9Glue.cs + Wave9Srv*.cs).
+            try { FeaturesInitSrvWave9(); } catch (Exception e) { WaveInitFailed("9 (round 3)", e); }
         }
 
         private void WaveInitFailed(string wave, Exception e) =>
@@ -103,6 +105,7 @@ namespace AdminPanelCompanion
             FeaturesTickSrvWave8Toolkit();
             FeaturesTickSrvWave8Rules();
             FeaturesTickSrvWave8Systems();
+            FeaturesTickSrvWave9();
         }
 
         // ---- shared services for wave files ----
@@ -112,6 +115,13 @@ namespace AdminPanelCompanion
         {
             AuditedRpcs[name.GetStableHashCode()] = name;
             if (minRoleGrant != null && BuiltinRoles.TryGetValue(minRoleGrant, out var set)) set.Add(name);
+        }
+
+        // Round 3: grant a built-in role an action WITHOUT auditing it (read-only views a panel polls, which would only
+        // flood the audit log). Owners need no grant; custom roles list it in roleperms.txt as usual.
+        internal static void GrantRole(string name, string role)
+        {
+            if (role != null && BuiltinRoles.TryGetValue(role, out var set)) set.Add(name);
         }
 
         // Rich audit entries for wave features (the chokepoint only knows the RPC name; a wave knows the
@@ -296,6 +306,7 @@ namespace AdminPanelCompanion
         internal static bool FeatureKick(long uid) => KickByUid(uid);
         internal static string FeatureBareId(string id) => BareId(id);
         internal static void FeatureLog(string msg) => Log(msg);
+        internal static void FeatureUnban(long sender, string host) => OnServerUnban(sender, host);   // round 3: undo of a ban
 
         // Adminlist membership by platform id (for join-time gates where no peer uid exists yet).
         // SyncedList's surface has shifted across game versions, so probe Contains then GetList().
@@ -427,5 +438,9 @@ namespace AdminPanelCompanion
         partial void FeaturesTickSrvWave8Toolkit();
         partial void FeaturesTickSrvWave8Rules();
         partial void FeaturesTickSrvWave8Systems();
+
+        // ---- round 3 (wave 9) hooks ----
+        partial void FeaturesInitSrvWave9();
+        partial void FeaturesTickSrvWave9();
     }
 }

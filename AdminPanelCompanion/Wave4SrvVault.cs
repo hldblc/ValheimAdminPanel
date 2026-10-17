@@ -1241,6 +1241,8 @@ namespace AdminPanelCompanion
             pkg.Write(false);      // wipeFirst: a grant adds, it never clears the bag
             pkg.Write(records);
             pkg.Write(payload);
+            // Round 3: one provenance stamp per entry rides ahead of the grant (a vault RESTORE sends none).
+            foreach (var e in entries) Wave9Prov.BeforeGrant(0L, peer.m_uid, e.Prefab, e.Count, "offline-" + kind);   // serial unused: offline grants are not journaled
             try { ZRoutedRpc.instance.InvokeRoutedRPC(peer.m_uid, "AP_VaultApply", pkg); }
             catch (Exception e)
             {
@@ -1667,6 +1669,9 @@ namespace AdminPanelCompanion
                     }
                     catch (Exception) { break; }
 
+                    // Round 3: offline grants are preceded by a provenance stamp (restores never are), applied here like
+                    // CompanionPlugin.AddOrDrop does for the other grant executors.
+                    Wave9Prov.ApplyPending(data);
                     var added = false;
                     try { added = inv.AddItem(data); }
                     catch (Exception) { }

@@ -1701,6 +1701,13 @@ namespace AdminPanelCompanion
             catch (Exception) { return null; }
         }
 
+        /// <summary>Round 3 (backup diff): the directory holding this world's backup sets, or null. MAIN THREAD ONLY.</summary>
+        internal static string CurrentSetParent()
+        {
+            try { return BackupSetParent(FeatureStore.ResolveSaveLayout()); }
+            catch (Exception) { return null; }
+        }
+
         private static string BackupSetParent(FeatureStore.WorldSaveSet set)
         {
             if (set == null) return null;

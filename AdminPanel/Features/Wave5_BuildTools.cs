@@ -511,9 +511,11 @@ namespace AdminPanel
             if (nview == null) { Message(Loc.T("bld.msg_no_target")); return; }
             var label = BldPieceLabel(piece);
             nview.ClaimOwnership();
+            var journaled = UndoReportPieceRemoved(nview.GetZDO(), label);   // round 3: undo timeline keeps the saved state
             nview.Destroy();
             _bldTarget = null;
             Message(Loc.T("bld.msg_removed", label));
+            if (!journaled) Message(Loc.T("undo.msg_not_recorded"));
         }
 
         // WearNTear stores current health in the ZDO under ZDOVars.s_health and treats WearNTear.m_health
@@ -547,6 +549,7 @@ namespace AdminPanel
             var zdo = nview.GetZDO();
             if (zdo == null) { Message(Loc.T("bld.msg_no_target")); return; }
             var t = piece.transform;
+            UndoReportPieceMoved(zdo, t.position, t.rotation, BldPieceLabel(piece));   // round 3: undo timeline
             t.rotation = Quaternion.Euler(0f, degrees, 0f) * t.rotation;
             zdo.SetRotation(t.rotation);
             Message(Loc.T("bld.msg_rotated", BldF(degrees)));
@@ -560,6 +563,7 @@ namespace AdminPanel
             var zdo = nview.GetZDO();
             if (zdo == null) { Message(Loc.T("bld.msg_no_target")); return; }
             var t = piece.transform;
+            UndoReportPieceMoved(zdo, t.position, t.rotation, BldPieceLabel(piece));   // round 3: undo timeline
             t.position += delta;
             zdo.SetPosition(t.position);
             Message(Loc.T("bld.msg_moved", BldF(delta.magnitude)));

@@ -630,7 +630,13 @@ namespace AdminPanelCompanion
 
         // ==================== flags, alerts, escalation ====================
 
-        private static void RegisterHit(string id, long uid, string rule, string detail, Vector3 pinAt)
+        // Round 3 (#9 progression timeline): impossible-progression heuristics land in the same flag table, log and
+        // admin alerts as the guard's own rules, under rule "progression" - but never escalate (kick/ban): a new
+        // player carried through a boss by friends trips them legitimately, so they are a signal, not a verdict.
+        internal static void ProgressionFlag(string id, long uid, string detail, Vector3 pinAt) =>
+            RegisterHit(id, uid, "progression", detail, pinAt, false);
+
+        private static void RegisterHit(string id, long uid, string rule, string detail, Vector3 pinAt, bool escalate = true)
         {
             id = CleanId(id);
             if (id.Length == 0) return;
@@ -669,7 +675,7 @@ namespace AdminPanelCompanion
                 catch (Exception) { }
             }
 
-            Escalate(id, uid, rule, hits, pinAt, nowTicks);
+            if (escalate) Escalate(id, uid, rule, hits, pinAt, nowTicks);
         }
 
         private static void Escalate(string id, long uid, string rule, int ruleHits, Vector3 pinAt, long nowTicks)

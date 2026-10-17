@@ -14,9 +14,9 @@
 #    PowerShell 5.1's -Encoding UTF8 writes a BOM; this script writes bytes itself so the edition can't
 #    change the outcome.
 #  * Glyph guard: Loc.ResolveFontSafety scans every active-locale value, and ONE character the Norse font
-#    can't draw forces the whole panel onto Unity's fallback font. Latin diacritics are proven safe (the
-#    8 shipped translations are full of them); emoji/CJK/Cyrillic are not. Anything outside the proven
-#    set aborts the run before a single file is touched.
+#    can't draw forces the whole panel onto Unity's fallback font — or, on systems with no OS fallback
+#    font (Linux / Steam Deck), draws as a box. The allowed set lives in font-glyphs.ps1 and was read from
+#    the fonts' own cmap tables, not guessed. Anything outside it aborts the run before a file is touched.
 #  * Idempotent: a key already present in en.txt is skipped everywhere, so re-running after a partial
 #    failure can't create duplicates.
 
@@ -28,8 +28,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$LocaleDir = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Localization'
-$Validator = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\tools\check-locales.ps1'
+# Rooted at this script's own (absolute) folder, so the copy in the git mirror edits the mirror's locale
+# files and the build folder's copy edits the build folder's — never the other tree. Same lookup as
+# check-locales.ps1: the mirror keeps the panel source under AdminPanel\.
+$Root = Split-Path -Parent $PSScriptRoot
+if (Test-Path -LiteralPath (Join-Path $Root 'AdminPanel\Localization')) { $Root = Join-Path $Root 'AdminPanel' }
+$LocaleDir = Join-Path $Root 'Localization'
+$Validator = Join-Path $PSScriptRoot 'check-locales.ps1'
+if (-not (Test-Path -LiteralPath $LocaleDir)) { throw "No Localization folder under $Root" }
+if (-not (Test-Path -LiteralPath $Validator)) { throw "Validator not found next to this script: $Validator" }
 
 # field name in the JSON -> locale file stem
 $Map = [ordered]@{
@@ -44,23 +51,14 @@ $Map = [ordered]@{
     sv    = 'sv'
 }
 
-# Symbols already shipping in locale values (spec-loc.md). Latin-1 Supplement (0xA0-0xFF) and Latin
-# Extended-A (0x100-0x17F) are proven by the existing 8 translations; everything else must be justified.
-$ProvenSymbols = @([char]0x2694, [char]0x2B06, [char]0x26A0, [char]0x2605, [char]0x2192,
-                   [char]0x00B1, [char]0x00B7, [char]0x2014, [char]0x2026, [char]0x00B0)
+# Get-UnsafeGlyphs: the one glyph rule, shared with the check-locales.ps1 release gate.
+. (Join-Path $PSScriptRoot 'font-glyphs.ps1')
 
 function Test-Glyphs {
     param([string]$Text, [string]$Where)
-    $bad = @()
-    foreach ($ch in $Text.ToCharArray()) {
-        $code = [int]$ch
-        if ($code -lt 0x80) { continue }
-        if ($code -ge 0xA0 -and $code -le 0x17F) { continue }   # Latin-1 Supplement + Latin Extended-A
-        if ($ProvenSymbols -contains $ch) { continue }
-        $bad += ('U+{0:X4}' -f $code)
-    }
+    $bad = @(Get-UnsafeGlyphs $Text)
     if ($bad.Count -gt 0) {
-        throw "Unsafe glyph(s) $($bad -join ', ') in $Where -- would force the whole panel onto the fallback font. Rewrite the string in plain Latin text."
+        throw "Unsafe glyph(s) $($bad -join ', ') in $Where -- no Valheim font can draw them. Rewrite the string with characters from tools\font-glyphs.ps1."
     }
 }
 

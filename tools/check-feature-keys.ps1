@@ -15,8 +15,12 @@
 
 $ErrorActionPreference = 'Stop'
 
-$FeatureDir  = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Features'
-$EnPath      = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Localization\en.txt'
+# Rooted at this script's own (absolute) folder — same lookup as check-locales.ps1 — so the mirror's copy
+# checks the mirror's Features\ and en.txt (under AdminPanel\), and the build folder's copy checks its own.
+$Root = Split-Path -Parent $PSScriptRoot
+if (Test-Path -LiteralPath (Join-Path $Root 'AdminPanel\Localization')) { $Root = Join-Path $Root 'AdminPanel' }
+$FeatureDir  = Join-Path $Root 'Features'
+$EnPath      = Join-Path $Root 'Localization\en.txt'
 
 # Prefixes owned by the feature modules are DERIVED from the code, not hardcoded: a hand-maintained list
 # silently under-reports the moment a new wave picks a prefix nobody added to it (which is exactly what
@@ -25,6 +29,7 @@ $EnPath      = 'C:\Users\HEPHAESTUS\Projects\Valheim\ValheimAdminPanel\Localizat
 $BasePrefixes = @('tab', 'common', 'chrome', 'cat', 'sort', 'items', 'cre', 'boss', 'player', 'se', 'world', 'players', 'srv', 'set', 'side')
 
 if (-not (Test-Path -LiteralPath $EnPath)) { throw "Missing $EnPath" }
+if (-not (Test-Path -LiteralPath $FeatureDir)) { throw "Missing $FeatureDir" }
 
 $en = @{}
 foreach ($line in [IO.File]::ReadAllLines($EnPath, [Text.UTF8Encoding]::new($false))) {
@@ -38,7 +43,9 @@ foreach ($line in [IO.File]::ReadAllLines($EnPath, [Text.UTF8Encoding]::new($fal
 $keyShape = '^[a-z][a-z0-9]*\.[a-z0-9_]+$'
 
 $used = @{}
-$files = @(Get-ChildItem -LiteralPath $FeatureDir -Filter *.cs -File -ErrorAction SilentlyContinue)
+$files = @(Get-ChildItem -LiteralPath $FeatureDir -Filter *.cs -File)
+# Zero files means a wrong folder, not a clean result — never let an empty scan report "agree exactly".
+if ($files.Count -eq 0) { throw "No .cs files in $FeatureDir" }
 foreach ($f in $files) {
     # Skip comment lines before scanning. Doc comments legitimately contain key-shaped EXAMPLES
     # (`Loc.T("x.action")` in a <c> block, "prefix.name" in prose), and counting those as real

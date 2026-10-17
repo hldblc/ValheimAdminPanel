@@ -35,15 +35,15 @@ namespace AdminPanel
         private static readonly FeatureCategory[] FeatureCategories =
         {
             new FeatureCategory { Id = "moderation", LocKey = "feat.cat.moderation",
-                Sections = new[] { "Moderation", "RapSheet", "Roles", "Audit", "Guard", "StaffChat", "DirectMessage" } },
+                Sections = new[] { "Moderation", "RapSheet", "Roles", "Audit", "Guard", "StaffChat", "DirectMessage", "Provenance" } },
             new FeatureCategory { Id = "server", LocKey = "feat.cat.server",
-                Sections = new[] { "ServerTools", "Diagnostics", "Discord", "ClientPerf", "Extensions" } },
+                Sections = new[] { "ServerTools", "Diagnostics", "Discord", "ClientPerf", "Extensions", "Automation" } },
             new FeatureCategory { Id = "players", LocKey = "feat.cat.players",
                 Sections = new[] { "PlayerData", "Economy", "Bounties", "DeathRules", "SkillRules", "MapReveal", "TraderStock", "Blacklist", "ItemForge" } },
             new FeatureCategory { Id = "world", LocKey = "feat.cat.world",
-                Sections = new[] { "AreaTools", "BuildTools", "LocationFinder", "Spawners", "Containers", "TameRoster", "CreatureEditor", "MapPins", "RaidComposer" } },
+                Sections = new[] { "AreaTools", "BuildTools", "LocationFinder", "Spawners", "Containers", "TameRoster", "CreatureEditor", "MapPins", "RaidComposer", "RuleZones", "Bases" } },
             new FeatureCategory { Id = "shortcuts", LocKey = "feat.cat.shortcuts",
-                Sections = new[] { "Macros", "Workflow" } },
+                Sections = new[] { "Macros", "Workflow", "UndoTimeline" } },
         };
 
         private ConfigEntry<bool> _extrasTabCfg;   // config key kept as EnableExtrasTab (2.5.x files stay valid)
@@ -73,7 +73,7 @@ namespace AdminPanel
             if (_featuresInited) return;
             _featuresInited = true;
             _extrasTabCfg = Config.Bind("Features", "EnableExtrasTab", true,
-                "Master switch for the Tools tab that hosts all 32 optional modules (categories: Moderation, Server, Players, World, Shortcuts). Off = the panel shows only the eight base tabs.");
+                "Master switch for the Tools tab that hosts all 37 optional modules (categories: Moderation, Server, Players, World, Shortcuts). Off = the panel shows only the eight base tabs.");
 
             // Waves register their sections + init their own config/patches. Unimplemented waves no-op.
             //
@@ -95,6 +95,8 @@ namespace AdminPanel
             try { FeaturesInitWave8Toolkit(); } catch (Exception e) { WaveInitFailed("8 (toolkit)", e); }
             try { FeaturesInitWave8Rules(); } catch (Exception e) { WaveInitFailed("8 (server rules)", e); }
             try { FeaturesInitWave8Systems(); } catch (Exception e) { WaveInitFailed("8 (systems)", e); }
+            // Round 3 (2026-10): one group; its fixed-tab cards hook into the main file through the Wave9* partials.
+            try { FeaturesInitWave9(); } catch (Exception e) { WaveInitFailed("9 (round 3)", e); }
         }
 
         private void WaveInitFailed(string wave, Exception e) =>
@@ -110,6 +112,8 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Palette gate hook failed (ignored): {e.Message}"); }
             try { BldOnGateClosed(); }
             catch (Exception e) { Logger.LogWarning($"Build tools gate hook failed (ignored): {e.Message}"); }
+            try { Wave9OnGateClosed(); }
+            catch (Exception e) { Logger.LogWarning($"Round 3 gate hook failed (ignored): {e.Message}"); }
         }
 
         private void FeaturesResetSession()
@@ -129,6 +133,7 @@ namespace AdminPanel
             FeaturesResetWave8Toolkit();
             FeaturesResetWave8Rules();
             FeaturesResetWave8Systems();
+            FeaturesResetWave9();
         }
 
         // Feature overlays (command palette, quick bar) draw before the panel-visibility gate so they can
@@ -145,6 +150,7 @@ namespace AdminPanel
             FeaturesGuiWave8Toolkit();
             FeaturesGuiWave8Rules();
             FeaturesGuiWave8Systems();
+            FeaturesGuiWave9();
         }
 
         // Client-side timers. LateUpdate is unclaimed by the main file, so features get a lifecycle slot
@@ -164,6 +170,7 @@ namespace AdminPanel
             FeaturesTickWave8Toolkit();
             FeaturesTickWave8Rules();
             FeaturesTickWave8Systems();
+            FeaturesTickWave9();
         }
 
         // ---- Extras tab plumbing ----
@@ -402,5 +409,28 @@ namespace AdminPanel
         partial void FeaturesTickWave8Toolkit();
         partial void FeaturesTickWave8Rules();
         partial void FeaturesTickWave8Systems();
+
+        // ---- round 3 (wave 9) hooks: lifecycle, plus the fixed-tab cards the main file calls in place ----
+        partial void FeaturesInitWave9();
+        partial void FeaturesResetWave9();
+        partial void FeaturesGuiWave9();
+        partial void FeaturesTickWave9();
+        partial void Wave9OnGateClosed();
+
+        partial void Wave9OnGuiFirst();                          // OnGUI, first line: raw event inspection
+        partial void Wave9WindowBegin();                         // DrawWindow, once the player exists
+        partial void Wave9WindowEnd();                           // DrawWindow, last line
+        partial void Wave9TitleBar();                            // fixed-rect title-bar buttons
+        partial void Wave9TopNotice();                           // one-line notices under the version warnings
+        partial void Wave9ItemTag(string prefab, ref string label);
+        partial void Wave9CreaturesCard(ref float reserve);      // reports the height it took (Layout-pinned)
+        partial void Wave9BossesTop();
+        partial void Wave9PlayerSeCards();
+        partial void Wave9WorldTeleportRow();
+        partial void Wave9WorldCards();
+        partial void Wave9PlayersCards();
+        partial void Wave9ServerCards();
+        partial void Wave9SettingsPanelRow();
+        partial void Wave9SettingsCards();
     }
 }

@@ -435,18 +435,24 @@ namespace AdminPanelCompanion
         }
 
         // _main.N.chunks layout (ChunkSaveMapping.Save, ChunkSaveMapping.cs:168-204; written raw through ZPackage's
-        // BinaryWriter, little-endian, ZPackage.cs:98-136): short format(41), int totalZDOs, int entries, then per
+        // BinaryWriter, little-endian, ZPackage.cs:98-136): short format (41; 42 from 1.0.20), int totalZDOs, int entries, then per
         // entry ushort chunk, byte size, uint version, int numZDOs. The chunk's file name is
         // "<chunk>>8 as x2>_<chunk&0xFF as x2>__<size>_<version>.chunk" (GetChunkFilename :121-145).
         // Returns null when the file does not have exactly that shape: the format is engine-private, so an
         // unrecognised layout means "cannot verify", never a guess.
-        private static List<string> IndexedChunkFiles(string indexPath)
+        // internal since round 3: the backup diff (Wave9SrvWorldDiff.cs) parses exactly the chunks an index names.
+        internal static List<string> IndexedChunkFiles(string indexPath)
         {
             using (var fs = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             using (var br = new BinaryReader(fs))
             {
                 if (fs.Length < 10) return null;
-                if (br.ReadInt16() != 41) return null;   // format version: the engine writes 41 (ChunkSaveMapping.cs:187); anything else cannot be verified
+                // Format version: 41 through Valheim 1.0.16, 42 from 1.0.20 (ChunkSaveMapping.cs:187 in both decompiles).
+                // That bump changed nothing else — the field layout and GetChunkFilename are identical — so both verify.
+                // Rejecting 42 made every 1.0.20 backup report "missing chunk file(s)" and copy nothing. Any other
+                // value still means "cannot verify", never a guess.
+                var format = br.ReadInt16();
+                if (format != 41 && format != 42) return null;
                 br.ReadInt32();                 // total ZDOs
                 var entries = br.ReadInt32();
                 if (entries < 0 || fs.Length != 10L + 11L * entries) return null;

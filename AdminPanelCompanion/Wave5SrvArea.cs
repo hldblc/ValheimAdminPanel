@@ -760,6 +760,39 @@ namespace AdminPanelCompanion
             };
         }
 
+        // ---- round 3: rule zones (Wave9SrvRuleZones.cs) keep their no-build / no-damage rules here ----
+        // A rule zone's no-build/no-damage rule IS a protection zone, so it is enforced by exactly this module (and
+        // shows in its list) under the name "rz:<id>". Rectangles are stored as their enclosing circle.
+        internal static float ExternalMaxRadius => HardMaxRadius;
+
+        /// <summary>False when the protection-zone table is full (only MaxZones are ever loaded) and <paramref name="name"/> is not in it yet.</summary>
+        internal static bool CanAddExternalZone(string name)
+        {
+            if (!FeatureStore.Ready) return false;
+            var table = FeatureStore.Table("zones");
+            return table.ContainsKey(name) || table.Count < MaxZones;
+        }
+
+        internal static void UpsertExternalZone(string name, Vector3 center, float radius, int kind)
+        {
+            if (string.IsNullOrEmpty(name) || !FeatureStore.Ready) return;
+            var table = FeatureStore.Table("zones");
+            table[name] = ZoneValue(center, Mathf.Clamp(radius, 1f, HardMaxRadius), Mathf.Clamp(kind, 0, 2));
+            FeatureStore.SaveTable("zones");
+            _zoneSignature = null;
+            EnsureZones();
+        }
+
+        internal static void RemoveExternalZone(string name)
+        {
+            if (string.IsNullOrEmpty(name) || !FeatureStore.Ready) return;
+            var table = FeatureStore.Table("zones");
+            if (!table.Remove(name)) return;
+            FeatureStore.SaveTable("zones");
+            _zoneSignature = null;
+            EnsureZones();
+        }
+
         private static string ZoneValue(Vector3 p, float r, int kind) =>
             p.x.ToString("0.##", CultureInfo.InvariantCulture) + "|" +
             p.y.ToString("0.##", CultureInfo.InvariantCulture) + "|" +
