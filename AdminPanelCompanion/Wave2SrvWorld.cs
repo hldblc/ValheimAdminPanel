@@ -55,6 +55,17 @@ namespace AdminPanelCompanion
         // field cannot break us: the KEY is what is persisted in the save, and it never changes.
         private static readonly int SpawnTimeHash = "spawntime".GetStableHashCode();
 
+        // "piece" == ZDOVars.s_piece: ItemDrop.MakePiece sets it when a feast, mead or other consumable is put on a
+        // table with the serving tray. That object is a build piece which happens to carry an ItemDrop component
+        // (the game itself exempts it from pickup and from the despawn timer), so it is not a dropped item.
+        private static readonly int ServedItemFlag = "piece".GetStableHashCode();
+
+        private static bool ServedOnTable(ZDO zdo)
+        {
+            try { return zdo.GetBool(ServedItemFlag); }
+            catch (Exception) { return false; }
+        }
+
         // ---- config ----
         private static ConfigEntry<int> _budgetMs;
         private static ConfigEntry<int> _maxDeletions;
@@ -437,7 +448,7 @@ namespace AdminPanelCompanion
 
                 int c;
                 job.Counts[hash] = job.Counts.TryGetValue(hash, out c) ? c + 1 : 1;
-                var isItem = _itemFamily != null && _itemFamily.Contains(hash);
+                var isItem = _itemFamily != null && _itemFamily.Contains(hash) && !ServedOnTable(zdo);
                 if (isItem) job.DroppedItems++;
 
                 if (job.Kind == KindHotspot && job.Zones != null) BucketZone(job, zdo, hash);
@@ -474,6 +485,8 @@ namespace AdminPanelCompanion
         // ORPHAN / MODE DEFINITIONS (deliberately narrow — see the header of this file and the limitations):
         //   mode 0 "dropped items": the prefab asset carries an ItemDrop component AND the ZDO has a
         //        "spawntime" stamp AND (now - spawntime) >= olderThanMinutes. Owner is irrelevant.
+        //        Food served on a table with the serving tray (ZDO flag "piece", see ServedOnTable) is a
+        //        build piece: no mode matches it and the census does not count it as a dropped item.
         //   mode 1 "orphan / unowned": everything mode 0 requires PLUS an absent owner — no owner recorded,
         //        or an owner id that is neither this server's ZDOMan session nor any connected peer. This is
         //        the variant that is safe to run while players are online: an item somebody is standing next

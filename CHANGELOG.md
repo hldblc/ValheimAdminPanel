@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.1
+
+**BOTH DLLs are 2.7.1** — server owners: update `AdminPanelCompanion.dll` on the server and restart.
+
+Fixed:
+- **"Ground items 50m" and the world cleanup removed food served on tables.** A feast, mead or other consumable put on
+  a table with the serving tray is stored by the game as an item, so both cleanups deleted it together with the real
+  ground items. Both now leave served food alone, and the object census no longer counts it as a dropped item. Items
+  lying on the ground - a feast that was dropped rather than served included - are removed as before.
+
 ## 2.7.0
 
 **BOTH DLLs are 2.7.0** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.21

@@ -17,7 +17,7 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.7.0";
+        public const string PluginVersion = "2.7.1";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
@@ -355,6 +355,8 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.7.1: \"Ground items 50m\" and the server's world cleanup no longer remove feasts, meads and other " +
+            "food served on tables with the serving tray.\n\n" +
             "• 2.7.0: Items can be sorted and filtered by progression tier (Meadows to Deep North), worked out from what " +
             "each item is crafted from. Russian is a panel language. While the panel is open the character no longer " +
             "walks, jumps or blocks, and keys typed into a panel text box no longer reach the game (Settings has a " +
@@ -4391,6 +4393,19 @@ namespace AdminPanel
             Message(Loc.T("world.msg_tamed", tamed));
         }
 
+        // "piece" == ZDOVars.s_piece, the flag ItemDrop.MakePiece writes when a feast, mead or other consumable is
+        // put on a table with the serving tray. Written as the literal: the key is what the save stores.
+        private static readonly int ServedItemFlag = "piece".GetStableHashCode();
+
+        // Food served with the tray is still an ItemDrop, but the game treats it as a build piece
+        // (ItemDrop.IsPiece: no pickup, no despawn timer, taken down with the tray). It is not a ground item.
+        private static bool IsServedOnTable(ItemDrop drop, ZNetView nview)
+        {
+            try { if (drop.IsPiece()) return true; } catch (Exception) { }
+            try { var zdo = nview.GetZDO(); return zdo != null && zdo.GetBool(ServedItemFlag); }
+            catch (Exception) { return false; }
+        }
+
         private void CleanupDrops(float radius)
         {
             var pos = LocalPlayer.transform.position;
@@ -4401,6 +4416,7 @@ namespace AdminPanel
                 if (Vector3.Distance(drop.transform.position, pos) > radius) continue;
                 var nview = drop.GetComponent<ZNetView>();
                 if (nview == null || !nview.IsValid()) continue;
+                if (IsServedOnTable(drop, nview)) continue;
                 nview.ClaimOwnership();
                 nview.Destroy();
                 removed++;
