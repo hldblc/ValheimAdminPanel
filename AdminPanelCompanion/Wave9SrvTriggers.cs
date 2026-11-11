@@ -87,7 +87,12 @@ namespace AdminPanelCompanion
             Wave9Rzone.ZoneEntered += (uid, name, zone) => Fire(TZone, uid, name, zone.Name, "{zone}", zone.Name);
             Wave9Prog.BossKilled += kill =>
             {
-                foreach (var p in kill.Present) Fire(TBoss, p.m_uid, p.m_playerName, kill.Boss, "{boss}", kill.Boss);
+                // One kill, several players present: per-player actions (message, give, effect, teleport) run for
+                // each of them, but the world-level ones (broadcast, discord, event) run ONCE per rule. They used
+                // to run once per player present - five players meant five Discord posts and the raid restarted
+                // five times.
+                var globalsDone = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var p in kill.Present) Fire(TBoss, p.m_uid, p.m_playerName, kill.Boss, "{boss}", kill.Boss, globalsDone);
             };
             Wave34Core.OnDeath += d =>
             {
@@ -257,7 +262,10 @@ namespace AdminPanelCompanion
                 JoinSeenAt.Remove(p.m_uid);
                 Fire(TJoin, p.m_uid, p.m_playerName, "", null, null);
             }
-            if (Rules.Count > 0) TimeTick();
+            // Always, even with no rules: TimeTick is what keeps the "previous time of day" current. Skipped
+            // while there were no rules, that value was hours old when the first time-of-day rule was created,
+            // and the "did we cross its time?" test then covered the whole gap - the new rule fired at once.
+            TimeTick();
         }
 
         private static void TimeTick()
@@ -276,12 +284,15 @@ namespace AdminPanelCompanion
                 if (target < 0f) continue;
                 var crossed = prev <= frac ? (prev < target && target <= frac) : (target > prev || target <= frac);   // wraps at midnight
                 if (!crossed) continue;
+                // The world-level actions run with the first player the rule ACTUALLY fires for. Clearing the
+                // flag after the first player looked at - whether or not the rule ran for them (role filter,
+                // cooldown, "first time only") - skipped broadcast/discord/event for everybody that day
+                // whenever that first player happened to be filtered out.
                 var once = true;
                 foreach (var p in Wave9.ReadyPeers())
                 {
                     if (p.m_characterID.IsNone()) continue;
-                    FireRule(r, p.m_uid, p.m_playerName, null, null, once);
-                    once = false;
+                    if (FireRule(r, p.m_uid, p.m_playerName, null, null, once)) once = false;
                 }
             }
         }
@@ -296,7 +307,11 @@ namespace AdminPanelCompanion
             return (h * 60 + m) / 1440f;
         }
 
-        private static void Fire(int trig, long uid, string name, string subject, string token, string tokenValue)
+        // globalsDone: null = every call may run the world-level actions (one event, one player). When one
+        // event is delivered for several players, pass the same set to each call: a rule's world-level actions
+        // then run for the first player it fires for and are skipped for the rest.
+        private static void Fire(int trig, long uid, string name, string subject, string token, string tokenValue,
+            HashSet<string> globalsDone = null)
         {
             if (!Wave9.IsServer) return;
             Load();
@@ -304,7 +319,8 @@ namespace AdminPanelCompanion
             {
                 if (!r.On || r.Trig != trig) continue;
                 if (!Matches(r, subject)) continue;
-                FireRule(r, uid, name, token, tokenValue, true);
+                var global = globalsDone == null || !globalsDone.Contains(r.Id);
+                if (FireRule(r, uid, name, token, tokenValue, global) && globalsDone != null) globalsDone.Add(r.Id);
             }
         }
 
@@ -324,20 +340,21 @@ namespace AdminPanelCompanion
             }
         }
 
-        private static void FireRule(Rule r, long uid, string name, string token, string tokenValue, bool globalActions)
+        // Returns true when the rule actually ran its actions for this player (false = filtered out).
+        private static bool FireRule(Rule r, long uid, string name, string token, string tokenValue, bool globalActions)
         {
             var id = PlayerId(uid);
-            if (r.Role == 1 && !CompanionPlugin.FeatureIsAdminId(id)) return;
-            if (r.Role == 2 && CompanionPlugin.FeatureIsAdminId(id)) return;
+            if (r.Role == 1 && !CompanionPlugin.FeatureIsAdminId(id)) return false;
+            if (r.Role == 2 && CompanionPlugin.FeatureIsAdminId(id)) return false;
             var now = Time.unscaledTime;
             float last;
             var cooldown = Mathf.Max(r.Cooldown, MinPlayerCooldown(r));
-            if (cooldown > 0 && r.LastFire.TryGetValue(id, out last) && now - last < cooldown) return;
+            if (cooldown > 0 && r.LastFire.TryGetValue(id, out last) && now - last < cooldown) return false;
             var fired = FeatureStore.Table(TblFired);
             var key = r.Id + "|" + id;
-            if (r.First && fired.ContainsKey(key)) return;
+            if (r.First && fired.ContainsKey(key)) return false;
             while (r.Recent.Count > 0 && now - r.Recent.Peek() > 60f) r.Recent.Dequeue();
-            if (r.Recent.Count >= RatePerMinute) { Wave9.ThrottledLog("trig-rate-" + r.Id, $"Trigger '{r.Name}' hit its {RatePerMinute}/minute limit - further fires dropped."); return; }
+            if (r.Recent.Count >= RatePerMinute) { Wave9.ThrottledLog("trig-rate-" + r.Id, $"Trigger '{r.Name}' hit its {RatePerMinute}/minute limit - further fires dropped."); return false; }
             r.Recent.Enqueue(now);
             r.LastFire[id] = now;
             r.Fired++;
@@ -347,6 +364,7 @@ namespace AdminPanelCompanion
             // (handshake not done, player died, item unknown) is tried again next time.
             if (r.First && !anyFailed) { fired[key] = Wave9.I(DateTime.UtcNow.Ticks); FeatureStore.SaveTable(TblFired); }
             CompanionPlugin.SrvAudit(0L, "Trigger", $"'{r.Name}' fired for {name} ({id}): {result}");
+            return true;
         }
 
         // Rules anyone can set off over and over get a per-player floor whatever the configured cooldown: a chat
@@ -426,7 +444,16 @@ namespace AdminPanelCompanion
                     var peer = Wave9.PeerByUid(uid);
                     var pos = peer != null ? Wave9.PeerPos(peer) : (Player.m_localPlayer != null ? Player.m_localPlayer.transform.position : Vector3.zero);
                     if (RandEventSystem.instance == null) return "no event system";
-                    RandEventSystem.instance.SetRandomEventByName(param.Trim(), pos);
+                    // Resolve the name FIRST. SetRandomEventByName looks it up with an exact, case-sensitive
+                    // match on enabled events and passes whatever it found on - and "nothing found" is the
+                    // engine's way of STOPPING the running raid. A typo, different casing or a disabled event
+                    // therefore ended the current raid, reported "ok" and spent "first time only".
+                    string eventName = null;
+                    foreach (var ev in RandEventSystem.instance.m_events)
+                        if (ev != null && ev.m_enabled && string.Equals(ev.m_name, param.Trim(), StringComparison.OrdinalIgnoreCase))
+                        { eventName = ev.m_name; break; }
+                    if (eventName == null) return "unknown event";
+                    RandEventSystem.instance.SetRandomEventByName(eventName, pos);
                     return "ok";
                 }
                 case "give":

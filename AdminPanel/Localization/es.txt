@@ -53,6 +53,8 @@ cat.misc=Varios
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Categoría
+sort.tier_up=Nivel: primero inicial
+sort.tier_down=Nivel: primero final
 sort.faction=Facción
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Paquete a granel solicitado
 items.amount=Cantidad:
 items.quality=Calidad:
 items.legend=Soltar = suelo | Bolsa = tu bolsa | Dar = bolsa del objetivo
+items.tier=Nivel
+items.tier_all=Todos los niveles
+items.tier_none=Sin clasificar
 items.db_not_loaded=Base de objetos no cargada.
 items.drop=Soltar
 items.bag=Bolsa
@@ -301,6 +306,7 @@ set.language=Idioma:
 set.language_hint='Auto' sigue la configuración de idioma de Valheim. Los nombres de objetos y criaturas siempre siguen al juego.
 set.behavior=Comportamiento
 set.camera_lock=Bloquear la cámara mientras el panel está abierto (como el inventario)
+set.move_while_open=Permitir que el personaje se mueva con el panel abierto
 set.panel=Panel
 set.auto_whats_new=Mostrar las novedades una vez tras cada actualización
 set.whats_new=¿Novedades?

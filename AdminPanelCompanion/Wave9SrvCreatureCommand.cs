@@ -79,11 +79,16 @@ namespace AdminPanelCompanion
                 var m = mode; var t = target; var gr = guardRadius; var pt = point;
                 Action<ZDO> apply = zz =>
                 {
+                    var prev = zz.GetInt(KeyCmd, 0);
                     zz.Set(KeyCmd, m);
                     zz.Set(KeyTarget, t);
                     zz.Set(KeyRadius, gr);
                     if (m == 2) { zz.Set(ZDOVars.s_patrolPoint, pt); zz.Set(ZDOVars.s_patrol, true); }
-                    else if (m == 0) zz.Set(ZDOVars.s_patrol, false);
+                    // Only a patrol point WE set (a guard order) is released. The vanilla flag is also how a
+                    // tame told to "stay", an altar-summoned boss and location guardians hold their place, and
+                    // "normal" used to clear it on every creature in the radius whether it had ever been
+                    // ordered or not - the stay tames wandered off and the boss lost its leash.
+                    else if (m == 0 && prev == 2) zz.Set(ZDOVars.s_patrol, false);
                 };
                 apply(z);
                 try { ZDOMan.instance.ForceSendZDO(z.m_uid); } catch (Exception) { }
@@ -173,8 +178,18 @@ namespace AdminPanelCompanion
                         case 4:
                         {
                             var p = FindPlayer(zdo.GetString(KeyTarget, ""));
-                            ch.m_aiCannotTargetOthers = true;
-                            if (p != null && !p.IsDead()) { TargetCreature(__instance) = p; TargetStatic(__instance) = null; }
+                            // NOT m_aiCannotTargetOthers here. MonsterAI.UpdateTarget answers "cannot see, cannot
+                            // hear" at once for a creature that has it set, and the attack branch needs
+                            // canSeeTarget (and an alerted creature): with the flag on, the ordered creature kept
+                            // its forced target and never swung at it. Targeting stays ON; the target is forced
+                            // to the named player every tick and the creature is alerted.
+                            ch.m_aiCannotTargetOthers = false;
+                            if (p != null && !p.IsDead())
+                            {
+                                TargetCreature(__instance) = p;
+                                TargetStatic(__instance) = null;
+                                __instance.Alert();
+                            }
                             break;
                         }
                     }

@@ -17,11 +17,11 @@ namespace AdminPanel
     {
         public const string PluginGuid = "com.halitb.adminpanel";
         public const string PluginName = "AdminPanel";
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.7.0";
         // The Valheim release this build was compiled and tested against (Version.CurrentVersion, Version.cs:168).
         // Compared against the running game's leading major.minor.patch at Awake: a difference is logged once as
         // a warning and disables nothing — the bind probe reports what actually stopped binding.
-        internal const string CompiledForGameVersion = "1.0.20";
+        internal const string CompiledForGameVersion = "1.0.21";
 
         internal static AdminPanelPlugin Instance;
 
@@ -36,6 +36,8 @@ namespace AdminPanel
         private ConfigEntry<bool> _logSkinCfg;    // one-time dump of loaded UI sprite names for skin tuning
         private ConfigEntry<int> _panelAlphaCfg;
         private ConfigEntry<bool> _cameraLockCfg;
+        private ConfigEntry<bool> _moveWhileOpenCfg;
+        private bool _visibleLastFrame;    // _visible as Update last saw it (to notice the panel being hidden)
         private int _fontSizeLive;      // sliders preview live via these; committed to config on mouse-release
         private int _panelAlphaLive;
         private int _rebindTarget;         // 0 = none, 1 = panel toggle key, 2 = map-teleport key
@@ -81,6 +83,7 @@ namespace AdminPanel
             public string Info;        // precomputed one-line stat summary (built in RefreshCaches, never per-frame)
             public string Cat;
             public string Sub;
+            public int Tier;           // progression tier 1..8 (Meadows..Deep North), 0 = not placed; see Features\Wave10_ItemTiers.cs
             public Sprite Icon;
             public bool IconTried;
         }
@@ -268,6 +271,7 @@ namespace AdminPanel
         private long _inspectTargetId;   // peer id of the inspected player — target for Remove actions
         private List<(string name, int stack, int quality)> _inspectInventory;
         private bool _inspectPending;
+        private string _inspectRefusal;   // the server's reason for not forwarding the request (null = none)
         private float _inspectRequestTime;
         private Vector2 _inspectScroll;
 
@@ -351,6 +355,13 @@ namespace AdminPanel
         // Deliberately English-only: this is release-note content, not UI chrome, and it changes every
         // release — translating it would leave every locale permanently one version behind.
         private const string WhatsNewText =
+            "• 2.7.0: Items can be sorted and filtered by progression tier (Meadows to Deep North), worked out from what " +
+            "each item is crafted from. Russian is a panel language. While the panel is open the character no longer " +
+            "walks, jumps or blocks, and keys typed into a panel text box no longer reach the game (Settings has a " +
+            "switch to keep moving). The inventory viewer now says why a player's inventory cannot be shown instead of " +
+            "waiting. Built for Valheim 1.0.21. Fixes: tiered roles ignored for ids written as Steam_<id>; hotkeys " +
+            "firing while typing a map-pin name; broadcasts not reaching players without the mod; a skill cap cutting " +
+            "levels earned elsewhere; and many more (see the changelog).\n\n" +
             "• 2.6.0: fifteen new features. Items the panel creates carry a hidden serial, and Tools › Moderation › " +
             "Provenance finds duplicated or unexplained copies. New cards: Creatures › Command (follow, guard, passive, " +
             "attack), Bosses › Encounter (HP and damage multipliers, enrage timer, fight summary to Discord), a " +
@@ -524,6 +535,66 @@ namespace AdminPanel
             }
         }
 
+        // ---- the rest of the game's input, which Player.TakeInput does not cover ----
+        //
+        // Player.TakeInput only gates what Player.Update itself reads (hotbar, use, hide weapon...). MOVEMENT is
+        // read by PlayerController, which has its OWN private TakeInput and hands walk / jump / crouch / run /
+        // block / dodge straight to Player.SetControls. So with the panel open the character still walked on
+        // WASD, jumped on Space and raised its shield on a right click - and because none of the game's UI
+        // toggles look at this panel either, typing "m", "i", Tab or Enter into a search box opened the map, the
+        // inventory or the chat line underneath it.
+
+        /// <summary>A text box of the panel (or of one of its overlays) has the keyboard.</summary>
+        internal static bool PanelTyping()
+        {
+            var s = Instance;
+            if (s == null) return false;
+            if (!s._visible)
+            {
+                var open = false;
+                for (var i = 0; i < TypingSurfaces.Count && !open; i++)
+                {
+                    try { open = TypingSurfaces[i](); } catch (Exception) { }
+                }
+                if (!open) return false;
+            }
+            return GUIUtility.keyboardControl != 0;
+        }
+
+        // Overlays that take text while the main window is closed (the command palette) add "am I open?" here.
+        internal static readonly List<Func<bool>> TypingSurfaces = new List<Func<bool>>();
+
+        // While a panel text box has the keyboard, answer the game's own "is a text prompt open?" question with
+        // yes. Every place vanilla must stay quiet during text entry already asks it - PlayerController, Player,
+        // the map, the inventory, the chat line, the pause menu, the build menu - and so do well-behaved mods.
+        [HarmonyPatch(typeof(TextInput), "IsVisible")]
+        private static class TypingBlockPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ref bool __result)
+            {
+                if (!__result && PanelTyping()) __result = true;
+            }
+        }
+
+        // The panel is a menu: while it is open the character takes no movement input (what the comment on
+        // InputBlockPatch always promised). [UI] MoveWhilePanelOpen keeps the old behaviour for admins who walk
+        // or fly with it open. `look` is the camera path; that has its own switch (CameraLockWhilePanelOpen).
+        [HarmonyPatch(typeof(PlayerController), "TakeInput")]
+        private static class MoveBlockPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(bool look, ref bool __result)
+            {
+                if (!__result) return;
+                var s = Instance;
+                if (s == null) return;
+                if (PanelTyping()) { __result = false; return; }
+                if (look || !s._visible) return;
+                if (s._moveWhileOpenCfg == null || !s._moveWhileOpenCfg.Value) __result = false;
+            }
+        }
+
         // Hard-block the local player's attacks while the panel is open. TakeInput being false doesn't stop
         // the same mouse click that presses a GUI button from also triggering an attack, so skip StartAttack.
         [HarmonyPatch(typeof(Humanoid), "StartAttack")]
@@ -576,10 +647,16 @@ namespace AdminPanel
             private static void Prefix(Player __instance)
             {
                 if (Instance == null || __instance == null || __instance != Player.m_localPlayer) return;
-                var p = __instance.transform.position;
-                Instance._lastDeathCfg.Value =
-                    string.Format(CultureInfo.InvariantCulture, "{0:0.#},{1:0.#},{2:0.#}", p.x, p.y, p.z);
-                Instance.Config.Save();
+                // Never let this throw: an exception leaving a Harmony prefix skips vanilla Player.OnDeath (no
+                // tombstone, no respawn), and Config.Save is file I/O that fails on a locked or read-only config.
+                try
+                {
+                    var p = __instance.transform.position;
+                    Instance._lastDeathCfg.Value =
+                        string.Format(CultureInfo.InvariantCulture, "{0:0.#},{1:0.#},{2:0.#}", p.x, p.y, p.z);
+                    Instance.Config.Save();
+                }
+                catch (Exception e) { Instance.Logger.LogWarning($"Could not record the death position: {e.Message}"); }
             }
         }
 
@@ -729,10 +806,15 @@ namespace AdminPanel
                 "Panel language. 'Auto' follows Valheim's own language setting. Item and creature names always " +
                 "follow the game regardless of this setting.",
                 new AcceptableValueList<string>(Loc.MenuNames)));
+            Loc.Prime(_languageCfg.Value);   // so a message shown before the panel is ever opened is already translated
             _panelAlphaCfg = Config.Bind("UI", "PanelOpacity", 96, new ConfigDescription(
                 "Panel background opacity in percent.", new AcceptableValueRange<int>(55, 100)));
             _cameraLockCfg = Config.Bind("UI", "CameraLockWhilePanelOpen", true,
                 "Lock mouse-look while the panel is open (like the inventory). Turn off to keep the camera live.");
+            _moveWhileOpenCfg = Config.Bind("UI", "MoveWhilePanelOpen", false,
+                "Let the character keep walking, jumping and blocking while the panel is open. Off (default): the panel " +
+                "behaves like a menu and the character takes no input until it is closed. Either way, typing in one of the " +
+                "panel's text boxes never reaches the game.");
             _showLogoCfg = Config.Bind("UI", "ShowLogoHeader", true,
                 "Show the Advanced Admin Panel logo at the top of the panel.");
             _gameSkinCfg = Config.Bind("UI", "UseGameSkin", true,
@@ -755,8 +837,8 @@ namespace AdminPanel
             {
                 var parts = _windowRectCfg.Value.Split(',');
                 if (parts.Length == 4 &&
-                    float.TryParse(parts[0], out var wx) && float.TryParse(parts[1], out var wy) &&
-                    float.TryParse(parts[2], out var ww) && float.TryParse(parts[3], out var wh))
+                    TryParseNumber(parts[0], out var wx) && TryParseNumber(parts[1], out var wy) &&
+                    TryParseNumber(parts[2], out var ww) && TryParseNumber(parts[3], out var wh))
                     _windowRect = new Rect(wx, wy, ww, wh);
             }
             catch (Exception e) { Logger.LogWarning($"Bad WindowRect config, using default: {e.Message}"); }
@@ -777,6 +859,10 @@ namespace AdminPanel
             catch (Exception e) { Logger.LogWarning($"Attack-block patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(CameraLockPatch)); }
             catch (Exception e) { Logger.LogWarning($"Camera-lock patch failed (panel still works): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(TypingBlockPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Typing guard failed (keys typed into the panel may still reach the game): {e.Message}"); }
+            try { Harmony.CreateAndPatchAll(typeof(MoveBlockPatch)); }
+            catch (Exception e) { Logger.LogWarning($"Movement block failed (the character may still move while the panel is open): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(DeathPointPatch)); }
             catch (Exception e) { Logger.LogWarning($"Death-point patch failed (panel still works): {e.Message}"); }
             try { Harmony.CreateAndPatchAll(typeof(ZoomFreezeCameraTranspiler)); }
@@ -967,6 +1053,9 @@ namespace AdminPanel
             {
                 if (ZRoutedRpc.instance == null) return;
                 ZRoutedRpc.instance.Register<ZPackage>("AP_InvData", OnInventoryData);
+                // The server's "I did not forward that inventory request, and here is why" (companion 2.7.0+).
+                ZRoutedRpc.instance.Register<ZPackage>("AP_InvRefused", OnInventoryRefused);
+                AdminPanelLocalBridge.Register("AP_InvRefused", ParseInventoryRefused);
                 ZRoutedRpc.instance.Register<string>("AP_VersionData", OnVersionData);
                 ZRoutedRpc.instance.Register<string>("AP_HealthData", OnHealthData);
                 // 2.5.x server-truth replies (companion → requesting admin). Parsed defensively like
@@ -1222,8 +1311,32 @@ namespace AdminPanel
                 }
                 self._inspectInventory = list;
                 self._inspectPending = false;
+                self._inspectRefusal = null;
             }
             catch (Exception) { /* malformed/truncated packet — drop it rather than throw out of the RPC dispatch */ }
+        }
+
+        // The server did not forward the inventory request (the player is not known to run the companion, is
+        // dead or loading, or has left). Before this reply existed the viewer sat on "Waiting for response..."
+        // and then guessed; the server's own explanation went to a centre-screen line hidden behind the panel.
+        private static void OnInventoryRefused(long sender, ZPackage pkg)
+        {
+            var self = Instance;
+            if (self == null || !SenderIsServerReply(sender)) return;
+            try { ParseInventoryRefused(self, pkg); }
+            catch (Exception) { /* malformed packet: the 5 s "no response" line still covers it */ }
+        }
+
+        private static void ParseInventoryRefused(AdminPanelPlugin self, ZPackage pkg)
+        {
+            if (pkg.ReadInt() != 1) return;
+            var target = pkg.ReadLong();
+            var why = pkg.ReadString();
+            if (target == 0L || target != self._inspectTargetId) return;   // an answer about an earlier click
+            if (why != null && why.Length > 400) why = why.Substring(0, 400);
+            self._inspectInventory = null;
+            self._inspectPending = false;
+            self._inspectRefusal = string.IsNullOrEmpty(why) ? Loc.T("players.no_response") : why;
         }
 
         private static long PeerIdOf(ZNet.PlayerInfo info) => info.m_characterID.UserID;
@@ -1245,12 +1358,33 @@ namespace AdminPanel
             return ZDOMan.GetSessionID();
         }
 
+        // The uid a listen host addresses its own in-process companion by: its session id, which routed RPCs
+        // dispatch locally without sending anything. 0 (= everybody) only when there is no session at all, in
+        // which case the old behaviour is the best that can be done.
+        internal static long HostSelfUid() =>
+            ZNet.instance != null && ZNet.instance.IsServer() && ZDOMan.instance != null ? ZDOMan.GetSessionID() : 0L;
+
         // ==================== Lifecycle ====================
         private void Update()
         {
+            // Only the open Settings tab listens for a rebind. When the panel was hidden some other way while it
+            // was listening (the title-bar ×, a logout, the pad's Back) the flag stayed set, and because every
+            // hotkey below is gated on it, F7, the map-teleport key and the palette key were dead until restart.
+            if (!_visible && _rebindTarget != 0) _rebindTarget = 0;
+
+            // The moment the panel is hidden, give up the keyboard focus one of its text boxes may still hold.
+            // IMGUI keeps "which control has the keyboard" until something else takes it, so a search box that
+            // was focused when the panel closed would otherwise still count as "typing" - and a hotkey bound to
+            // a letter could never open the panel again.
+            if (_visible != _visibleLastFrame)
+            {
+                _visibleLastFrame = _visible;
+                if (!_visible) GUIUtility.keyboardControl = 0;
+            }
+
             // While the Settings tab is listening for a rebind, the hotkeys are suppressed so pressing the key
             // being (re)assigned doesn't also fire its old action in the same frame.
-            if (_rebindTarget == 0 && Input.GetKeyDown(_toggleKey.Value))
+            if (_rebindTarget == 0 && Input.GetKeyDown(_toggleKey.Value) && !HotkeyIsBeingTyped(_toggleKey.Value))
             {
                 _visible = !_visible;
                 if (_visible)
@@ -1286,7 +1420,8 @@ namespace AdminPanel
             // map-point teleport: full map open + hover a spot + press the map-teleport key
             if (_gate == Gate.Ok || _gate == Gate.OldCompanion)
             if (_rebindTarget == 0 && Input.GetKeyDown(_mapTpKey.Value) && LocalPlayer != null &&
-                Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large)
+                Minimap.instance != null && Minimap.instance.m_mode == Minimap.MapMode.Large &&
+                !HotkeyIsBeingTyped(_mapTpKey.Value))
             {
                 TeleportToMapCursor();
             }
@@ -1406,6 +1541,7 @@ namespace AdminPanel
             _openDropdown = null; _openDropdownLayout = null;
             _sideMode = SideMode.None;
             _inspectPlayerName = null; _inspectInventory = null; _inspectPending = false; _inspectTargetId = 0;
+            _inspectRefusal = null;
             _joinLog.Clear(); _lastSeenPlayers.Clear(); _seenPlayersInit = false;
             _skillTargetId = 0; _skillMsg = ""; _seTargetId = 0;
             ResetPlayerTargets();                   // remote skill levels + pending position lookup (PlayerTargets.cs)
@@ -1462,6 +1598,40 @@ namespace AdminPanel
         }
 
         private static Player LocalPlayer => Player.m_localPlayer;
+
+        // Numbers a person types (coordinates) or the config stores. Never the OS culture: Unity runs on it, and
+        // on a comma-decimal system (tr-TR, de-DE, fr-FR...) "1234.5" parsed as 12345 because '.' is the group
+        // separator there - a teleport to the wrong place. Both '.' and ',' are read as the decimal mark.
+        internal static bool TryParseNumber(string s, out float value)
+        {
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            return float.TryParse(s.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                   && !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        // A hotkey bound to a key that produces text must not fire while the game is taking text: naming a map
+        // pin with the map-teleport key in the name teleported the admin to the cursor mid-word, and the same
+        // went for the chat line, the console and sign/tame name boxes. Keys that type nothing (F-keys, mouse
+        // buttons, arrows) keep working everywhere, as before.
+        internal static bool HotkeyIsBeingTyped(KeyCode key)
+        {
+            var k = (int)key;
+            var typing = (k >= (int)KeyCode.Backspace && k <= (int)KeyCode.Return)
+                      || (k >= (int)KeyCode.Space && k <= (int)KeyCode.Delete)
+                      || (k >= (int)KeyCode.Keypad0 && k <= (int)KeyCode.KeypadEquals);
+            if (!typing) return false;
+            try
+            {
+                if (GUIUtility.keyboardControl != 0) return true;                       // one of the panel's own text fields
+                if (global::Console.IsVisible()) return true;                           // the game's console, not System.Console
+                if (Chat.instance != null && Chat.instance.HasFocus()) return true;
+                if (TextInput.IsVisible()) return true;
+                if (Minimap.InTextInput()) return true;
+            }
+            catch (Exception) { /* a UI singleton mid-teardown: treat as "not typing" */ }
+            return false;
+        }
 
         // Minimap.ScreenToWorldPoint is non-public — reflect it once and cache.
         private static System.Reflection.MethodInfo _screenToWorld;
@@ -1677,20 +1847,26 @@ namespace AdminPanel
             _subCatsKey = null;
             if (ObjectDB.instance != null)
             {
+                TierRefreshNames();   // biome names in the game's language, before the rows that quote them
                 _itemIndex = ObjectDB.instance.m_items
                     .Select(go => go.GetComponent<ItemDrop>())
                     .Where(id => id != null)
                     .Select(id =>
                     {
                         var (cat, sub) = Categorize(id);
+                        var tier = ItemTiers.Of(id);
+                        var stats = BuildStatLine(id.m_itemData.m_shared);
+                        var tag = TierTag(tier);
                         return new ItemEntry
                         {
                             Drop = id,
                             Prefab = id.name,
                             Display = LocalizeSafe(id.m_itemData.m_shared.m_name, id.name),
-                            Info = BuildStatLine(id.m_itemData.m_shared),
+                            // "T3 Swamp · Slash 55": where the item sits in the progression, then what it does.
+                            Info = tag.Length == 0 ? stats : (string.IsNullOrEmpty(stats) ? tag : tag + " · " + stats),
                             Cat = cat,
-                            Sub = sub
+                            Sub = sub,
+                            Tier = tier
                         };
                     })
                     .OrderBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display)
@@ -2534,7 +2710,8 @@ namespace AdminPanel
             // fires on stray clicks and the resize end double-saves.
             if (_windowRect == _lastSavedRect) return;
             _lastSavedRect = _windowRect;
-            _windowRectCfg.Value = $"{_windowRect.x:0},{_windowRect.y:0},{_windowRect.width:0},{_windowRect.height:0}";
+            _windowRectCfg.Value = string.Format(CultureInfo.InvariantCulture, "{0:0},{1:0},{2:0},{3:0}",
+                _windowRect.x, _windowRect.y, _windowRect.width, _windowRect.height);
             Config.Save();
         }
 
@@ -2789,6 +2966,11 @@ namespace AdminPanel
             if (s == 0L && !(ZNet.instance != null && ZNet.instance.IsServer()))
             { Message(Loc.T("common.not_connected_srv")); return; }
             if (ZRoutedRpc.instance == null) return;
+            // A listen host has no server peer (s == 0), and 0 is ZRoutedRpc.Everybody: the request was handled
+            // in-process AND routed to every connected client, so each player's client received every admin
+            // payload (staff chat lines, direct messages, ban ids, target uids). Addressing our own session id
+            // is dispatched in-process only (ZRoutedRpc.InvokeRoutedRPC) and reaches the companion the same way.
+            if (s == 0L) s = HostSelfUid();
             ZRoutedRpc.instance.InvokeRoutedRPC(s, method, parameters);
         }
 
@@ -2883,7 +3065,8 @@ namespace AdminPanel
             _labelsLang = Loc.ActiveCode;
             _mainCatLabels = new string[MainCatKeys.Length];
             for (var i = 0; i < MainCatKeys.Length; i++) _mainCatLabels[i] = Loc.T(MainCatKeys[i]);
-            _itemSortLabels = new[] { Loc.T("sort.az"), Loc.T("sort.za"), Loc.T("sort.category") };
+            _itemSortLabels = new[] { Loc.T("sort.az"), Loc.T("sort.za"), Loc.T("sort.category"), Loc.T("sort.tier_up"), Loc.T("sort.tier_down") };
+            if (_itemTierLabels != null && _itemTierLabels.Length > 0) TierRefreshNames();   // "All tiers" / "Not placed" follow the panel language
             _creatureSortLabels = new[] { Loc.T("sort.az"), Loc.T("sort.za"), Loc.T("sort.faction") };
         }
 
@@ -2981,7 +3164,7 @@ namespace AdminPanel
         private List<ItemEntry> FilteredItems()
         {
             var q = DebounceSearch(_itemSearch, ref _itemSearchApplied, ref _itemSearchLastSeen, ref _itemSearchDirtyAt);
-            var key = $"{_mainCat}|{_subCat}|{q}|{_favVersion}|{_recentItems.Count}|{_recentVersion}|{_itemSort}";
+            var key = $"{_mainCat}|{_subCat}|{q}|{_favVersion}|{_recentItems.Count}|{_recentVersion}|{_itemSort}|{_itemTier}";
             if (_filteredItemsCache != null && key == _itemFilterKey) return _filteredItemsCache;
 
             IEnumerable<ItemEntry> src = _itemIndex;
@@ -2996,6 +3179,7 @@ namespace AdminPanel
                 src = src.Where(e =>
                     e.Display.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
                     e.Prefab.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (_itemTier != 0) src = src.Where(e => TierFilterMatches(e.Tier));   // "only Swamp-tier gear"
 
             if (_mainCat != "Recent") // Recent keeps its most-recent-first order
             {
@@ -3011,6 +3195,10 @@ namespace AdminPanel
                 {
                     case 1: ord = ord.ThenByDescending(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
                     case 2: ord = ord.ThenBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    // By progression tier (Meadows first, or endgame first), then grouped the way the category
+                    // sort groups them, so one tier reads as "its weapons, its armour, its food, its materials".
+                    case 3: ord = ord.ThenBy(e => TierSortKey(e.Tier, false)).ThenBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
+                    case 4: ord = ord.ThenBy(e => TierSortKey(e.Tier, true)).ThenBy(e => e.Cat).ThenBy(e => e.Sub).ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
                     default: ord = ord.ThenBy(e => e.Display, StringComparer.OrdinalIgnoreCase); break;
                 }
                 src = ord;
@@ -3165,8 +3353,17 @@ namespace AdminPanel
                 CycleGiveTarget(others);
             GUILayout.Label(Loc.T("items.legend"), _labelStyle);
             GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+
+            // Tier filter + sort on a row of their own: together with the give target they do not fit the
+            // panel's minimum width (and a clipped dropdown is a dropdown nobody can read).
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (_itemTierLabels == null) TierRefreshNames();
+            DropdownButton("itemTier", Loc.T("items.tier"), _itemTierLabels, _itemTier, 170);
             DropdownButton("itemSort", Loc.T("common.sort"), _itemSortLabels, _itemSort, 150);
             GUILayout.EndHorizontal();
+            if (DropdownOptions("itemTier", _itemTierLabels, ref _itemTier, 170)) _itemScroll = Vector2.zero;
             DropdownOptions("itemSort", _itemSortLabels, ref _itemSort, 150);
 
             if (_itemIndex == null) { GUILayout.Label(Loc.T("items.db_not_loaded"), _labelStyle); return; }
@@ -3178,7 +3375,7 @@ namespace AdminPanel
             // BeginScrollView reassigning _itemScroll mid-pass causes the IMGUI "control N in a group with only N
             // controls" crash (same fix as DrawCreaturesTab).
             const float rowH = 32f;
-            float viewH = ListView(330f);
+            float viewH = ListView(360f);   // 330 + the tier/sort row added above the list
             if (Event.current.type == EventType.Layout || _itemWindowList == null)
             {
                 _itemWindowList = FilteredItems();
@@ -3661,6 +3858,17 @@ namespace AdminPanel
                     GUILayout.Label(RemoteSkillsStatus(), _hintStyle);
                 }
                 var skills = player.GetSkills();
+                // Own levels come from GetSkillList, never GetSkillLevel: the engine's GetSkillLevel/GetSkill ADD
+                // a missing skill to the save, so merely opening this list wrote every untrained skill into the
+                // admin's own character at level 0 (the companion avoids the same trap in SendSkillData).
+                Dictionary<Skills.SkillType, float> ownLevels = null;
+                if (!remoteSkills)
+                {
+                    ownLevels = new Dictionary<Skills.SkillType, float>();
+                    if (skills != null)
+                        foreach (var s in skills.GetSkillList())
+                            if (s != null && s.m_info != null) ownLevels[s.m_info.m_skill] = s.m_level;
+                }
                 // Fill the window instead of a fixed 220px stub. Reserve covers the outer Player scroll's
                 // base (130) plus this card's header, the Apply-to row, the "All skills" buttons row, the
                 // browser toggle and the Custom row - and, for a remote target, the note row, its hint and the
@@ -3670,7 +3878,8 @@ namespace AdminPanel
                 {
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(type.ToString(), _cellStyle, GUILayout.Width(130));
-                    var level = remoteSkills ? RemoteSkillLevel(type) : skills.GetSkillLevel(type).ToString("0.#");
+                    var level = remoteSkills ? RemoteSkillLevel(type)
+                        : (ownLevels.TryGetValue(type, out var ownLevel) ? ownLevel : 0f).ToString("0.#");
                     GUILayout.Label(Loc.T("player.level_short", level), _headerStyle, GUILayout.MinWidth(60));
                     GUILayout.FlexibleSpace();
                     if (GUILayout.Button("−10", _buttonStyle, GUILayout.MinWidth(44))) RaiseSkill(type, -10);
@@ -4014,7 +4223,7 @@ namespace AdminPanel
             GUILayout.Label("Z:", _labelStyle, GUILayout.MinWidth(18));
             _tpZ = GUILayout.TextField(_tpZ, _textFieldStyle, GUILayout.Width(58));
             if (GUILayout.Button(Loc.T("world.go"), _buttonStyle, GUILayout.MinWidth(40)) &&
-                float.TryParse(_tpX, out var x) && float.TryParse(_tpY, out var y) && float.TryParse(_tpZ, out var z))
+                TryParseNumber(_tpX, out var x) && TryParseNumber(_tpY, out var y) && TryParseNumber(_tpZ, out var z))
             {
                 LocalPlayer.TeleportTo(new Vector3(x, y <= 0 ? 200 : y, z), LocalPlayer.transform.rotation, true);
                 Message(Loc.T("world.msg_teleporting"));
@@ -4328,9 +4537,15 @@ namespace AdminPanel
             GUILayout.Label(_inspectPlayerName ?? Loc.T("players.pick_player"), _labelStyle);
             if (_inspectPending)
             {
-                GUILayout.Label(Time.time - _inspectRequestTime > 5f
+                // Real time, not Time.time: a paused single-player game freezes Time.time, which left this line
+                // on "Waiting for response..." for as long as the pause lasted.
+                GUILayout.Label(Time.realtimeSinceStartup - _inspectRequestTime > 5f
                     ? Loc.T("players.no_response")
-                    : Loc.T("players.waiting"), _labelStyle);
+                    : Loc.T("players.waiting"), _hintStyle);
+            }
+            else if (_inspectRefusal != null)
+            {
+                GUILayout.Label(_inspectRefusal, _hintStyle);
             }
             else if (_inspectInventory != null)
             {
@@ -4376,8 +4591,9 @@ namespace AdminPanel
             _inspectPlayerName = name;
             _inspectTargetId = uid;
             _inspectInventory = null;
+            _inspectRefusal = null;
             _inspectPending = true;
-            _inspectRequestTime = Time.time;
+            _inspectRequestTime = Time.realtimeSinceStartup;
             SrvRpc("AP_SrvReqInv", uid);
         }
 
@@ -4818,7 +5034,10 @@ namespace AdminPanel
                 {
                     if (content.Length > 1900) content = content.Substring(0, 1900) + "…";
                     form.Add(new System.Net.Http.StringContent(
-                        "{\"content\":" + JsonString(content) + ",\"thread_name\":" + JsonString(threadName) + "}",
+                        // allowed_mentions: a report is free text from any user of the mod, and without this an
+                        // "@everyone" in it pings the whole bug-report server.
+                        "{\"content\":" + JsonString(content) + ",\"thread_name\":" + JsonString(threadName) +
+                        ",\"allowed_mentions\":{\"parse\":[]}}",
                         Encoding.UTF8, "application/json"), "payload_json");
                     if (jpg != null)
                     {
@@ -5045,6 +5264,8 @@ namespace AdminPanel
             BeginCard(Loc.T("set.behavior"));
             var cam = GUILayout.Toggle(_cameraLockCfg.Value, " " + Loc.T("set.camera_lock"), _toggleStyle);
             if (cam != _cameraLockCfg.Value) { _cameraLockCfg.Value = cam; Config.Save(); }
+            var mov = GUILayout.Toggle(_moveWhileOpenCfg.Value, " " + Loc.T("set.move_while_open"), _toggleStyle);
+            if (mov != _moveWhileOpenCfg.Value) { _moveWhileOpenCfg.Value = mov; Config.Save(); }
 
             EndCard();
 

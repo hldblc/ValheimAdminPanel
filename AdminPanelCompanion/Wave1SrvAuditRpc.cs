@@ -199,16 +199,14 @@ namespace AdminPanelCompanion
             {
                 var line = all[i];
                 if (string.IsNullOrEmpty(line)) continue;
-                var f = line.Split('|');
-                var hit = false;
-                for (var j = 0; j < f.Length && j < 4; j++)
-                {
-                    var v = f[j].Trim();
-                    if (v.Length == 0) continue;
-                    if (string.Equals(v, id, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(v, bare, StringComparison.OrdinalIgnoreCase)) { hit = true; break; }
-                }
-                if (hit) res.Add(line);
+                // time|platformId|speaker|text (Wave1SrvChat.RecordHistory). Only field 1 is an id the SERVER
+                // wrote. Matching the speaker name and the start of the text as well let a player put a line
+                // into someone else's rap sheet by naming themselves, or typing, that player's id.
+                var f = line.Split(new[] { '|' }, 4);
+                if (f.Length < 4) continue;
+                var v = f[1].Trim();
+                if (v.Length == 0) continue;
+                if (SameId(v, id) || string.Equals(v, bare, StringComparison.OrdinalIgnoreCase)) res.Add(line);
             }
             res.Reverse();   // oldest first, newest LAST — same ordering as every other log payload
             return res;
@@ -260,7 +258,9 @@ namespace AdminPanelCompanion
             if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return;
 
             var content = text.Length > WebhookContentCap ? text.Substring(0, WebhookContentCap) : text;
-            var body = Encoding.UTF8.GetBytes("{\"content\":\"" + JsonEscape(content) + "\"}");
+            // allowed_mentions with an empty parse list: the text carries player-chosen names (kick, freeze, death
+            // snapshot, queue lines), and a character called "@everyone" would otherwise ping the whole Discord.
+            var body = Encoding.UTF8.GetBytes("{\"content\":\"" + JsonEscape(content) + "\",\"allowed_mentions\":{\"parse\":[]}}");
 
             PrepareTls();
             // Fire-and-forget: a slow/dead webhook must never stall the server's main thread. Everything

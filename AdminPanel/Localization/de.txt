@@ -53,6 +53,8 @@ cat.misc=Sonstiges
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Kategorie
+sort.tier_up=Stufe: früh zuerst
+sort.tier_down=Stufe: spät zuerst
 sort.faction=Fraktion
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Massenpaket angefordert
 items.amount=Menge:
 items.quality=Qualität:
 items.legend=Drop = Boden | Beutel = dein Beutel | Geben = Beutel des Ziels
+items.tier=Stufe
+items.tier_all=Alle Stufen
+items.tier_none=Nicht eingeordnet
 items.db_not_loaded=Gegenstands-DB nicht geladen.
 items.drop=Drop
 items.bag=Beutel
@@ -301,6 +306,7 @@ set.language=Sprache:
 set.language_hint='Auto' übernimmt Valheims eigene Spracheinstellung. Gegenstands- und Kreaturennamen folgen immer dem Spiel.
 set.behavior=Verhalten
 set.camera_lock=Kamera sperren, während das Panel offen ist (wie beim Inventar)
+set.move_while_open=Figur darf sich bewegen, während das Panel offen ist
 set.panel=Panel
 set.auto_whats_new=Neuerungen einmal nach jedem Update anzeigen
 set.whats_new=Neuerungen?

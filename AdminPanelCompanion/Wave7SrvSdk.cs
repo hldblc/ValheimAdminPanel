@@ -159,7 +159,15 @@ namespace AdminPanelCompanion
                     return;
                 }
                 OnDryRunSet(senderUid, on);
-                Wave1Moderation.SendPlayerText(senderUid, on ? "Dry-run ON (simulate)" : "Dry-run OFF");
+                // Report the state that RESULTED, not the one that was asked for: OnDryRunSet refuses when the
+                // server has AllowDryRunMode off (or the session cap is hit), and its own notice is an AP_Msg
+                // that a client without the panel never shows. Answering "Dry-run ON" regardless told an
+                // admin they were simulating while every action they then took was real.
+                var isOn = DryRunAllowed && DryRunOn.Contains(id);
+                Wave1Moderation.SendPlayerText(senderUid,
+                    isOn ? "Dry-run ON (simulate)"
+                    : on ? "Dry-run could NOT be turned on (it is disabled on this server, or too many sessions use it). Your actions are REAL."
+                    : "Dry-run OFF");
             }
             catch (Exception e) { CompanionPlugin.FeatureLog($"!dryrun failed: {e.Message}"); }
         }
@@ -278,6 +286,10 @@ namespace AdminPanelCompanion
         public static bool RegisterAdminRpc(string actionName, string roleGrant = null)
         {
             if (string.IsNullOrEmpty(actionName) || !Enabled()) return false;
+            // The companion's own actions are not for other plugins to re-grant: naming one of them here with
+            // a role (say "AP_SrvEcoAdjust", "moderator") would have added an owner-only action to that
+            // built-in role for every admin holding it. Use a prefix of your own, as documented above.
+            if (actionName.StartsWith("AP_Srv", StringComparison.OrdinalIgnoreCase)) return false;
             try { CompanionPlugin.RegisterAuditedRpc(actionName, roleGrant); return true; }
             catch (Exception) { return false; }
         }

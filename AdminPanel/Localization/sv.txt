@@ -53,6 +53,8 @@ cat.misc=Övrigt
 sort.az=A–Ö
 sort.za=Ö–A
 sort.category=Kategori
+sort.tier_up=Nivå: tidiga först
+sort.tier_down=Nivå: sena först
 sort.faction=Fraktion
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Bulkpaket begärt
 items.amount=Antal:
 items.quality=Kvalitet:
 items.legend=Släpp = marken | Väska = din väska | Ge = målets väska
+items.tier=Nivå
+items.tier_all=Alla nivåer
+items.tier_none=Ej placerad
 items.db_not_loaded=Föremålsdatabasen är inte laddad.
 items.drop=Släpp
 items.bag=Väska
@@ -301,6 +306,7 @@ set.language=Språk:
 set.language_hint='Auto' följer Valheims egen språkinställning. Namn på föremål och varelser följer alltid spelet.
 set.behavior=Beteende
 set.camera_lock=Lås kameran medan panelen är öppen (som med inventariet)
+set.move_while_open=Låt karaktären röra sig medan panelen är öppen
 set.panel=Panel
 set.auto_whats_new=Visa nyheter en gång efter varje uppdatering
 set.whats_new=Nyheter?

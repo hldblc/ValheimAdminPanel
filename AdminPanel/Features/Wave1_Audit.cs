@@ -227,6 +227,24 @@ namespace AdminPanel
             return r;
         }
 
+        // Chat rows have ONE shape - time|platformId|speaker|text - and only the text may hold '|' (the server
+        // folds pipes out of the first three fields). They used to go through AudParse, which picks columns by
+        // field COUNT: a message with pipes in it shifted the columns, so a player typing
+        // "Alice|Shout|I will burn your base" was shown with Alice as the speaker. Split at most four ways and
+        // the text keeps its pipes while the speaker can no longer be chosen by the message.
+        private static AudRow AudParseChat(string line)
+        {
+            var r = new AudRow { Time = "", Name = "", Action = "", Detail = "" };
+            if (string.IsNullOrEmpty(line)) return r;
+            var p = line.Split(new[] { '|' }, 4);
+            if (p.Length < 4) { r.Detail = line; return r; }
+            r.Time = AudShortTime(p[0]);
+            r.Name = p[2];     // who spoke
+            r.Action = p[1];   // their platform id
+            r.Detail = p[3];
+            return r;
+        }
+
         // ISO-8601 UTC ("2026-07-31T02:28:11Z") -> local "07-31 02:28:11". Unparseable stamps fall back to
         // the raw prefix so a format change on the server degrades to ugly, never to blank.
         private static string AudShortTime(string iso)
@@ -261,7 +279,7 @@ namespace AdminPanel
                 var line = src[i];
                 if (line == null) continue;
                 if (f.Length > 0 && line.IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                rows.Add(AudParse(line));
+                rows.Add(_audViewLayout == 1 ? AudParseChat(line) : AudParse(line));
             }
             _audRowsLayout = rows;
         }
@@ -335,8 +353,10 @@ namespace AdminPanel
                 var chat = _audViewLayout == 1;
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(Loc.T("audit.col_time"), _headerStyle, GUILayout.Width(130));
-                GUILayout.Label(Loc.T("audit.col_who"), _headerStyle, GUILayout.Width(130));
-                GUILayout.Label(chat ? Loc.T("audit.col_channel") : Loc.T("audit.col_action"), _headerStyle, GUILayout.Width(150));
+                // Chat view: speaker, then their platform id (it used to print the id under "Admin" and the name
+                // under "Channel" - the log has no channel field at all).
+                GUILayout.Label(chat ? Loc.T("pdat.col_player") : Loc.T("audit.col_who"), _headerStyle, GUILayout.Width(130));
+                GUILayout.Label(chat ? Loc.T("pdat.col_id") : Loc.T("audit.col_action"), _headerStyle, GUILayout.Width(150));
                 GUILayout.Label(chat ? Loc.T("audit.col_msg") : Loc.T("audit.col_result"), _headerStyle, GUILayout.MinWidth(120));
                 GUILayout.EndHorizontal();
 

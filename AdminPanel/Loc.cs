@@ -37,14 +37,16 @@ namespace AdminPanel
         internal static bool NeedsFallbackFont { get; private set; }
 
         // Shipped translations. Keep in sync with the embedded resources in the .csproj.
-        // Latin-script only for now: these all render with Valheim's Norse/Averia fonts, so no font work is needed.
-        internal static readonly string[] Shipped = { "en", "de", "fr", "es", "it", "pt-BR", "pl", "nl", "sv" };
+        // Latin scripts plus Russian: Valheim's Norsebold font (what "Norse (auto)" picks) carries the Russian
+        // alphabet (U+0410-044F, Ё/ё - see tools\font-glyphs.ps1), so Russian needs no font work either. With a
+        // font that lacks it, ResolveFontSafety moves the panel to Unity's default font as for any other script.
+        internal static readonly string[] Shipped = { "en", "de", "fr", "es", "it", "pt-BR", "pl", "nl", "sv", "ru" };
 
         // Human-readable names for the Settings dropdown, in Shipped order, prefixed by the auto option.
         internal static readonly string[] MenuNames =
         {
             "Auto (game language)", "English", "Deutsch", "Français", "Español", "Italiano",
-            "Português (BR)", "Polski", "Nederlands", "Svenska"
+            "Português (BR)", "Polski", "Nederlands", "Svenska", "Русский (Russian)"
         };
 
         // Valheim reports its language as an English name (Localization.GetSelectedLanguage() -> "German").
@@ -61,6 +63,7 @@ namespace AdminPanel
             { "Polish", "pl" },
             { "Dutch", "nl" },
             { "Swedish", "sv" },
+            { "Russian", "ru" },
         };
 
         /// <summary>
@@ -70,6 +73,7 @@ namespace AdminPanel
         /// </summary>
         internal static void Refresh(string configChoice)
         {
+            _choice = configChoice;
             if (Fallback.Count == 0) LoadInto(Fallback, "en");   // once; English is the permanent safety net
 
             var want = ResolveCode(configChoice);
@@ -80,8 +84,36 @@ namespace AdminPanel
             _loaded = true;
         }
 
+        // The Settings choice as last handed to Refresh (or Prime). T() uses it to load the tables on demand.
+        private static string _choice;
+        // True while "Auto" could not ask the game for its language yet (Localization.instance was null).
+        private static bool _autoPending;
+
+        /// <summary>Remember the Settings choice at startup, without loading anything yet.</summary>
+        internal static void Prime(string configChoice) => _choice = configChoice;
+
+        // Refresh used to run only when the panel opened. Everything that speaks BEFORE the first open - the
+        // map-teleport hotkey, the palette, a server reply - then found both tables empty and showed its raw
+        // key ("[Admin] world.msg_tp_to"). So the first lookup loads the tables itself, and a lookup made
+        // after the game's own language became readable re-resolves "Auto" once.
+        private static void EnsureLoaded()
+        {
+            if (_loaded && !(_autoPending && GameUiReady())) return;
+            try { Refresh(_choice); }
+            catch (Exception e)
+            {
+                _autoPending = false;
+                Debug.LogWarning($"[AdminPanel] locale load failed: {e.Message}");
+            }
+            _loaded = true;   // even on failure: never retry per lookup (OnGUI calls T() thousands of times a frame)
+        }
+
+        // The main menu or a world exists, i.e. the game has built its own Localization. Plain static reads.
+        private static bool GameUiReady() => FejdStartup.instance != null || ZNet.instance != null;
+
         private static string ResolveCode(string configChoice)
         {
+            _autoPending = false;
             // Explicit override wins. MenuNames[0] is the auto option, so index i>0 maps to Shipped[i-1].
             if (!string.IsNullOrEmpty(configChoice))
             {
@@ -89,9 +121,10 @@ namespace AdminPanel
                 if (idx > 0 && idx - 1 < Shipped.Length) return Shipped[idx - 1];
             }
 
-            // Auto: follow the game. Localization.instance is null very early in startup (before FejdStartup
-            // builds it), so this simply stays English until the first call that happens after it exists —
-            // which is why Refresh is cheap and called again on panel open rather than only once in Awake.
+            // Auto: follow the game. Localization.instance builds itself on first access, so it must not be
+            // touched before the game's own startup has (a lookup can now come from anywhere, not only from
+            // the panel opening). Until the main menu or a world exists this stays English and is asked again.
+            if (!GameUiReady()) { _autoPending = true; return "en"; }
             try
             {
                 var lang = Localization.instance != null ? Localization.instance.GetSelectedLanguage() : null;
@@ -160,6 +193,7 @@ namespace AdminPanel
         /// </summary>
         internal static string T(string key)
         {
+            if (!_loaded || _autoPending) EnsureLoaded();
             if (_active.TryGetValue(key, out var v)) return v;
             if (Fallback.TryGetValue(key, out var f)) return f;
             return key;

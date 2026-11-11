@@ -178,11 +178,51 @@ namespace AdminPanelCompanion
         {
             r.Register("AP_SrvProgList", new Action<long>(OnList));
             r.Register<string>("AP_SrvProgReq", OnReq);
+            // A new world session. The record cache is per WORLD: left alone, a host who loaded another save
+            // had every record of the previous world (biomes, tiers, bosses, flags) written into the new
+            // world's table on the next save. FeatureStore drops its own tables on a world change; so must we.
+            Cache.Clear();
+            _dirty = false;
+            _since = 0L;
         }
+
+        // "since" = when this module first ran on THIS world (0 = not read yet, 1 = it predates the marker).
+        private const string TblMeta = Tbl + "_meta";
+        private static long _since;
+
+        private static long Since()
+        {
+            if (_since != 0L) return _since;
+            try
+            {
+                var m = FeatureStore.Table(TblMeta);
+                string raw;
+                if (m.TryGetValue("since", out raw)) _since = Wave9.ParseLong(raw, 0L);
+                if (_since == 0L)
+                {
+                    // Records but no marker: the module was already running here before the marker existed.
+                    _since = FeatureStore.Table(Tbl).Count > 0 ? 1L : DateTime.UtcNow.Ticks;
+                    m["since"] = Wave9.I(_since);
+                    FeatureStore.SaveTable(TblMeta);
+                }
+            }
+            catch (Exception) { if (_since == 0L) _since = DateTime.UtcNow.Ticks; }
+            return _since;
+        }
+
+        // The "N minutes after first joining" rules compare against the first time THIS MODULE saw the player.
+        // On a world that was already being played when the companion was installed, that moment is the
+        // install, not the player's real first join - so every geared veteran (and always the listen host,
+        // who has no presence row) was flagged "tier-5 gear 0 min after first joining" on the first sample.
+        // Anyone first seen within a day of the module's first run here may be such a veteran: the time-based
+        // rules do not apply to them. Players who turn up later are judged as before.
+        private static bool MayPredateTracking(string id, Rec r) =>
+            id == "HOST" || r.First - Since() < TimeSpan.TicksPerHour * 24;
 
         internal static void Tick()
         {
             if (!Wave9.IsServer || !FeatureStore.Ready) return;
+            Since();   // pin "first ran on this world" BEFORE the first sample can write a record
             var now = Time.unscaledTime;
             if (now >= _nextSample)
             {
@@ -259,7 +299,7 @@ namespace AdminPanelCompanion
                     r.Biomes[biome] = now;
                     _dirty = true;
                     if ((biome == (int)Heightmap.Biome.Mistlands || biome == (int)Heightmap.Biome.AshLands || biome == (int)Heightmap.Biome.DeepNorth)
-                        && now - r.First < TimeSpan.TicksPerMinute * 15)
+                        && now - r.First < TimeSpan.TicksPerMinute * 15 && !MayPredateTracking(id, r))
                         Flag(r, id, uid, pos, $"first entered {(Heightmap.Biome)biome} {Minutes(now - r.First)} min after first joining");
                 }
             }
@@ -272,7 +312,7 @@ namespace AdminPanelCompanion
                 if (tier < 2 || r.Tiers.ContainsKey(tier)) continue;
                 r.Tiers[tier] = new KeyValuePair<long, string>(now, itemName);
                 _dirty = true;
-                if (tier >= 4 && now - r.First < TimeSpan.TicksPerMinute * 30)
+                if (tier >= 4 && now - r.First < TimeSpan.TicksPerMinute * 30 && !MayPredateTracking(id, r))
                     Flag(r, id, uid, pos, $"seen with tier-{tier} gear ({itemName}) {Minutes(now - r.First)} min after first joining");
             }
         }

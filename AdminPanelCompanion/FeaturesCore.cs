@@ -108,6 +108,13 @@ namespace AdminPanelCompanion
             FeaturesTickSrvWave9();
         }
 
+        // Audit rows are batched in memory and written from Update at most once a second, so the last second of
+        // admin actions before a clean shutdown never reached audit.log. Write what is still queued on the way out.
+        private void OnApplicationQuit()
+        {
+            try { AuditFlush(); } catch (Exception) { }
+        }
+
         // ---- shared services for wave files ----
 
         // Waves call this when registering their own admin RPCs so the chokepoint covers them too.
@@ -339,15 +346,54 @@ namespace AdminPanelCompanion
         {
             if (string.IsNullOrEmpty(platformId) || platformId == "?") return null;
             var roles = FeatureStore.Table("roles");
-            if (roles.TryGetValue(platformId, out var r)) return r;
+            if (roles.TryGetValue(platformId, out var r)) return r?.Trim();
             var bare = BareId(platformId);
-            return roles.TryGetValue(bare, out r) ? r : null;
+            if (roles.TryGetValue(bare, out r)) return r?.Trim();
+            // The row may carry the prefix while the sender does not: a Steam socket reports the bare
+            // SteamID64, but adminlist.txt and the panel's admin list (so the id an owner pastes) read
+            // "Steam_<id>" or "V_<id>". Missing that row meant "no role" = full owner rights for the very
+            // admin it was meant to restrict (Discord report 2026-10-21: "all admins have full rights").
+            // Trimmed because roles.txt is also edited by hand ("<id> = moderator").
+            if (string.IsNullOrEmpty(bare)) return null;
+            foreach (var kv in roles)
+                if (string.Equals(BareId(kv.Key.Trim()), bare, StringComparison.OrdinalIgnoreCase)) return kv.Value?.Trim();
+            return null;
         }
+
+        // With tiered roles on, a restricted admin (moderator / builder / a custom role) may not kick, ban,
+        // temp-ban, freeze or mute an OWNER-LEVEL admin. The moderator role holds those very actions, so without
+        // this a moderator could ban the one account able to revoke their role. No effect while roles are off,
+        // for an owner-level sender, or against anyone who is not an owner-level admin.
+        internal static bool RankProtects(long sender, string targetHostId, string what)
+        {
+            if (RolesEnabledCfg == null || !RolesEnabledCfg.Value) return false;
+            if (string.IsNullOrEmpty(targetHostId) || IsLocalHostSender(sender)) return false;
+            var senderRole = ResolveRole(SenderPlatformId(sender));
+            if (string.IsNullOrEmpty(senderRole) || senderRole.Equals("owner", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!FeatureIsAdminId(targetHostId)) return false;
+            var targetRole = ResolveRole(targetHostId);
+            if (!string.IsNullOrEmpty(targetRole) && !targetRole.Equals("owner", StringComparison.OrdinalIgnoreCase)) return false;
+            Log($"DENIED {what} from {SenderDisplayName(sender)} ({SenderPlatformId(sender)}): the target {targetHostId} is an owner-level admin");
+            NotifySender(sender, "Refused: that player is an owner-level admin, and your role cannot act against one.");
+            return true;
+        }
+
+        internal static bool RankProtectsUid(long sender, long targetUid, string what) =>
+            RankProtects(sender, HostOfPeer(targetUid), what);
+
+        // One line per admin and session, so "tiered roles are on but X still has full rights" is answered by
+        // the server log instead of by guessing which spelling of the id roles.txt wanted.
+        private static readonly HashSet<string> RoleUnassignedLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private static bool RoleAllows(string platformId, string action)
         {
             var role = ResolveRole(platformId);
-            if (role == null || role.Equals("owner", StringComparison.OrdinalIgnoreCase))
+            if (role == null && !string.IsNullOrEmpty(platformId) && platformId != "?" && platformId != "HOST"
+                && RoleUnassignedLogged.Add(platformId))
+                Log($"Tiered roles: admin {platformId} has no row in roles.txt and therefore keeps full (owner) rights. " +
+                    "Assign one in Tools > Roles, or add '<id>=moderator' / '<id>=builder' to " +
+                    "BepInEx/config/AdminPanelCompanion/<world>/roles.txt and restart the server.");
+            if (string.IsNullOrEmpty(role) || role.Equals("owner", StringComparison.OrdinalIgnoreCase))
                 return true;   // unassigned admins stay fully powered (see BuiltinRoles comment)
             if (BuiltinRoles.TryGetValue(role, out var set) && set.Contains(action)) return true;
             // Custom roles: roleperms.txt maps <role>=<comma-separated RPC names>; "*" is a wildcard.
@@ -385,7 +431,9 @@ namespace AdminPanelCompanion
 
                     if (!AuditedRpcs.TryGetValue(hash, out var action)) return true;
 
-                    var isAdmin = SenderIsAdmin(sender);
+                    // logDenied: false - the handler that runs next makes the same check and writes the line; asking
+                    // here as well doubled every denial in the server log.
+                    var isAdmin = SenderIsAdmin(sender, logDenied: false);
                     var roleOk = !isAdmin || !RolesEnabledCfg.Value || RoleAllows(SenderPlatformId(sender), action);
 
                     if (AuditEnabledCfg.Value)

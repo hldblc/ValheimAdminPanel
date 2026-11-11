@@ -39,7 +39,7 @@
          the matching valheim-modding\decompile-<game version>\ folder. After every game update: rebuild BOTH DLLs, re-run the
          reflection sweep, then bump this in both csproj files together with CompiledForGameVersion in
          AdminPanelPlugin.cs and CompanionPlugin.cs. -->
-    <ValheimSteamBuild>25909357</ValheimSteamBuild>
+    <ValheimSteamBuild>26249040</ValheimSteamBuild>
     <!-- Build id actually installed at build time, read from the live Steam client's appmanifest. Only meaningful for
          the live source (override/steamcmd -> unknown). Ships in the DLL as AssemblyMetadata "ValheimSteamBuild" so the
          companion's health payload can report what it was compiled against. -->

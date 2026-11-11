@@ -313,8 +313,11 @@ namespace AdminPanelCompanion
 
             // Index-addressed ops act on the stack the admin saw, or not at all: a player moving items between the read
             // and the click shifts every index after the change.
+            // Compared against Name, which is what SendChestData shipped and the panel echoes back: the prefab
+            // name, or "#hash" for an item this server cannot resolve (Prefab is "" for those, so comparing
+            // Prefab refused every edit of a modded/unknown stack with "that container changed").
             if ((op == 0 || op == 1) && index >= 0 && index < items.Count && expectPrefab.Length > 0
-                && (items[index].Prefab != expectPrefab || (expectStack >= 0 && items[index].Stack != expectStack)))
+                && (items[index].Name != expectPrefab || (expectStack >= 0 && items[index].Stack != expectStack)))
             {
                 CompanionPlugin.NotifySender(sender, "That container changed since you read it - here is what it holds now.");
                 items.Clear();

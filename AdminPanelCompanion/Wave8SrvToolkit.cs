@@ -52,6 +52,11 @@ namespace AdminPanelCompanion
             CompanionPlugin.RegisterAuditedRpc("AP_SrvGiveEx", "builder");
             CompanionPlugin.RegisterAuditedRpc("AP_SrvRaidStart", "builder");
             CompanionPlugin.RegisterAuditedRpc("AP_SrvRaidStop", "builder");
+            // Watching a running raid is a read, and moderators are meant to be able to: the handler accepted
+            // only a name no role held (or the builder's start grant), so with tiered roles on a moderator's
+            // poll was dropped and the card stayed on "no reply". Granted, not audited.
+            CompanionPlugin.GrantRole("AP_SrvRaidStateReq", "moderator");
+            CompanionPlugin.GrantRole("AP_SrvRaidStateReq", "builder");
 
             ApplyPatch("Wave8ToolkitRpcRegistration", typeof(Wave8ToolkitRpcRegistration),
                 "staff chat / location finder / item forge / raid composer RPCs unavailable");

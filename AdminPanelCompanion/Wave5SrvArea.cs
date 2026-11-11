@@ -383,11 +383,14 @@ namespace AdminPanelCompanion
                 }
             }
 
+            // Player-built pieces only. A piece with creator == 0 is world-generated (a ruin, a location): the
+            // zone code never touches those, and stamping a creator onto one turns it into a "player-placed"
+            // piece (monsters target it, wards and refunds apply to it).
             var matched = 0;
             for (var i = 0; i < Collected.Count; i++)
             {
                 var info = InfoOf(Collected[i]);
-                if (info != null && info.IsPiece) matched++;
+                if (info != null && info.IsPiece && Collected[i].GetLong(KeyCreator, 0L) != 0L) matched++;
             }
 
             if (dryRun)
@@ -410,6 +413,7 @@ namespace AdminPanelCompanion
                 try
                 {
                     if (!zdo.IsValid()) continue;
+                    if (zdo.GetLong(KeyCreator, 0L) == 0L) continue;   // world-generated: see the match pass
                     // Claim first: a write to a ZDO a client owns loses to that client's next sync.
                     zdo.SetOwner(session);
                     if (targetPlayerId != 0L) { zdo.Set(KeyCreator, targetPlayerId); creatorWrites++; }
@@ -514,6 +518,7 @@ namespace AdminPanelCompanion
             // ---- match pass ----
             var candidates = new List<ZDO>();
             var byPrefab = new Dictionary<string, int>(StringComparer.Ordinal);
+            var worldGenSkipped = 0;
             for (var i = 0; i < Collected.Count; i++)
             {
                 var zdo = Collected[i];
@@ -531,6 +536,10 @@ namespace AdminPanelCompanion
                     // Remove targets BUILD PIECES only, so a stray creature, dropped item or terrain
                     // compiler inside the radius is never destroyed by a build cleanup.
                     if (!info.IsPiece) continue;
+                    // ...and only PLAYER-built ones, unless the admin named a prefab: creator == 0 is a
+                    // world-generated ruin or location (a meadows tower, black-marble ruins). A radius that
+                    // overlapped one used to delete it for good along with the base next to it.
+                    if (filter == null && zdo.GetLong(KeyCreator, 0L) == 0L) { worldGenSkipped++; continue; }
                 }
                 if (filter != null && (info.Name == null ||
                     info.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)) continue;
@@ -546,7 +555,8 @@ namespace AdminPanelCompanion
             if (dryRun)
             {
                 CompanionPlugin.NotifySender(sender,
-                    $"Mass {(action == 1 ? "remove" : "repair")} DRY RUN: {matched} object(s) within {radius:0} m{(filter != null ? " matching '" + filter + "'" : "")}.");
+                    $"Mass {(action == 1 ? "remove" : "repair")} DRY RUN: {matched} object(s) within {radius:0} m{(filter != null ? " matching '" + filter + "'" : "")}." +
+                    (worldGenSkipped > 0 ? $" {worldGenSkipped} world-generated piece(s) (ruins, locations) are left alone; name a prefab filter to include them." : ""));
                 SendMassPiece(sender, true, action, matched, 0, byPrefab);
                 return;
             }
@@ -570,7 +580,8 @@ namespace AdminPanelCompanion
             {
                 Wave1AuditRpc.PostModLog($"MASS REMOVE: {affected} piece(s) within {radius:0} m of {x:0}/{z:0} deleted by {admin}");
                 Wave1Moderation.NotifyOnlineAdmins($"Mass remove: {affected} piece(s) deleted by {admin}");
-                CompanionPlugin.NotifySender(sender, $"Removed {affected} of {matched} matched piece(s). Terrain edits are NOT undone by this - the raise/level piece is gone but the ground stays shaped.");
+                CompanionPlugin.NotifySender(sender, $"Removed {affected} of {matched} matched piece(s). Terrain edits are NOT undone by this - the raise/level piece is gone but the ground stays shaped." +
+                    (worldGenSkipped > 0 ? $" {worldGenSkipped} world-generated piece(s) (ruins, locations) were left alone; name a prefab filter to include them." : ""));
             }
             else
             {
@@ -1056,6 +1067,11 @@ namespace AdminPanelCompanion
                 var owner = zdo.GetOwner();
                 var peer = owner != 0L ? FindPeer(owner) : null;
                 if (peer != null && PeerIsAdmin(peer)) { AdoptIntoBaseline(z, id); return; }
+                // Listen server: the host builds with THIS session as the ZDO owner and is never in m_peers,
+                // so the admin exemption above could not see them - every piece the host placed inside their
+                // own no-build zone was deleted within seconds and logged as a violation.
+                if (peer == null && owner == session && ZNet.instance != null && !ZNet.instance.IsDedicated())
+                { AdoptIntoBaseline(z, id); return; }
 
                 zdo.SetOwner(session);
                 man.DestroyZDO(zdo);

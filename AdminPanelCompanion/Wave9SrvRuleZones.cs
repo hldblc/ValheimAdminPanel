@@ -308,8 +308,12 @@ namespace AdminPanelCompanion
             var seen = new HashSet<long>();
             foreach (var p in Wave9.ReadyPeers())
             {
-                if (p.m_characterID.IsNone()) continue;
+                // Still connected, so what we know about them stands - even while they have no character (dead,
+                // waiting to respawn). Forgetting them there meant a player who died and came back at a bed
+                // inside the zone "entered" it again on every death: the entry message and every enter-zone
+                // trigger (a welcome kit, say) could be farmed by dying.
                 seen.Add(p.m_uid);
+                if (p.m_characterID.IsNone()) continue;
                 CheckOne(p.m_uid, p.m_playerName, Wave9.PeerPos(p), heal, p.m_characterID);
             }
             if (Player.m_localPlayer != null && ZNet.instance != null && !ZNet.instance.IsDedicated())

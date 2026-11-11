@@ -78,7 +78,13 @@ namespace AdminPanelCompanion
                     new ConfigDescription("CLIENT setting: how often this client reports its FPS, ping, companion version and plugin list to the server it is connected to (the server shows them in the panel's Client Perf card). Passive.",
                         new AcceptableValueRange<int>(30, 300)));
             // AP_PerfReport / AP_SrvClientPerfReq are plumbing and a timed read: neither is audited.
+            // The read still needs a role grant: gated on a name no role held, it was owner-only once tiered
+            // roles were on, and a moderator's Client Perf card stayed on "no reply" for ever.
+            CompanionPlugin.GrantRole("AP_SrvClientPerfReq", "moderator");
+            CompanionPlugin.GrantRole("AP_SrvClientPerfReq", "builder");
         }
+
+        private static bool _hadPlayer;   // the local player existed on the previous frame
 
         // Every frame. The frame counters cost two increments; everything else waits for the report timer.
         internal static void Tick()
@@ -86,6 +92,16 @@ namespace AdminPanelCompanion
             if (!_inited) return;
             var now = Time.unscaledTime;
             if (_windowStart <= 0f) ResetWindow(now);
+            // Start a clean window the moment the character exists. The window used to be reset only on report
+            // ticks, so the first report after a join (or a respawn) averaged in main-menu and loading frames
+            // and showed the loading stall as "min FPS 1".
+            var hasPlayer = Player.m_localPlayer != null;
+            if (hasPlayer != _hadPlayer)
+            {
+                _hadPlayer = hasPlayer;
+                ResetWindow(now);
+                if (hasPlayer) _nextReport = now + Mathf.Min(ReportSeconds, 20f);
+            }
             _frames++;
             _secondFrames++;
             if (now - _secondStart >= 1f)

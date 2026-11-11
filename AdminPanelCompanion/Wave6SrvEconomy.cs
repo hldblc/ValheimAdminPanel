@@ -1081,8 +1081,25 @@ namespace AdminPanelCompanion
                 }
                 if (string.Equals(current, earned, StringComparison.Ordinal)) continue;   // already at this rank
 
+                // Reward and announce PROMOTIONS only. The stored name also differs after the owner edits
+                // RankThresholdsHours (a tier removed, renamed, or its hours raised): every online player on
+                // that tier was then "moved" to another name, paid RankReward again and announced server-wide
+                // - each config edit minted currency. Such a relabel is recorded quietly.
+                var promoted = current.Length == 0;
+                if (!promoted)
+                {
+                    int curIdx = -1, newIdx = -1;
+                    for (var i = 0; i < ladder.Count; i++)
+                    {
+                        if (string.Equals(ladder[i].Value, current, StringComparison.Ordinal)) curIdx = i;
+                        if (string.Equals(ladder[i].Value, earned, StringComparison.Ordinal)) newIdx = i;
+                    }
+                    promoted = curIdx >= 0 && newIdx > curIdx;
+                }
+
                 table[key] = earned + "|" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture);
                 dirty = true;
+                if (!promoted) continue;
 
                 long balance = 0L;
                 if (reward > 0) balance = Mutate(op.Id, reward, false, $"rank {earned}", 0L, op.Name, true);

@@ -1099,6 +1099,7 @@ namespace AdminPanelCompanion
             var id = CanonicalId(PeerHost(peer));
             var table = OfflineTable(id);
             if (table == null) return;
+            AdoptAltOfflineTables(id, table);
             var t = FeatureStore.Table(table);
             if (t.Count == 0) return;
 
@@ -1485,7 +1486,10 @@ namespace AdminPanelCompanion
             p.Write(item.m_stack);
             p.Write(item.m_quality);
             p.Write(item.m_variant);
-            p.Write(item.m_durability);
+            // 0 on the wire means "full" (the grant convention, see BuildGrantPayload), so a BROKEN item recorded
+            // as 0 came back fully repaired from a restore. Record it as just above zero instead: still broken
+            // for every practical purpose, and readable by every existing client.
+            p.Write(item.m_durability <= 0f && item.m_shared != null && item.m_shared.m_useDurability ? 0.001f : item.m_durability);
             p.Write(item.m_crafterID);
             p.Write(item.m_crafterName ?? "");
             p.Write(item.m_equipped);
@@ -1788,6 +1792,42 @@ namespace AdminPanelCompanion
             return safe.Length == 0 ? null : TblOfflinePrefix + safe;
         }
 
+        // A queue written for a player who had NEVER joined sits under the spelling the admin typed
+        // ("Steam_<id>"): there was no presence row yet to canonicalise it. The join resolves the socket's own
+        // spelling (the bare id on a Steam server), so those rows were never found - not delivered, and
+        // afterwards not even listed. Fold every other spelling's rows into the table the join reads.
+        private static void AdoptAltOfflineTables(string id, string table)
+        {
+            try
+            {
+                var bare = CompanionPlugin.FeatureBareId(id);
+                if (string.IsNullOrEmpty(bare)) return;
+                foreach (var alt in new[] { bare, "Steam_" + bare })
+                {
+                    var altTable = OfflineTable(alt);
+                    if (altTable == null || altTable == table) continue;
+                    var src = FeatureStore.Table(altTable);
+                    if (src.Count == 0) continue;
+                    var dst = FeatureStore.Table(table);
+                    var moved = 0;
+                    foreach (var kv in new List<KeyValuePair<string, string>>(src))
+                    {
+                        if (dst.Count >= OfflineStoreCap) break;
+                        long ticks;
+                        if (!long.TryParse(kv.Key, out ticks)) ticks = DateTime.UtcNow.Ticks;
+                        dst[UniqueKey(dst, ticks).ToString()] = kv.Value;
+                        src.Remove(kv.Key);
+                        moved++;
+                    }
+                    if (moved == 0) continue;
+                    FeatureStore.SaveTable(table);
+                    FeatureStore.SaveTable(altTable);
+                    CompanionPlugin.FeatureLog($"Offline queue: moved {moved} row(s) queued under '{alt}' to '{id}' (same player, other spelling of the id)");
+                }
+            }
+            catch (Exception e) { CompanionPlugin.FeatureLog($"Offline queue: could not merge the other spelling's rows for {id}: {e.Message}"); }
+        }
+
         // Ids reach us as either the full "Platform_id" or the bare id (adminlist leniency, see
         // CompanionPlugin.SenderIsAdmin). Both forms must land on the SAME vault, so an incoming id is mapped
         // onto whichever spelling the presence table already uses for that player.
@@ -1893,7 +1933,11 @@ namespace AdminPanelCompanion
                 {
                     Vector3 pos;
                     if (!ParseTp(detail, out pos)) return false;
-                    normalized = $"{pos.x:0.##}|{pos.y:0.##}|{pos.z:0.##}";
+                    // Invariant on purpose: ParseTp reads these back with InvariantCulture, and on a host
+                    // whose OS locale writes a decimal comma the interpolated form stored "123,45", which
+                    // then failed to parse on every join and left the row queued forever.
+                    var inv = System.Globalization.CultureInfo.InvariantCulture;
+                    normalized = pos.x.ToString("0.##", inv) + "|" + pos.y.ToString("0.##", inv) + "|" + pos.z.ToString("0.##", inv);
                     return true;
                 }
                 case "kit":
@@ -2024,7 +2068,8 @@ namespace AdminPanelCompanion
             if (ZNet.instance == null || string.IsNullOrEmpty(id)) return null;
             foreach (var peer in ZNet.instance.GetPeers())
             {
-                if (peer == null || peer.m_socket == null) continue;
+                // m_uid 0 = still at the password prompt: not a player yet, and 0 as an RPC target means everybody.
+                if (peer == null || peer.m_socket == null || peer.m_uid == 0L) continue;
                 if (Wave1Moderation.IdMatches(id, peer.m_socket.GetHostName())) return peer;
             }
             return null;

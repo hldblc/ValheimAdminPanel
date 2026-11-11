@@ -189,6 +189,7 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { CompanionPlugin.FeatureLog($"AP_SrvTempBan: malformed packet dropped ({e.Message})"); return; }
             if (string.IsNullOrEmpty(id)) return;
+            if (CompanionPlugin.RankProtects(sender, id, "AP_SrvTempBan")) return;
             minutes = Mathf.Clamp(minutes, 1, MaxMinutes);
 
             var admin = CompanionPlugin.SenderDisplayName(sender);
@@ -244,6 +245,13 @@ namespace AdminPanelCompanion
                 CompanionPlugin.SrvAudit(sender, "UNTEMPBAN", $"id={id} result=not-found");
                 return;
             }
+            // Every spelling, not just the first hit: an older table can hold both "Steam_<id>" and "<id>"
+            // (ActiveTempBanKey scans for exactly that), and the row left behind kept refusing the player at
+            // join after the panel had answered "Temp-ban lifted".
+            List<string> same = null;
+            foreach (var kv in t)
+                if (IdMatches(kv.Key, id)) (same ?? (same = new List<string>())).Add(kv.Key);
+            if (same != null) foreach (var k in same) t.Remove(k);
             t.Remove(key);
             FeatureStore.SaveTable(TblTempBans);
             var admin = CompanionPlugin.SenderDisplayName(sender);
@@ -325,6 +333,7 @@ namespace AdminPanelCompanion
                 CompanionPlugin.NotifySender(sender, "Freeze: player is not connected");
                 return;
             }
+            if (CompanionPlugin.RankProtectsUid(sender, uid, "AP_SrvFreeze")) return;
             // m_refPos is the client's own continuously-reported reference position (ZNetPeer.cs:15) — the
             // only position the server has for a player whose character ZDO it does not simulate.
             Frozen[uid] = new FrozenPeer { Pin = peer.m_refPos, Name = peer.m_playerName ?? "?" };
@@ -370,6 +379,7 @@ namespace AdminPanelCompanion
             try { id = CleanId(pkg.ReadString()); reason = CleanText(pkg.ReadString()); }
             catch (Exception e) { CompanionPlugin.FeatureLog($"AP_SrvWarn: malformed packet dropped ({e.Message})"); return; }
             if (string.IsNullOrEmpty(id)) return;
+            if (CompanionPlugin.RankProtects(sender, id, "AP_SrvWarn")) return;   // warnings escalate into a mute / temp-ban
             if (reason.Length == 0) reason = "no reason given";
 
             var t = FeatureStore.Table(TblWarnings);
@@ -816,7 +826,8 @@ namespace AdminPanelCompanion
 
         private static ZNetPeer FindPeerByUid(long uid)
         {
-            if (ZNet.instance == null) return null;
+            // uid 0 is "everybody" and also what a connection still at the password prompt carries.
+            if (ZNet.instance == null || uid == 0L) return null;
             foreach (var peer in ZNet.instance.GetPeers())
                 if (peer != null && peer.m_uid == uid) return peer;
             return null;
@@ -827,7 +838,8 @@ namespace AdminPanelCompanion
             if (ZNet.instance == null || string.IsNullOrEmpty(id)) return null;
             foreach (var peer in ZNet.instance.GetPeers())
             {
-                if (peer == null || peer.m_socket == null) continue;
+                // m_uid 0 = still at the password prompt: not a player yet, and 0 as an RPC target means everybody.
+                if (peer == null || peer.m_socket == null || peer.m_uid == 0L) continue;
                 if (IdMatches(id, peer.m_socket.GetHostName())) return peer;
             }
             return null;

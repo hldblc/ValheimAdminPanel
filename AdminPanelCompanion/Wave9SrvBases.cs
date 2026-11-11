@@ -381,6 +381,11 @@ namespace AdminPanelCompanion
             var radius = Mathf.Sqrt(b.Cells.Count) * Cell + 30f;
             foreach (var p in Wave9.ReadyPeers())
                 if (Wave9.MapDist(Wave9.PeerPos(p), center) < radius) return true;
+            // A listen-server host is a player too, and is never among the peers: without this the "a player
+            // is in or next to that base" refusal never fired for the host, and Ruin/Delete took the pieces out
+            // from under their feet.
+            if (Player.m_localPlayer != null && ZNet.instance != null && !ZNet.instance.IsDedicated() &&
+                Wave9.MapDist(Player.m_localPlayer.transform.position, center) < radius) return true;
             return false;
         }
 
@@ -481,6 +486,7 @@ namespace AdminPanelCompanion
             }
             catch (Exception e) { Wave9.Tell(sender, "Snapshot restore refused (file not readable/movable): " + e.Message); return; }
             var done = 0;
+            var failed = 0;
             try
             {
                 var pkg = new ZPackage(bytes);
@@ -490,6 +496,7 @@ namespace AdminPanelCompanion
                 {
                     var o = Wave9Wdiff.ReadZdo(pkg, ver, true);
                     if (o != null && Wave9Wdiff.Recreate(man, o)) done++;
+                    else failed++;
                 }
             }
             catch (Exception e)
@@ -505,8 +512,11 @@ namespace AdminPanelCompanion
                 File.Move(working, final);
             }
             catch (Exception) { }
-            CompanionPlugin.SrvAudit(sender, "BaseRestore", $"{name}: {done} object(s) recreated");
-            Wave9.Tell(sender, $"Snapshot {name} restored: {done} object(s) recreated.");
+            // Say how many did NOT come back (an unreadable record, a prefab a removed mod used to provide). The
+            // file is set aside after a restore and cannot be run again, so a silent shortfall was a silent loss.
+            var miss = failed > 0 ? $"; {failed} object(s) could NOT be recreated" : "";
+            CompanionPlugin.SrvAudit(sender, "BaseRestore", $"{name}: {done} object(s) recreated{miss}");
+            Wave9.Tell(sender, $"Snapshot {name} restored: {done} object(s) recreated{miss}.");
         }
     }
 }

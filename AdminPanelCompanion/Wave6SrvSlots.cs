@@ -327,7 +327,12 @@ namespace AdminPanelCompanion
                     if (CompanionPlugin.FeatureIsAdminId(host)) return true;   // the reserve exists for them
 
                     var online = OnlinePlayers();
-                    if (online < max - reserved)
+                    // A live hold is one of the free slots already spoken for. Without counting it, a stranger
+                    // who connected inside the hold window took the free slot AND the held player was then
+                    // admitted on top (the branch below) - one non-admin into the admin reserve per cycle, until
+                    // the admins the reserve exists for could not join.
+                    var heldForOther = _holdId != null && DateTime.UtcNow.Ticks < _holdExpiresTicks && !HoldMatches(host);
+                    if (online + (heldForOther ? 1 : 0) < max - reserved)
                     {
                         // Free capacity outside the reserved band: normal join, and they leave the queue.
                         if (HoldMatches(host)) ClearHold();

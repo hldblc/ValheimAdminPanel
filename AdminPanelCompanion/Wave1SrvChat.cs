@@ -149,10 +149,15 @@ namespace AdminPanelCompanion
             try
             {
                 var mutes = FeatureStore.Table("mutes");
+                // One row per identity, whichever spelling it was stored under ("Steam_<id>" or "<id>"):
+                // an unmute by the other spelling used to remove nothing and still answer "Unmuted".
+                List<string> same = null;
+                foreach (var kv in mutes)
+                    if (Wave1AuditRpc.SameId(kv.Key, clean)) (same ?? (same = new List<string>())).Add(kv.Key);
+                if (same != null) foreach (var k in same) mutes.Remove(k);
                 if (minutes <= 0)
                 {
-                    if (mutes.Remove(clean) | mutes.Remove(CompanionPlugin.FeatureBareId(clean)))
-                        FeatureStore.SaveTable("mutes");
+                    if (same != null) FeatureStore.SaveTable("mutes");
                     NotifyId(clean, "You are no longer muted.");
                     return;
                 }
@@ -343,12 +348,11 @@ namespace AdminPanelCompanion
 
         private static bool IsMutedId(Dictionary<string, string> mutes, string id)
         {
-            string raw;
-            if (!mutes.TryGetValue(id, out raw))
-            {
-                var bare = CompanionPlugin.FeatureBareId(id);
-                if (bare == null || !mutes.TryGetValue(bare, out raw)) return false;
-            }
+            // LookupById also matches a row stored WITH the platform prefix against a bare sender id (a Steam
+            // socket reports the bare SteamID64); the old exact/bare pair never did, so a mute typed as
+            // "Steam_<id>" was listed with a countdown and never enforced.
+            var raw = Wave1AuditRpc.LookupById(mutes, id);
+            if (raw == null) return false;
             long ticks;
             if (!long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out ticks)) return false;
             return ticks > DateTime.UtcNow.Ticks;   // expired entries are swept in Tick
@@ -590,6 +594,7 @@ namespace AdminPanelCompanion
 
             id = id != null ? id.Trim() : null;
             if (string.IsNullOrEmpty(id) || id.Contains(" ")) return;
+            if (CompanionPlugin.RankProtects(sender, id, "AP_SrvMute")) return;
             if (minutes < 1) minutes = 1;
             if (minutes > MaxMuteMinutes) minutes = MaxMuteMinutes;
 

@@ -503,12 +503,13 @@ namespace AdminPanelCompanion
                     findings.Add(Make(4, kv.Value[0]));
                     continue;
                 }
-                if (g.Amount > 0 && sum > g.Amount && kv.Value[0].MaxStack > 1)
-                {
-                    var f = Make(2, kv.Value[0]);
-                    f.Where = $"{sum} units carry this serial; the grant made {g.Amount}";
-                    findings.Add(f);
-                }
+                // No "overflow" finding for stackable items (kind 2 is no longer produced). It compared the units
+                // carrying a serial with the units the grant made - but the engine merges a player's OWN pickups
+                // into any stack of the same item with room left (Inventory.FindFreeStackItem matches on name,
+                // quality and world level, never on the custom data that holds the stamp). A granted stack of
+                // 20 Wood therefore "carries the serial" on all 50 after the player chops a tree, and the scan
+                // named them a dupe suspect. That happens to practically every stackable grant, so the rule
+                // accused innocent players far more often than it could ever catch a real duplicate.
                 foreach (var h in kv.Value)
                 {
                     if (h.HolderId.Length == 0 || h.HolderId == "HOST") continue;

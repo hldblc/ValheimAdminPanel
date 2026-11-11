@@ -640,6 +640,10 @@ namespace AdminPanelCompanion
         {
             id = CleanId(id);
             if (id.Length == 0) return;
+            // Adminlist members are outside the anti-cheat rules (the fly rule already said so; health, speed
+            // and noclip did not). The panel's own speed, ghost/fly and health tools trip exactly those three,
+            // so with AcActionMode 1 or 2 an admin was frozen or kicked by their own server for using them.
+            if (escalate && CompanionPlugin.FeatureIsAdminId(id)) return;
             detail = CleanText(detail);
 
             var key = id + "#" + rule;
@@ -1231,6 +1235,11 @@ namespace AdminPanelCompanion
                 if (!Wave1Moderation.IdMatches(rowId, id)) continue;
                 int hits; long ticks; string rule;
                 ParseFlag(kv.Value, out rule, out hits, out ticks);
+                // "progression" rows are registered as a signal, not a verdict (ProgressionFlag: escalate=false).
+                // Counting them here still pushed a player who was merely carried through a boss over the
+                // threshold, so the first real flag afterwards froze or kicked them.
+                var keyRule = hash > 0 ? key.Substring(hash + 1) : rule;
+                if (string.Equals(keyRule, "progression", StringComparison.OrdinalIgnoreCase)) continue;
                 total += Math.Max(0, hits);
             }
             return total;
@@ -1382,7 +1391,8 @@ namespace AdminPanelCompanion
                 if (ZNet.instance == null || string.IsNullOrEmpty(id)) return null;
                 foreach (var peer in ZNet.instance.GetPeers())
                 {
-                    if (peer == null || peer.m_socket == null) continue;
+                    // m_uid 0 = still at the password prompt: not a player yet, and 0 as an RPC target means everybody.
+                    if (peer == null || peer.m_socket == null || peer.m_uid == 0L) continue;
                     if (Wave1Moderation.IdMatches(id, peer.m_socket.GetHostName())) return peer;
                 }
             }

@@ -186,7 +186,12 @@ namespace AdminPanelCompanion
             }
             catch (Exception) { return; }
             if (kind != "selftp" && kind != "piece_rm" && kind != "piece_mv") return;
-            if (data == null || data.Length == 0 || data.Length > DataCap) return;
+            if (data == null || data.Length == 0) return;
+            if (data.Length > DataCap)
+            {
+                JournalDropped(sender, "that object's data is too large to keep for an undo");
+                return;
+            }
 
             // The row will later be executed with server authority by whoever undoes it, so it must describe exactly
             // the harmless inverse it claims: a position, a building piece, or a nearby move of an existing piece.
@@ -222,8 +227,27 @@ namespace AdminPanelCompanion
                     break;
                 }
             }
-            if (!JournalRateOk(sender)) { Wave9.ThrottledLog("undo-rate", $"Journal rows from {sender} over {JournalPerMinute}/min dropped"); return; }
+            if (!JournalRateOk(sender))
+            {
+                Wave9.ThrottledLog("undo-rate", $"Journal rows from {sender} over {JournalPerMinute}/min dropped");
+                JournalDropped(sender, $"more than {JournalPerMinute} actions in a minute");
+                return;
+            }
             Add(sender, kind, kind == "selftp" ? sender : 0L, summary, data);
+        }
+
+        // The panel shows "recorded" as soon as its request has left, so a row the server then dropped was a
+        // removal the admin believed they could undo. Tell them - once per half minute, not once per row.
+        private static readonly Dictionary<long, float> JournalDropTold = new Dictionary<long, float>();
+
+        private static void JournalDropped(long sender, string why)
+        {
+            var now = Time.unscaledTime;
+            float last;
+            if (JournalDropTold.TryGetValue(sender, out last) && now - last < 30f) return;
+            if (JournalDropTold.Count > 64) JournalDropTold.Clear();
+            JournalDropTold[sender] = now;
+            Wave9.Tell(sender, $"Undo timeline: some of your recent actions were NOT recorded ({why}) and cannot be undone from the panel.");
         }
 
         // The target's client reports what a relayed skill raise actually did (the game clamps at 0 and 100).
@@ -498,14 +522,18 @@ namespace AdminPanelCompanion
             var who = NameOf(sender);
             Wave9.Tell(pending.Key, removed >= asked
                 ? $"Undo: took back {removed}x {Wave9.Clean(prefab, 64)} from {who}."
-                : $"Undo: {who} still held {removed} of the {asked}x {Wave9.Clean(prefab, 64)} from that grant; took back what was left (their own items were not touched).");
+                : $"Undo: {who} still held {removed} of the {asked}x {Wave9.Clean(prefab, 64)} from that grant; took back what was left (items they hold in other, unstamped stacks were not touched).");
         }
 
         // ==================== client side (the TARGET's companion) ====================
 
         // Status effects the server's apply ADDED (they were not active before): only those may be removed by an undo,
         // so undoing "applied Rested" never strips a Rested the player earned themselves.
-        private static readonly HashSet<int> AdminAddedSE = new HashSet<int>();
+        // hash -> the real time at which the instance the admin added runs out on its own (infinity for an effect
+        // without a duration). It used to be a plain set that was only ever added to: once an admin had applied
+        // Rested to a player who lacked it, ANY later Rested - one the player earned at a fire long after the
+        // admin's had expired - was still "admin-added", and undoing the old row stripped it.
+        private static readonly Dictionary<int, float> AdminAddedSE = new Dictionary<int, float>();
 
         internal static void NoteEffectApplying(SEMan seman, int hash, out bool hadBefore)
         {
@@ -515,7 +543,15 @@ namespace AdminPanelCompanion
 
         internal static void NoteEffectApplied(int hash, bool hadBefore)
         {
-            if (!hadBefore) AdminAddedSE.Add(hash);
+            if (hadBefore) return;
+            var until = float.PositiveInfinity;
+            try
+            {
+                var se = ObjectDB.instance != null ? ObjectDB.instance.GetStatusEffect(hash) : null;
+                if (se != null && se.m_ttl > 0f) until = Time.realtimeSinceStartup + se.m_ttl + 5f;
+            }
+            catch (Exception) { }
+            AdminAddedSE[hash] = until;
         }
 
         private static void OnRemoveSE(long sender, int hash)
@@ -523,7 +559,10 @@ namespace AdminPanelCompanion
             if (!Wave9.FromServer(sender)) return;
             var p = Player.m_localPlayer;
             if (p == null || hash == 0) return;
-            if (!AdminAddedSE.Remove(hash)) return;   // it was already active (or long gone): leave the player's own effect
+            float until;
+            if (!AdminAddedSE.TryGetValue(hash, out until)) return;   // it was already active: leave the player's own effect
+            AdminAddedSE.Remove(hash);
+            if (Time.realtimeSinceStartup > until) return;            // the admin's instance ran out; what is active now is theirs
             try { p.GetSEMan().RemoveStatusEffect(hash, true); } catch (Exception) { }
         }
 

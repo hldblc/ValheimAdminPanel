@@ -203,7 +203,10 @@ namespace AdminPanelCompanion
         {
             var res = new List<string>();
             if (string.IsNullOrEmpty(filter)) return res;
-            foreach (var part in filter.Split(',', '|', ';'))
+            // '/' as well: the filter arrives through CleanText, which folds '|' to '/' (pipes are the audit
+            // separator), so the documented "Crypt|Cave" reached this split as the single term "Crypt/Cave" and
+            // found nothing while the panel's own preview, which does split on '|', listed matches.
+            foreach (var part in filter.Split(',', '|', ';', '/'))
             {
                 var t = part.Trim();
                 if (t.Length == 0) continue;

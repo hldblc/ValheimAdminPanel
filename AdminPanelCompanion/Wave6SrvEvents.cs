@@ -1385,6 +1385,15 @@ namespace AdminPanelCompanion
                     var id = CleanId(v.Action.Substring(5));
                     var peer = PeerById(id);
                     if (peer == null) { AnnounceAll($"Vote-kick: {id} is not online."); return; }
+                    // A vote must not be a way to remove the server's own admins: a moderator who may start
+                    // votes could otherwise have the owner kicked by whoever happened to be online.
+                    var targetHost = peer.m_socket != null ? peer.m_socket.GetHostName() : null;
+                    if (CompanionPlugin.FeatureIsAdminId(targetHost))
+                    {
+                        AnnounceAll("Vote-kick: the vote passed, but admins cannot be removed by a vote.");
+                        CompanionPlugin.FeatureLog($"Vote-kick of admin {peer.m_playerName} ({id}) refused");
+                        return;
+                    }
                     var name = peer.m_playerName;
                     Wave1Moderation.SendPlayerText(peer.m_uid, "You have been kicked by a player vote.");
                     var ok = CompanionPlugin.FeatureKick(peer.m_uid);
@@ -1705,7 +1714,8 @@ namespace AdminPanelCompanion
             {
                 foreach (var peer in ZNet.instance.GetPeers())
                 {
-                    if (peer == null || peer.m_socket == null) continue;
+                    // m_uid 0 = still at the password prompt: not a player yet, and 0 as an RPC target means everybody.
+                    if (peer == null || peer.m_socket == null || peer.m_uid == 0L) continue;
                     if (Wave1Moderation.IdMatches(platformId, peer.m_socket.GetHostName())) return peer;
                 }
             }

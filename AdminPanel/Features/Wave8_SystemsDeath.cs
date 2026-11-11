@@ -47,6 +47,11 @@ namespace AdminPanel
         // ---- UI state ----
         private float _deathNextReq;
         private bool _deathEditSynced;
+        // Re-seed the edit fields from the NEXT reply. Clearing _deathEditSynced at once (as Apply and Refresh
+        // used to) re-seeded them on the very next Layout pass from the reply that was still in hand - the one
+        // from BEFORE the change - so on a dedicated server the form snapped back to the old values, and the
+        // next Apply quietly sent those old values and turned the rules back off.
+        private bool _deathResyncOnReply;
         private int _deathModeEdit;
         private int _deathModeEditLayout;   // chip row reads this snapshot, never the live field
         private string _deathLivesEdit = "3";
@@ -77,6 +82,7 @@ namespace AdminPanel
             _deathPending = false;
             _deathNextReq = 0f;
             _deathEditSynced = false;
+            _deathResyncOnReply = false;
             _deathModeEdit = 0;
             _deathModeEditLayout = 0;
             _deathLivesEdit = "3";
@@ -128,6 +134,11 @@ namespace AdminPanel
                     });
                 self._deathData = d;
                 self._deathPending = false;
+                if (self._deathResyncOnReply)
+                {
+                    self._deathResyncOnReply = false;
+                    self._deathEditSynced = false;   // the next Layout pass seeds the form from THIS reply
+                }
             }
             catch (Exception) { /* malformed reply — keep whatever we had */ }
         }
@@ -156,9 +167,9 @@ namespace AdminPanel
             pkg.Write(_deathKeepGearEdit);
             pkg.Write(_deathKeepSkillsEdit);
             pkg.Write(_deathAnnounceEdit);
+            _deathResyncOnReply = true;   // BEFORE the send: a listen host's reply arrives inside SrvRpc
             SrvRpc("AP_SrvDeathRulesSet", pkg);
             Message(Loc.T("death.msg_applied"));
-            _deathEditSynced = false;   // the reply re-seeds the fields with what the server actually stored
         }
 
         // op 0 = reset lives (and unlock), 1 = revive (unlock only).
@@ -231,7 +242,7 @@ namespace AdminPanel
             if (GUILayout.Button(Loc.T("death.refresh"), _buttonStyle, GUILayout.MinWidth(90)))
             {
                 _deathNextReq = 0f;          // the next Layout pass sends; never send from the event pass
-                _deathEditSynced = false;
+                _deathResyncOnReply = true;  // and the answer to THAT request re-seeds the form
             }
             GUILayout.FlexibleSpace();
             // One label either way - only the TEXT swaps.

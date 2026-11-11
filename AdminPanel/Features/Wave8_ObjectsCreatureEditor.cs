@@ -218,6 +218,7 @@ namespace AdminPanel
                 if (ZRoutedRpc.instance == null) return;
                 var line = $"{what}|{_ceditPrefab}|{_ceditTargetId}|{value}";
                 if (line.Length > 200) line = line.Substring(0, 200);
+                if (s == 0L) s = HostSelfUid();   // listen host: in-process only, never 0 (= every connected client)
                 ZRoutedRpc.instance.InvokeRoutedRPC(s, "AP_SrvCreatureEditAudit", line);
             }
             catch (Exception) { /* the audit line is best-effort; the edit itself already happened */ }

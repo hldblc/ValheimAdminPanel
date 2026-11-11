@@ -732,9 +732,11 @@ namespace AdminPanelCompanion
         [HarmonyPatch(typeof(Skills), "RaiseSkill")]
         internal static class Wave8RulesSkillsRaisePatch
         {
+            // __state = the skill's level BEFORE this call (0 for a skill that did not exist yet).
             [HarmonyPrefix]
-            private static bool Prefix(Skills __instance, Skills.SkillType skillType, ref float factor)
+            private static bool Prefix(Skills __instance, Skills.SkillType skillType, ref float factor, out float __state)
             {
+                __state = 0f;
                 try
                 {
                     if (!SkillRulesActive() || skillType == Skills.SkillType.None) return true;
@@ -744,6 +746,7 @@ namespace AdminPanelCompanion
                     if (_skillCapClient > 0)
                     {
                         var s = FindSkill(__instance, skillType);
+                        if (s != null) __state = s.m_level;
                         if (s != null && s.m_level >= _skillCapClient) return false;
                     }
                 }
@@ -751,12 +754,18 @@ namespace AdminPanelCompanion
                 return true;
             }
 
+            // Harmony runs a postfix even when the prefix returned false, so this used to run for a skill that
+            // was ALREADY above the cap - and cut it down to the cap. A player with Swords 80 who joined a
+            // server capped at 50 lost 30 levels on the first swing, written to their own character file and
+            // kept after leaving. Only a raise that crossed the cap inside this very call is pulled back; a
+            // level earned elsewhere is the player's and is left alone (it simply stops rising here).
             [HarmonyPostfix]
-            private static void Postfix(Skills __instance, Skills.SkillType skillType)
+            private static void Postfix(Skills __instance, Skills.SkillType skillType, float __state)
             {
                 try
                 {
                     if (!SkillRulesActive() || _skillCapClient <= 0) return;
+                    if (__state > _skillCapClient) return;
                     var s = FindSkill(__instance, skillType);
                     if (s != null && s.m_level > _skillCapClient)
                     {

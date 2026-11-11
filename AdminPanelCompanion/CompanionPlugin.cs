@@ -14,12 +14,12 @@ namespace AdminPanelCompanion
         public const string PluginName = "AdminPanelCompanion";
         // Version policy: lockstep with the panel — both DLLs of a release always carry the SAME number,
         // and the panel warns in-game when the server's companion doesn't match (AP_SrvVersion handshake).
-        public const string PluginVersion = "2.6.0";
+        public const string PluginVersion = "2.7.0";
         // The Valheim release this build was compiled and reflection-swept against (leading major.minor.patch of
         // global::Version.GetVersionString(false), which carries a platform prefix such as "l-1.0.12" on Linux
         // servers). A mismatch at runtime is logged once and reported in the health payload; it never disables
         // anything — the bind probe below is what tells whether the mismatch actually broke something.
-        internal const string CompiledForGameVersion = "1.0.20";
+        internal const string CompiledForGameVersion = "1.0.21";
 
         internal static CompanionPlugin Instance;
 
@@ -344,11 +344,24 @@ namespace AdminPanelCompanion
             if (IsLocalHostSender(sender)) return true;
             var peer = ZNet.instance.GetPeer(sender);
             var host = peer != null && peer.m_socket != null ? peer.m_socket.GetHostName() : null;
-            if (string.IsNullOrEmpty(host)) { if (logDenied) Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
+            if (string.IsNullOrEmpty(host)) { if (logDenied && DeniedLogDue(sender)) Log($"DENIED admin action from unresolvable peer {sender}"); return false; }
 
             var isAdmin = AdminListContains(host);
-            if (!isAdmin && logDenied) Log($"DENIED admin action from non-admin {host} (peer {sender})");
+            if (!isAdmin && logDenied && DeniedLogDue(sender)) Log($"DENIED admin action from non-admin {host} (peer {sender})");
             return isAdmin;
+        }
+
+        // Any connected client can send an AP_Srv* name at packet rate, and each one used to write a log line:
+        // a remote way to grow LogOutput.log without bound. One line per sender per 10 s still shows who is trying.
+        private static readonly Dictionary<long, float> DeniedLogAt = new Dictionary<long, float>();
+
+        private static bool DeniedLogDue(long sender)
+        {
+            var now = Time.realtimeSinceStartup;
+            if (DeniedLogAt.TryGetValue(sender, out var at) && now - at < 10f) return false;
+            if (DeniedLogAt.Count > 256) DeniedLogAt.Clear();
+            DeniedLogAt[sender] = now;
+            return true;
         }
 
         // ---------- relay targets ----------
@@ -629,7 +642,24 @@ namespace AdminPanelCompanion
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             // Target 0 made EVERY client send its inventory to this admin.
-            if (!RelayTargetOk(sender, targetUid, "AP_SrvReqInv", needsMod: true)) return;
+            if (!RelayTargetOk(sender, targetUid, "AP_SrvReqInv", needsMod: true))
+            {
+                // The viewer is waiting on a reply that will now never come, and the notice RelayTargetOk sent
+                // is a centre-screen line that the open panel covers - so the admin saw "Waiting for
+                // response..." and nothing else. Hand the reason to the viewer itself. A panel older than this
+                // RPC has no handler for it and ignores it (ZRoutedRpc drops unregistered names).
+                try
+                {
+                    var why = _noticeSender == sender && _noticeTarget == targetUid ? _noticeText : null;
+                    var pkg = new ZPackage();
+                    pkg.Write(1);
+                    pkg.Write(targetUid);
+                    pkg.Write(string.IsNullOrEmpty(why) ? "The request could not be relayed to that player." : why);
+                    ReplyTo(sender, "AP_InvRefused", pkg);
+                }
+                catch (Exception e) { Log($"AP_InvRefused could not be sent: {e.Message}"); }
+                return;
+            }
             ZRoutedRpc.instance.InvokeRoutedRPC(targetUid, "AP_InvRequest", sender);
         }
 
@@ -876,6 +906,7 @@ namespace AdminPanelCompanion
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             var clean = id?.Trim();
             if (string.IsNullOrEmpty(clean) || clean.Contains(" ")) return;
+            if (RankProtects(sender, clean, "AP_SrvBanId")) return;
             var banned = GetList("m_bannedList");
             if (banned == null) return;
             if (!banned.Contains(clean)) banned.Add(clean);
@@ -965,6 +996,7 @@ namespace AdminPanelCompanion
         private static void OnServerKick(long sender, long uid)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            if (RankProtectsUid(sender, uid, "AP_SrvKick")) return;
             var ok = KickByUid(uid);
             Log($"Admin {sender} kick peer {uid}: {(ok ? "kicked" : "peer not found")}");
         }
@@ -973,6 +1005,7 @@ namespace AdminPanelCompanion
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
             var host = HostOfPeer(uid);          // read the Steam ID BEFORE kicking (socket closes)
+            if (RankProtects(sender, host, "AP_SrvBan")) return;
             var bare = BareId(host);
             var banned = GetList("m_bannedList");
             if (banned != null)
@@ -993,6 +1026,10 @@ namespace AdminPanelCompanion
         private static void OnServerUnban(long sender, string host)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            // Trimmed like the ban path: an id pasted with a trailing space or line break matched nothing, the
+            // player stayed banned and the panel still said "unban requested".
+            host = (host ?? "").Trim();
+            if (host.Length == 0) return;
             var banned = GetList("m_bannedList");
             var bare = BareId(host);
             if (banned != null)
@@ -1013,8 +1050,13 @@ namespace AdminPanelCompanion
         private static void OnServerBroadcast(long sender, string text)
         {
             if (!IsDedicatedServer || !SenderIsAdmin(sender)) return;
+            if (string.IsNullOrEmpty(text)) return;
             Log($"Admin broadcast: {text}");
-            ZRoutedRpc.instance.InvokeRoutedRPC(ZRoutedRpc.Everybody, "AP_Msg", text);
+            // MessageHud's own ShowMessage, exactly as vanilla MessageHud.MessageAll sends it: every client has
+            // it. AP_Msg is the companion's executor, so a broadcast reached only the players who run the mod -
+            // on most servers nobody but the admins - while the panel reported it as sent. Same "[Server] "
+            // look as before (and as the direct message below).
+            ZRoutedRpc.instance.InvokeRoutedRPC(ZRoutedRpc.Everybody, "ShowMessage", (int)MessageHud.MessageType.Center, "[Server] " + text);
         }
 
         private static void OnServerMessage(long sender, long targetUid, string text)

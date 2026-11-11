@@ -136,6 +136,9 @@ namespace AdminPanel
         {
             if (_palInited) return;
             _palInited = true;
+            // The palette takes text while the main window is closed: tell the typing guard (AdminPanelPlugin
+            // .PanelTyping) so letters typed into it do not also walk the character or open the map.
+            TypingSurfaces.Add(() => Instance != null && Instance._palOpen);
 
             // Default KeyCode.None = DISABLED. A palette that grabbed a key by default could collide with a
             // bind the admin already uses (or with another mod) on first launch, and an overlay that eats
@@ -1052,6 +1055,11 @@ namespace AdminPanel
         {
             GUI.backgroundColor = Color.white;   // mandatory first line: undo PanelBgTint for the contents
 
+            // PalOnGUI's deferred close runs AFTER GUI.Window registered this callback for the pass, and Unity
+            // invokes window callbacks once OnGUI has returned - so the close could leave this running with the
+            // row list already dropped (a NullReferenceException on every Escape / Enter-to-run).
+            if (!_palOpen || _palRowsLayout == null) return;
+
             PalHandleKeys();
 
             GUILayout.Space(2);
@@ -1249,6 +1257,8 @@ namespace AdminPanel
         private void PalCloseNow()
         {
             _palOpen = false;
+            // Its input box had the keyboard; left there, the game would go on believing someone is typing.
+            if (!_visible) GUIUtility.keyboardControl = 0;
             _palJustOpened = false;
             _palFocusField = false;
             _palCaretToEnd = false;
@@ -1282,7 +1292,9 @@ namespace AdminPanel
             // Hotkey. Disabled by default (KeyCode.None) and suppressed while the Settings tab listens for a
             // rebind, exactly like the panel's own hotkeys.
             var key = _palKeyCfg != null ? _palKeyCfg.Value : KeyCode.None;
-            if (key != KeyCode.None && _rebindTarget == 0 && Input.GetKeyDown(key))
+            // Closed, the key must not open the palette while the game (or a panel field) is taking text. Open,
+            // it keeps toggling the palette shut exactly as before.
+            if (key != KeyCode.None && _rebindTarget == 0 && Input.GetKeyDown(key) && (_palOpen || !HotkeyIsBeingTyped(key)))
             {
                 if (_palOpen) PalCloseNow();
                 else PalOpenNow();

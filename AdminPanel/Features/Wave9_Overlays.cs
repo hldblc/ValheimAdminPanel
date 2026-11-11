@@ -192,7 +192,9 @@ namespace AdminPanel
             GUILayout.BeginHorizontal();
             GUILayout.Space(139);
             if (GUILayout.Button(Loc.T("ovl.refresh"), _buttonStyle, GUILayout.MinWidth(80))) OvlRequest();
-            if (GUILayout.Button(Loc.T("ovl.clear"), _buttonStyle, GUILayout.MinWidth(70))) { _ovlMask = 0; OvlClearPins(); }
+            // _ovlLoadedMask too: left set, a layer switched back on inside the 2 s request throttle looked
+            // "already loaded" to OvlTick and was never fetched again - the chip was on with no pins.
+            if (GUILayout.Button(Loc.T("ovl.clear"), _buttonStyle, GUILayout.MinWidth(70))) { _ovlMask = 0; _ovlLoadedMask = 0; OvlClearPins(); }
             GUILayout.Label(_ovlPendingLayout ? Loc.T("ovl.loading") : Loc.T("ovl.count", _ovlCountLayout), _dimLabelStyle);
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();

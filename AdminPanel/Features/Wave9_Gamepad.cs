@@ -67,6 +67,26 @@ namespace AdminPanel
                 "Gamepad / Steam Deck navigation of the panel: Auto (on whenever a gamepad was the last input), On, or Off. L3 + R3 opens and closes the panel.");
             try { Harmony.CreateAndPatchAll(typeof(PadGuiHooks)); }
             catch (Exception e) { Logger.LogWarning($"Controller mode unavailable (IMGUI hooks failed): {e.Message}"); }
+            // Its own class and its own try: if this one ever fails to bind, panel navigation still works.
+            try { Harmony.CreateAndPatchAll(typeof(PadMoveBlock)); }
+            catch (Exception e) { Logger.LogWarning($"Controller mode: the character still takes stick input while the panel is open ({e.Message})"); }
+        }
+
+        // The game's own rule for its menus ("gamepad active and the inventory is open -> the character takes no
+        // input", PlayerController.TakeInput), applied to this panel. Without it the sticks and buttons that
+        // navigate the panel also drove the character: the left stick walked it, A made it jump on every button
+        // press and the right stick turned the camera while it scrolled a list. Controller mode only - keyboard
+        // and mouse behave exactly as before.
+        [HarmonyPatch(typeof(PlayerController), "TakeInput")]
+        private static class PadMoveBlock
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ref bool __result)
+            {
+                if (!__result) return;
+                var s = Instance;
+                if (s != null && s._visible && s._padActive) __result = false;
+            }
         }
 
         internal void PadReset()
@@ -278,12 +298,9 @@ namespace AdminPanel
         {
             if (!_padInWindow) return;
             _padInWindow = false;
-            if (_padPass == EventType.Layout)
-            {
-                _padPress = -1;            // a press is offered to exactly one Layout pass
-                _padScrollDelta = 0f;
-            }
+            if (_padPass == EventType.Layout) _padPress = -1;   // a press is offered to exactly one Layout pass
             if (_padPass != EventType.Repaint) return;
+            _padScrollDelta = 0f;          // a scroll is offered to exactly one Repaint pass (see the BeginScrollView hook)
             var hadFocus = PadFocusValid();
             var oldFocus = hadFocus ? _padCtrls[_padFocus] : default(PadCtrl);
             var t = _padCtrls; _padCtrls = _padBuild; _padBuild = t;
@@ -411,13 +428,17 @@ namespace AdminPanel
                 {
                     var tl = GUIUtility.GUIToScreenPoint(new Vector2(position.x, position.y));
                     s._padScrollBuild.Add(new Rect(tl.x, tl.y, position.width, position.height));
-                }
-                else if (s._padPass == EventType.Layout && idx == s._padScrollTarget && s._padScrollDelta != 0f)
-                {
-                    // Unity clamps the offset only on mouse events: clamp here, or holding the stick at the bottom piles up
-                    // an overshoot that has to be unwound before scrolling back up moves anything.
-                    scrollPosition.y = Mathf.Clamp(scrollPosition.y + s._padScrollDelta, 0f, Mathf.Max(0f, viewRect.height - position.height));
-                    s._padScrollDelta = 0f;
+                    // Applied on REPAINT, where the rects are real. On a Layout pass GUILayout hands this method a
+                    // placeholder rect and a not-yet-measured view, so the clamp's upper bound came out as 0 and
+                    // every stick tick snapped the list back to the top - controller scrolling never moved.
+                    // (The caller stores what BeginScrollView returns on every pass, so the new offset sticks.)
+                    if (idx == s._padScrollTarget && s._padScrollDelta != 0f)
+                    {
+                        // Unity clamps the offset only on mouse events: clamp here, or holding the stick at the bottom
+                        // piles up an overshoot that has to be unwound before scrolling back up moves anything.
+                        scrollPosition.y = Mathf.Clamp(scrollPosition.y + s._padScrollDelta, 0f, Mathf.Max(0f, viewRect.height - position.height));
+                        s._padScrollDelta = 0f;
+                    }
                 }
             }
         }

@@ -15,7 +15,7 @@ Press **F7** and run your realm from one window: spawn anything, teleport anywhe
 - **Admins only.** The panel checks your `adminlist.txt` status on every server you join. If you are not an admin there, or the server has no companion, the window shows a notice instead of the tabs. Server actions are validated again server-side by the companion.
 - **Single-player and dedicated servers.** In single-player you are the host and automatically an admin.
 - **Mod-aware.** Items and creatures from other installed mods show up automatically.
-- **Nine languages**, in-game hotkey rebinding, persistent settings.
+- **Ten languages**, in-game hotkey rebinding, persistent settings.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ Once the server is running, its `BepInEx/LogOutput.log` must contain `Loading [A
 
 | Tab | What you get |
 | --- | --- |
-| 🎁 **Items** | Every item with icons, live search and real stats (damage, armor, food values). Categories, favorites, recents. One-click gear kits from Bronze to Ashlands, bulk packs, and give straight into any player's inventory. Everything the panel creates is serial-stamped; prefabs the last provenance scan found stamped copies of are marked. |
+| 🎁 **Items** | Every item with icons, live search and real stats (damage, armor, food values). Categories, favorites, recents, and sorting or filtering by progression tier (Meadows to Deep North, worked out from what each item is crafted from). One-click gear kits from Bronze to Ashlands, bulk packs, and give straight into any player's inventory. Everything the panel creates is serial-stamped; prefabs the last provenance scan found stamped copies of are marked. |
 | 🐗 **Creatures** | Spawn by faction with count and star level, at your crosshair, optionally pre-tamed with a pet name. Saved presets, undo last spawn, arena mode (A vs B). Command card: order the creatures around you, or the one in your crosshair, to follow a player, guard a spot, stay passive or attack a player. |
 | ⚔ **Bosses** | One-click summons from Eikthyr to Fader, instant altar offerings, real raid events at your position. Encounter card: summon a boss with more HP (optionally per extra nearby player), more damage and an enrage timer; the fight is recorded (damage per player, deaths, time to kill) and the summary can go to Discord. |
 | 🏃 **Player** | God mode, ghost, fly, free build, no stamina, one-hit kill. Speed, jump and pickup sliders. Skills (+10 / max / reset, per-skill ±) and a categorized status-effect browser, for yourself or any online player, plus a forge that builds new effects from parts (speed, regen, damage, resistances, carry weight, duration). Buffs persist through death. |
@@ -66,7 +66,7 @@ Two layers, and it helps to know what each one does.
 
 ## Languages
 
-Ships with **English, Deutsch, Español, Français, Italiano, Nederlands, Polski, Português (BR)** and **Svenska**, following Valheim's language setting by default (override it under Settings → Language). Item and creature names always follow the game.
+Ships with **English, Deutsch, Español, Français, Italiano, Nederlands, Polski, Português (BR), Svenska** and **Русский**, following Valheim's language setting by default (override it under Settings → Language). Item and creature names always follow the game.
 
 Want another language? Drop a `<code>.txt` into `BepInEx/plugins/AdminPanel_Localization/`. No rebuild needed, and untranslated lines fall back to English. Pull requests are welcome.
 

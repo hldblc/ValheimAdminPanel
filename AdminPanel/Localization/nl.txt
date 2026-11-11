@@ -53,6 +53,8 @@ cat.misc=Overig
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Categorie
+sort.tier_up=Niveau: vroeg eerst
+sort.tier_down=Niveau: laat eerst
 sort.faction=Factie
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Bulkpakket aangevraagd
 items.amount=Aantal:
 items.quality=Kwaliteit:
 items.legend=Drop = grond | Tas = jouw tas | Geven = tas van het doel
+items.tier=Niveau
+items.tier_all=Alle niveaus
+items.tier_none=Niet ingedeeld
 items.db_not_loaded=Voorwerpendatabase niet geladen.
 items.drop=Drop
 items.bag=Tas
@@ -301,6 +306,7 @@ set.language=Taal:
 set.language_hint='Auto' volgt de taalinstelling van Valheim zelf. Namen van voorwerpen en wezens volgen altijd het spel.
 set.behavior=Gedrag
 set.camera_lock=Camera vergrendelen zolang het paneel open is (zoals bij de inventaris)
+set.move_while_open=Laat het personage bewegen terwijl het paneel open is
 set.panel=Paneel
 set.auto_whats_new=Nieuws één keer tonen na elke update
 set.whats_new=Wat is er nieuw?

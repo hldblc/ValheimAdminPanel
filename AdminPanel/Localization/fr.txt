@@ -53,6 +53,8 @@ cat.misc=Divers
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Catégorie
+sort.tier_up=Palier : début d'abord
+sort.tier_down=Palier : fin d'abord
 sort.faction=Faction
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Pack en vrac demandé
 items.amount=Quantité :
 items.quality=Qualité :
 items.legend=Drop = sol | Sac = votre sac | Donner = sac de la cible
+items.tier=Palier
+items.tier_all=Tous les paliers
+items.tier_none=Non classé
 items.db_not_loaded=Base d'objets non chargée.
 items.drop=Drop
 items.bag=Sac
@@ -301,6 +306,7 @@ set.language=Langue :
 set.language_hint=« Auto » suit le réglage de langue de Valheim. Les noms d'objets et de créatures suivent toujours le jeu.
 set.behavior=Comportement
 set.camera_lock=Verrouiller la caméra quand le panneau est ouvert (comme l'inventaire)
+set.move_while_open=Laisser le personnage bouger quand le panneau est ouvert
 set.panel=Panneau
 set.auto_whats_new=Afficher les nouveautés une fois après chaque mise à jour
 set.whats_new=Nouveautés ?

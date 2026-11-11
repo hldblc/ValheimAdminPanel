@@ -86,6 +86,7 @@ namespace AdminPanelCompanion
             r.Register<ZPackage>("AP_EncDmg", OnEncDmg);
             Active.Clear();
             ByBoss.Clear();
+            Done.Clear();   // finished fights belong to the world they happened in (a host can load another save)
             if (_hooked) return;
             _hooked = true;
             Wave9Prog.BossKilled += k => { _lastKillPos = k.Pos; _lastKillAt = Time.unscaledTime; };

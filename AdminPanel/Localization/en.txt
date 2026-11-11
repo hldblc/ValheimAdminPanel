@@ -67,6 +67,8 @@ cat.misc=Misc
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Category
+sort.tier_up=Tier: early first
+sort.tier_down=Tier: late first
 sort.faction=Faction
 
 # ---- Items tab ----
@@ -80,6 +82,9 @@ items.bulk_requested=Bulk pack requested
 items.amount=Amount:
 items.quality=Quality:
 items.legend=Drop = ground | Bag = your bag | Give = target's bag
+items.tier=Tier
+items.tier_all=All tiers
+items.tier_none=Not placed
 items.db_not_loaded=Item DB not loaded.
 items.drop=Drop
 items.bag=Bag
@@ -315,6 +320,7 @@ set.language=Language:
 set.language_hint='Auto' follows Valheim's own language setting. Item and creature names always follow the game.
 set.behavior=Behavior
 set.camera_lock=Lock camera while the panel is open (like the inventory)
+set.move_while_open=Let the character move while the panel is open
 set.panel=Panel
 set.auto_whats_new=Show What's New once after each update
 set.whats_new=What's New?

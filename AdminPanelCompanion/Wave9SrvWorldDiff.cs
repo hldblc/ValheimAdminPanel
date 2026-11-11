@@ -535,7 +535,7 @@ namespace AdminPanelCompanion
                     List<KeyValuePair<Obj, Obj>> changed;
                     if (r.Changed.TryGetValue(z, out changed))
                     {
-                        foreach (var p in changed) if (RestoreItems(man, p.Key, p.Value)) done++;
+                        foreach (var p in changed) { if (RestoreItems(man, p.Key, p.Value)) done++; else skipped++; }
                         r.Changed.Remove(z);
                     }
                     break;
@@ -551,7 +551,10 @@ namespace AdminPanelCompanion
                             if (zdo == null || zdo.GetPrefab() != o.Prefab || (zdo.GetPosition() - o.Pos).sqrMagnitude > 0.04f) { skipped++; continue; }
                             // A chest built since the backup may hold a player's things: keep it, say so.
                             var blob = InvCodec.ReadBlob(zdo);
-                            if ((Wave9.KindOf(o.Prefab) & Wave9.KContainer) != 0 && blob != null && InvCodec.Parse(blob, out _, out _, ScratchRecs) && ScratchRecs.Count > 0)
+                            // Kept as well when its contents cannot be READ (a newer item format, heavily modded
+                            // items): that used to count as empty, and the chest was destroyed with them.
+                            if ((Wave9.KindOf(o.Prefab) & Wave9.KContainer) != 0 && blob != null && blob.Length > 0
+                                && (!InvCodec.Parse(blob, out _, out _, ScratchRecs) || ScratchRecs.Count > 0))
                             { ScratchRecs.Clear(); kept++; continue; }
                             ScratchRecs.Clear();
                             if (Wave9.DestroyZdo(zdo)) done++;
@@ -567,6 +570,15 @@ namespace AdminPanelCompanion
         }
 
         private static readonly List<InvCodec.Rec> ScratchRecs = new List<InvCodec.Rec>();
+
+        private static bool SameBlob(byte[] a, byte[] b)
+        {
+            var la = a != null ? a.Length : 0;
+            var lb = b != null ? b.Length : 0;
+            if (la != lb) return false;
+            for (var i = 0; i < la; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
 
         internal static bool Recreate(ZDOMan man, Obj o)
         {
@@ -596,6 +608,10 @@ namespace AdminPanelCompanion
             {
                 var zdo = man.GetZDO(live.LiveId);
                 if (zdo == null || zdo.GetInt(KeyInUse, 0) == 1) return false;   // never under a player's open chest
+                // Only over the contents the comparison SAW. A result stays usable for half an hour, and the
+                // other two restore actions re-check the world first; this one did not, so whatever players
+                // had put into the chest since the comparison was silently replaced by the backup's contents.
+                if (!SameBlob(InvCodec.ReadBlob(zdo), live.Items)) return false;
                 // The chest module's own write discipline: claim, write, hand back to a CONNECTED owner (else
                 // release), force the new contents out, and refresh the host's loaded copy on a listen server.
                 Wave8Objects.WriteContainerBlob(zdo, backup.Items);

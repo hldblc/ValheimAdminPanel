@@ -134,6 +134,14 @@ namespace AdminPanelCompanion
             CompanionPlugin.RegisterAuditedRpc("AP_SrvCreatureEditAudit", "builder");
             CompanionPlugin.RegisterAuditedRpc("AP_SrvSpawnerRemove", "builder");
             CompanionPlugin.RegisterAuditedRpc("AP_SrvChestEdit", "builder");
+            // The reads those actions depend on. Unaudited (they are polled), but a builder must still be
+            // GRANTED them: gated on a name no role held, they were owner-only once tiered roles were on, so a
+            // builder could never obtain the ids for the heal / remove / edit actions the role does allow -
+            // the request was dropped without a reply and the card sat on "pending".
+            CompanionPlugin.GrantRole("AP_SrvTameScanReq", "builder");
+            CompanionPlugin.GrantRole("AP_SrvSpawnerScanReq", "builder");
+            CompanionPlugin.GrantRole("AP_SrvChestReadReq", "builder");
+            CompanionPlugin.GrantRole("AP_SrvChestSearchReq", "builder");
 
             ApplyPatch("Wave8ObjectsRpcRegistration", typeof(Wave8ObjectsRpcRegistration),
                 "tame roster / spawner / container RPCs unavailable");

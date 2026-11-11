@@ -112,7 +112,9 @@ namespace AdminPanel
         {
             var lp = LocalPlayer;
             if (lp == null) return;
-            lp.TeleportTo(pos + Vector3.up * lift, lp.transform.rotation, true);
+            // TeleportTo refuses (returns false) while a teleport is already running or inside its 2 s cooldown;
+            // a second click in quick succession used to announce a teleport that never happened.
+            if (!lp.TeleportTo(pos + Vector3.up * lift, lp.transform.rotation, true)) return;
             Message(Loc.T("locf.msg_tp", label));
         }
     }

@@ -574,13 +574,22 @@ namespace AdminPanelCompanion
 
         // ---- key=value tables (cached; explicit SaveTable persists) ----
 
+        // Tables whose file could not be read; one log line per table until a read succeeds again.
+        private static readonly HashSet<string> ReadFailLogged = new HashSet<string>(StringComparer.Ordinal);
+
         internal static Dictionary<string, string> Table(string name)
         {
+            string readError = null;
+            Dictionary<string, string> t;
             lock (Gate)
             {
-                if (Tables.TryGetValue(name, out var cached)) return cached;
-                var t = new Dictionary<string, string>(StringComparer.Ordinal);
+                // Resolve the world FIRST: that is what notices a world change and drops the previous world's
+                // tables. With the cache checked first, a host who loaded another save was served the old
+                // world's roles/bans until something else happened to resolve the directory.
                 var dir = ResolveDirLocked();
+                if (Tables.TryGetValue(name, out var cached)) return cached;
+                t = new Dictionary<string, string>(StringComparer.Ordinal);
+                var failed = false;
                 if (dir != null)
                 {
                     var path = Path.Combine(dir, name + ".txt");
@@ -595,11 +604,27 @@ namespace AdminPanelCompanion
                                 t[Unescape(line.Substring(0, eq))] = Unescape(line.Substring(eq + 1));
                             }
                     }
-                    catch (Exception) { /* unreadable table = start empty; SaveTable rewrites it */ }
+                    catch (Exception e)
+                    {
+                        // The file exists but is unreadable right now (a backup job, antivirus or the host's
+                        // file manager holds it). Caching the empty table made the next SaveTable rewrite the
+                        // real file with only the new entries - roles, bans and balances silently wiped. Hand
+                        // back an UNCACHED empty table instead: SaveTable has nothing to write for it, and
+                        // the next access reads the file again.
+                        failed = true;
+                        t.Clear();
+                        if (ReadFailLogged.Add(name)) readError = e.Message;
+                    }
                 }
-                Tables[name] = t;
-                return t;
+                if (!failed)
+                {
+                    Tables[name] = t;
+                    ReadFailLogged.Remove(name);
+                }
             }
+            if (readError != null)   // outside the gate: logging must not run under the store lock
+                CompanionPlugin.FeatureLog($"FeatureStore: {name}.txt could not be read ({readError}). Nothing is overwritten; it is read again on the next access.");
+            return t;
         }
 
         internal static void SaveTable(string name)
@@ -762,10 +787,17 @@ namespace AdminPanelCompanion
         }
 
         // Same escaping family as the panel's ParseKv: %, =, and newlines survive round-trips.
-        private static string Escape(string s) =>
-            s.Replace("%", "%25").Replace("=", "%3D").Replace("\r", "%0D").Replace("\n", "%0A");
+        // A leading '#' is encoded too: the loader treats a line that starts with '#' as a comment, so a key such
+        // as a protection zone named "#base" or a shop SKU "#1" was written and then vanished on the next load.
+        private static string Escape(string s)
+        {
+            s = s.Replace("%", "%25").Replace("=", "%3D").Replace("\r", "%0D").Replace("\n", "%0A");
+            return s.Length > 0 && s[0] == '#' ? "%23" + s.Substring(1) : s;
+        }
 
+        // "%23" is decoded before "%25" on purpose: a literal "%23" in the data was stored as "%2523", which
+        // holds no "%23" until the "%25" pass has run.
         private static string Unescape(string s) =>
-            s.Replace("%0A", "\n").Replace("%0D", "\r").Replace("%3D", "=").Replace("%25", "%");
+            s.Replace("%0A", "\n").Replace("%0D", "\r").Replace("%3D", "=").Replace("%23", "#").Replace("%25", "%");
     }
 }

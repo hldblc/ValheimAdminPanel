@@ -224,7 +224,16 @@ namespace AdminPanelCompanion
         internal static void Tick()
         {
             if (!_inited) return;
-            if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+            if (ZNet.instance == null)
+            {
+                // Between worlds (a listen host back at the main menu). Both flags are per WORLD SESSION: left
+                // set, the next world's boot sequence never ran and its clean-shutdown marker was never
+                // written, so that world's following start reported a false "unclean shutdown".
+                _booted = false;
+                _cleanMarkerWritten = false;
+                return;
+            }
+            if (!ZNet.instance.IsServer()) return;
 
             var now = Time.unscaledTime;
 

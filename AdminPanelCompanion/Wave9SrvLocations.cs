@@ -215,11 +215,18 @@ namespace AdminPanelCompanion
         {
             var r = Radius(li) + 16f;
             foreach (var p in Wave9.ReadyPeers())
-                if (Wave9.MapDist(Wave9.PeerPos(p), li.m_position) < r) return true;
+                if (WithinReach(Wave9.PeerPos(p), li, r)) return true;
             if (Player.m_localPlayer != null && ZNet.instance != null && !ZNet.instance.IsDedicated() &&
-                Wave9.MapDist(Player.m_localPlayer.transform.position, li.m_position) < r) return true;
+                WithinReach(Player.m_localPlayer.transform.position, li, r)) return true;
             return false;
         }
+
+        // A player INSIDE a dungeon is judged with a wider reach. Interiors sit far above the world (y > InteriorY)
+        // and their rooms are laid out across the whole 64 m zone around the zone centre, so someone in a far
+        // room can be 45-90 m from the ENTRANCE this distance is measured from - outside the normal radius. A
+        // reset then deleted the interior with the player standing in it, and they fell out of the sky.
+        private static bool WithinReach(Vector3 p, ZoneSystem.LocationInstance li, float r) =>
+            Wave9.MapDist(p, li.m_position) < (p.y > InteriorY ? Mathf.Max(r, 100f) : r);
 
         // ==================== reset ====================
 
@@ -349,7 +356,10 @@ namespace AdminPanelCompanion
                         if (z.GetBool(KeyAddedDefault, false)) opened++;
                         var blob = InvCodec.ReadBlob(z);
                         ResetRecs.Clear();
-                        if (blob != null && InvCodec.Parse(blob, out _, out _, ResetRecs) && ResetRecs.Count > 0) holding++;
+                        // A blob that cannot be read (a newer item format after a game update, heavily modded
+                        // items) counts as HOLDING: it used to count as empty, and the chest was destroyed
+                        // together with whatever it really held.
+                        if (blob != null && blob.Length > 0 && (!InvCodec.Parse(blob, out _, out _, ResetRecs) || ResetRecs.Count > 0)) holding++;
                         ResetRecs.Clear();
                     }
                     victims.Add(z);

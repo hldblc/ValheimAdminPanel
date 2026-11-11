@@ -53,6 +53,8 @@ cat.misc=Varie
 sort.az=A–Z
 sort.za=Z–A
 sort.category=Categoria
+sort.tier_up=Livello: prima iniziali
+sort.tier_down=Livello: prima finali
 sort.faction=Fazione
 
 # ---- Items tab ----
@@ -66,6 +68,9 @@ items.bulk_requested=Pacchetto in blocco richiesto
 items.amount=Quantità:
 items.quality=Qualità:
 items.legend=Drop = terra | Borsa = la tua borsa | Dai = borsa del bersaglio
+items.tier=Livello
+items.tier_all=Tutti i livelli
+items.tier_none=Non classificato
 items.db_not_loaded=Database oggetti non caricato.
 items.drop=Drop
 items.bag=Borsa
@@ -301,6 +306,7 @@ set.language=Lingua:
 set.language_hint='Auto' segue l'impostazione della lingua di Valheim. I nomi di oggetti e creature seguono sempre il gioco.
 set.behavior=Comportamento
 set.camera_lock=Blocca la telecamera mentre il pannello è aperto (come l'inventario)
+set.move_while_open=Lascia muovere il personaggio con il pannello aperto
 set.panel=Pannello
 set.auto_whats_new=Mostra le novità una volta dopo ogni aggiornamento
 set.whats_new=Novità?

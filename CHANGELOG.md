@@ -1,5 +1,95 @@
 # Changelog
 
+## 2.7.0
+
+**BOTH DLLs are 2.7.0** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Built for Valheim 1.0.21
+(no API drift from 1.0.20; the 2.6.0 DLLs also bind cleanly on 1.0.21).
+
+New:
+- **Items: sort and filter by progression tier.** Every item gets a tier from 1 (Meadows) to 8 (Deep North), worked out
+  from what it is crafted from: an item is as late as the latest material or crafting station it needs, so a Draugr Fang is
+  tier 4 because it needs silver. Raw materials, drops and trophies come from a built-in table. The Items tab has two new
+  sort modes (early first, late first), a tier filter, and each row shows its tier ("T3 Swamp") in the game's own language.
+  Modded items sort themselves when they are built from known materials; to correct or add one, put `PrefabName=tier` lines
+  in `BepInEx/plugins/AdminPanel_ItemTiers.txt`.
+- **Russian** is a panel language (Settings › Language, or automatic when the game is set to Russian). The panel font
+  already carries the Russian alphabet.
+- **The panel behaves like a menu.** While it is open the character takes no movement input: it used to keep walking on
+  WASD, jump on Space and raise its shield on a right click. Keys typed into any of the panel's text boxes (or the command
+  palette) no longer reach the game either, so typing "m", "i", Tab or Enter into a search box does not open the map, the
+  inventory or the chat line. Settings › "Let the character move while the panel is open" restores the old behaviour.
+- **The inventory viewer says why.** When the server does not forward the request (the player's client has not answered as
+  running the companion, they are dead or loading, or they left), the viewer shows the server's reason instead of sitting on
+  "Waiting for response...". Needs the 2.7.0 companion on the server.
+
+Fixed — permissions and moderation:
+- **Tiered roles were ignored for ids written with a platform prefix.** A role row stored as `Steam_<id>` (what
+  `adminlist.txt`, the Server tab's admin list and therefore most owners use) never matched an admin connected over Steam,
+  whose id arrives without the prefix; "no role found" means full owner rights, so every admin kept full rights with
+  `EnableTieredRoles = true`. Rows now match in every spelling, hand-edited rows may have spaces around the `=`, and the
+  server logs one line per admin who has no role row.
+- With tiered roles on, a restricted role can no longer kick, ban, temp-ban, freeze, mute or warn an owner-level admin, and
+  a vote-kick cannot remove an admin.
+- A mute stored as `Steam_<id>` was listed with a countdown and never enforced; an unmute or temp-ban lift by the other
+  spelling removed nothing while reporting success.
+- Roles: builders can read what their actions need (tame roster, spawner list, container read and search), and moderators
+  can open Client Perf and watch a raid; those reads were owner-only by accident.
+- A bounty with a reward needs the right to grant currency, and collecting from another player needs the right to remove
+  items; both were open to the builder role.
+- Anti-cheat: admins are exempt from every rule (their own panel's speed, fly and health tools tripped it), and
+  "progression" notes no longer count toward the freeze/kick threshold.
+- Reserved slots: a stranger joining during a hold no longer takes the slot in addition to the held player.
+- Lookups by id skip a connection that is still at the password prompt (its uid is 0, which addresses everybody).
+- The chat-history view could be made to show another player as the speaker by typing `|` in a message, and a rap sheet
+  could be given someone else's lines; both now read the speaker from the server-written column only.
+- The mod-log webhook and the bug-report form no longer let `@everyone` in a player name or report ping a Discord server.
+
+Fixed — panel:
+- Hotkeys bound to a typing key no longer fire while you type a map-pin name, in chat, in the console or in a panel field.
+- Closing the panel while Settings was listening for a rebind left every hotkey dead until restart.
+- Messages shown before the panel was opened once printed their raw key (`world.msg_tp_to`).
+- Coordinates typed with a decimal point were misread on systems that use a decimal comma (Turkish, German, French...).
+- "Send to all" used the companion's own message, so players without the mod never saw it; it now uses the game's.
+- A listen-server host's requests were routed to every connected client as well as handled locally.
+- Opening the skills list wrote every untrained skill into your own character at level 0.
+- The command palette threw an error on every close; controller mode walked the character and jumped while you navigated,
+  and right-stick scrolling snapped lists to the top.
+- The Death Rules form snapped back to the old values after Apply on a dedicated server.
+- The location finder's `|` separator, the overlay "Clear" button and the teleport confirmation after a refused teleport.
+
+Fixed — server:
+- **A skill cap cut down levels a player had earned elsewhere** and saved the loss to their character. Only a raise that
+  crosses the cap is held back now.
+- Queued player resets were sent 12 s after the handshake, before the character exists, and so never applied; a
+  confirmation arriving late caused a second wipe on the next join.
+- An offline queue written for a player who had never joined, under `Steam_<id>`, was never delivered.
+- A table file that could not be read at that moment was treated as empty and then overwritten; a listen host who loaded
+  another world was served the previous world's tables; names starting with `#` vanished on the next load.
+- Bounties: a deliver bounty for more than 999 items deleted 999 from the player on every attempt and paid nothing; the
+  progress table filled up with finished bounties and silently stopped counting.
+- Creature orders: "attack" never attacked, and "normal" released every tame's stay point and the altar boss's leash.
+- Triggers: world-level actions ran once per player present at a boss kill, were skipped for everyone when the first
+  player was filtered out, an unknown raid name stopped the running raid, and a new time-of-day rule fired at once.
+- Rule zones: dying and respawning inside a zone counted as entering it again.
+- Progression: records leaked into the next world on a listen host; long-time players were flagged "endgame gear minutes
+  after first joining" on a freshly installed server.
+- Provenance: the "overflow" finding is gone. The game merges a player's own pickups into a stamped stack, so it accused
+  almost everyone who was ever given a stackable item.
+- Undo: removing an admin-applied effect no longer strips one the player earned later; actions the timeline could not
+  record are reported.
+- Location reset: a player in a far dungeon room is now seen; a chest whose contents cannot be read is kept.
+- Backup compare: restoring a chest checks that it still holds what the comparison saw; unreadable chests are kept.
+- Bases: the host counts as a player standing in a base; a snapshot restore reports what it could not recreate.
+- Protection zones exempt the host; mass remove and ownership transfer leave world-generated ruins alone unless a prefab
+  filter names them.
+- Rank rewards were paid again whenever the rank ladder was edited; `!dryrun on` answered "ON" when the server refused it;
+  another plugin could re-grant the companion's own actions through the SDK.
+- Container editor: stacks of items the server cannot resolve could never be removed.
+- Vault: a broken item came back repaired from a restore; a queued teleport was unreadable on comma-decimal hosts.
+- Smaller: unban trims the id, denials are logged once per 10 s per sender, the audit log is flushed on shutdown, the
+  first client performance report no longer includes the loading screen, and the Discord watchdog no longer reports a
+  false unclean shutdown after a world change.
+
 ## 2.6.0
 
 **BOTH DLLs are 2.6.0** — server owners: update `AdminPanelCompanion.dll` on the server and restart. Features that act on a

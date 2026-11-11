@@ -130,12 +130,18 @@ namespace AdminPanelCompanion
             public string Reason;
             public float Expiry;
             public bool FromQueue;      // true = came from "resetq"; keep the row until it is confirmed
+            public float Deadline;      // queued delivery: stop waiting for the character to spawn at this time
         }
 
         // uid -> strip we sent and are waiting on a confirmation for.
         private static readonly Dictionary<long, PendingStrip> PendingStrips = new Dictionary<long, PendingStrip>();
         // uid -> queued reset waiting for the client to finish loading before we send it.
         private static readonly Dictionary<long, PendingStrip> ResetDeliveries = new Dictionary<long, PendingStrip>();
+        // uid -> a strip whose confirmation window ran out. A confirmation can still arrive (a hitch, a slow
+        // link); it has to clear the queued row, or the player is wiped a SECOND time on their next join.
+        private static readonly Dictionary<long, PendingStrip> LateStrips = new Dictionary<long, PendingStrip>();
+        private const float LateStripSeconds = 300f;
+        private const float ResetSpawnWaitSeconds = 300f;  // how long a queued reset waits for the character to exist
 
         private static float _nextPruneTick;
 
@@ -226,7 +232,7 @@ namespace AdminPanelCompanion
                 catch (Exception e) { CompanionPlugin.FeatureLog($"Queued reset delivery failed: {e.Message}"); ResetDeliveries.Clear(); }
             }
 
-            if (PendingStrips.Count > 0)
+            if (PendingStrips.Count > 0 || LateStrips.Count > 0)
             {
                 try { ExpireStrips(now); }
                 catch (Exception e) { CompanionPlugin.FeatureLog($"Strip confirmation sweep failed: {e.Message}"); }
@@ -1086,8 +1092,10 @@ namespace AdminPanelCompanion
         private static void OnStripRep(long sender, ZPackage pkg)
         {
             if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
-            if (!PendingStrips.TryGetValue(sender, out var pending)) return;
-            PendingStrips.Remove(sender);
+            PendingStrip pending;
+            if (PendingStrips.TryGetValue(sender, out pending)) PendingStrips.Remove(sender);
+            else if (LateStrips.TryGetValue(sender, out pending)) LateStrips.Remove(sender);   // confirmed after the window
+            else return;
 
             string name; int stacks, items;
             try
@@ -1118,6 +1126,14 @@ namespace AdminPanelCompanion
         // Fall back to the queue so the reset is not silently lost.
         private static void ExpireStrips(float now)
         {
+            if (LateStrips.Count > 0)
+            {
+                List<long> stale = null;
+                foreach (var kv in LateStrips)
+                    if (now >= kv.Value.Expiry) (stale ?? (stale = new List<long>())).Add(kv.Key);
+                if (stale != null) foreach (var uid in stale) LateStrips.Remove(uid);
+            }
+
             List<long> dead = null;
             foreach (var kv in PendingStrips)
                 if (now >= kv.Value.Expiry) (dead ?? (dead = new List<long>())).Add(kv.Key);
@@ -1127,6 +1143,12 @@ namespace AdminPanelCompanion
             {
                 var p = PendingStrips[uid];
                 PendingStrips.Remove(uid);
+                // Keep listening for a late confirmation (see LateStrips): OnStripRep then clears the queue.
+                LateStrips[uid] = new PendingStrip
+                {
+                    Requester = p.Requester, Id = p.Id, Reason = p.Reason, FromQueue = p.FromQueue,
+                    Expiry = now + LateStripSeconds,
+                };
                 if (p.FromQueue)
                 {
                     // Already in "resetq" — leave it there and try again on their next join.
@@ -1240,6 +1262,7 @@ namespace AdminPanelCompanion
                         Id = key,
                         Reason = reason,
                         Expiry = Time.unscaledTime + ResetDeliveryDelay,
+                        Deadline = Time.unscaledTime + ResetSpawnWaitSeconds,
                         FromQueue = true,
                     };
                 }
@@ -1257,9 +1280,19 @@ namespace AdminPanelCompanion
             foreach (var uid in due)
             {
                 var p = ResetDeliveries[uid];
-                ResetDeliveries.Remove(uid);
                 var peer = FindPeerByUid(uid);
-                if (peer == null) continue;                       // left again before delivery: stays queued
+                if (peer == null) { ResetDeliveries.Remove(uid); continue; }   // left again before delivery: stays queued
+
+                // The client's executor needs a Player and drops the request without one. Loading into the
+                // world takes 20-30 s on a real server (longer with a big modlist), so a fixed 12 s after the
+                // handshake landed before the character existed on practically every join: the strip was
+                // dropped, never confirmed, and the reset stayed queued for ever. Wait for the character.
+                if (peer.m_characterID.IsNone() && now < p.Deadline)
+                {
+                    p.Expiry = now + 3f;
+                    continue;
+                }
+                ResetDeliveries.Remove(uid);
 
                 var req = new ZPackage();
                 req.Write(WireVer);
@@ -1346,7 +1379,8 @@ namespace AdminPanelCompanion
 
         private static ZNetPeer FindPeerByUid(long uid)
         {
-            if (ZNet.instance == null) return null;
+            // uid 0 is "everybody" and also what a connection still at the password prompt carries.
+            if (ZNet.instance == null || uid == 0L) return null;
             foreach (var peer in ZNet.instance.GetPeers())
                 if (peer != null && peer.m_uid == uid) return peer;
             return null;
@@ -1357,7 +1391,8 @@ namespace AdminPanelCompanion
             if (ZNet.instance == null || string.IsNullOrEmpty(id)) return null;
             foreach (var peer in ZNet.instance.GetPeers())
             {
-                if (peer == null || peer.m_socket == null) continue;
+                // m_uid 0 = still at the password prompt: not a player yet, and 0 as an RPC target means everybody.
+                if (peer == null || peer.m_socket == null || peer.m_uid == 0L) continue;
                 if (Wave1Moderation.IdMatches(id, peer.m_socket.GetHostName())) return peer;
             }
             return null;

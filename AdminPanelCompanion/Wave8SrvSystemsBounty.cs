@@ -49,6 +49,7 @@ namespace AdminPanelCompanion
         private const int MaxTargetLen = 64;
         private const int MaxNameLen = 60;
         private const int MaxCount = 10000;
+        private const int MaxDeliverCount = 999;   // = Wave6Economy.MaxStackPerTrade, the take executor's per-request limit
         private const long MaxReward = 1000000000L;
         private const int TargetsCap = 50;          // AP_BountyTargets list cap
         private const float TakeTimeout = 20f;      // same window Wave 6 gives its own takes
@@ -313,11 +314,49 @@ namespace AdminPanelCompanion
             string prevName;
             var cur = ProgressOf(bountyId, platformId, out prevName);
             var key = ProgressKey(bountyId, platformId);
-            if (!t.ContainsKey(key) && t.Count >= MaxProgressRows) return cur;   // full: progress freezes rather than the file growing without bound
+            if (!t.ContainsKey(key) && t.Count >= MaxProgressRows)
+            {
+                // Rows of finished bounties were only ever dropped together with a pruned bounty, so on a
+                // long-running server the table filled up with them - and from then on no NEW player's kills
+                // counted on any bounty, with no log line and no message. Make room from the finished ones first.
+                PruneFinishedProgress(t);
+                if (t.Count >= MaxProgressRows)
+                {
+                    if (!_progressFullLogged)
+                    {
+                        _progressFullLogged = true;
+                        CompanionPlugin.FeatureLog($"Bounty progress table is full ({MaxProgressRows} rows on open bounties): new players' progress is not being recorded until some bounties close.");
+                    }
+                    return cur;   // full: progress freezes rather than the file growing without bound
+                }
+            }
             cur = Mathf.Clamp(cur + delta, 0, MaxCount);
             t[key] = cur.ToString(CultureInfo.InvariantCulture) + "|" + Wave8Systems.CleanText(string.IsNullOrEmpty(name) ? prevName : name, MaxNameLen);
             _progressDirty = true;
             return cur;
+        }
+
+        private static bool _progressFullLogged;
+
+        // Drop the progress rows of every bounty that is no longer open (completed, closed or already pruned).
+        private static void PruneFinishedProgress(Dictionary<string, string> t)
+        {
+            try
+            {
+                var open = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var b in LoadAll()) if (b.Status == "active") open.Add(b.Id);
+                List<string> dead = null;
+                foreach (var kv in t)
+                {
+                    var bar = kv.Key.IndexOf('|');
+                    if (bar <= 0 || !open.Contains(kv.Key.Substring(0, bar))) (dead ?? (dead = new List<string>())).Add(kv.Key);
+                }
+                if (dead == null) return;
+                foreach (var k in dead) t.Remove(k);
+                _progressDirty = true;
+                _progressFullLogged = false;
+            }
+            catch (Exception) { }
         }
 
         private static void RemoveProgress(string bountyId)
@@ -567,6 +606,14 @@ namespace AdminPanelCompanion
             if (b == null || b.Status != "active") { Reply(who, requester != 0L, $"Bounty #{bountyId} is not open."); return; }
             if (b.Kind != "deliver") { Reply(who, requester != 0L, $"Bounty #{bountyId} is a {b.Kind} bounty - kills are tracked automatically, there is nothing to hand in."); return; }
             if (!_takePatchOk) { Reply(who, requester != 0L, "Hand-ins are unavailable on this server build (the item-take hook did not apply)."); return; }
+            // The client-side take executor (Wave 6's AP_EcoTake) clamps one request to MaxDeliverCount items. A
+            // bounty asking for more made it remove that many, report fewer than asked, and the reply was then
+            // read as "nothing taken": the items were gone, nothing was credited, and every retry took more.
+            if (b.Count > MaxDeliverCount)
+            {
+                Reply(who, requester != 0L, $"Bounty #{bountyId} asks for {b.Count} items, more than one hand-in can carry ({MaxDeliverCount}). Nothing was taken - an admin has to close it and post it again with a lower count.");
+                return;
+            }
 
             var host = Wave8Systems.IsHostSession(uid);
             var peer = host ? null : ZNet.instance.GetPeer(uid);
@@ -776,7 +823,21 @@ namespace AdminPanelCompanion
             target = Wave8Systems.CleanId(target, MaxTargetLen);
             if (kind < 0 || kind > 2 || target.Length == 0) { CompanionPlugin.NotifySender(sender, "Bounty rejected: invalid kind or prefab."); return; }
             count = Mathf.Clamp(count, 1, MaxCount);
+            if (kind == 2 && count > MaxDeliverCount)
+            {
+                count = MaxDeliverCount;
+                CompanionPlugin.NotifySender(sender, $"A deliver bounty can ask for at most {MaxDeliverCount} items (one hand-in); the count was lowered to that.");
+            }
             reward = Math.Max(0L, Math.Min(MaxReward, reward));
+            // A reward is currency the server mints on completion. Granting currency is owner-only
+            // (AP_SrvEcoAdjust), and this RPC is builder-grade - so with tiered roles on a builder could post
+            // "deliver 1 Wood, reward 1000000000" and collect it from themself. A paying bounty needs the same
+            // right as a direct adjustment. No effect while roles are off.
+            if (reward > 0 && !CompanionPlugin.SenderCanFeature(sender, "AP_SrvEcoAdjust"))
+            {
+                CompanionPlugin.NotifySender(sender, "Bounty rejected: a reward pays out currency, which your role may not grant (it needs the owner role or the AP_SrvEcoAdjust permission).");
+                return;
+            }
 
             // Verify the prefab on the server (prefab assets exist on a dedicated server) and store its exact
             // spelling: the kill detector compares GameObject prefab names.
@@ -881,6 +942,13 @@ namespace AdminPanelCompanion
                     break;
                 case 2:
                     if (targetUid == 0L) targetUid = sender;   // "collect from me" on the admin's own client
+                    // Collecting from someone ELSE takes items out of their inventory, which is the remove-item
+                    // right; this RPC alone is builder-grade and builders do not hold that one.
+                    if (targetUid != sender && !CompanionPlugin.SenderCanFeature(sender, "AP_SrvInvRemove"))
+                    {
+                        CompanionPlugin.NotifySender(sender, "Refused: collecting from another player removes their items, which your role may not do.");
+                        return;
+                    }
                     CompanionPlugin.SrvAudit(sender, "BOUNTY-COLLECT", $"id={id} targetUid={targetUid}");
                     BeginClaim(targetUid, id, sender);
                     break;
